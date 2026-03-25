@@ -1,0 +1,12 @@
+*.pth
+*.pkl
+*.npy
+*.csv
+
+data/
+__pycache__/
+
+.venv/
+venv/
+env/
+ENV/
