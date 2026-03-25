@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import sys
 
+# TODO: move somewhere else. is it going to be used for all data? if yes, move it to utils. if not, move it to ../../notebooks
 def load_aggregated_csv_data(file_path, col_map):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Aggregated CSV file not found at: {file_path}")
@@ -39,6 +40,7 @@ class PMSMData:
         # 1. Check Dimensions
         self._check_dimensions()
 
+        # TODO: remove all the Matlab indexing artefacts
         self.i_to_seg = {}
         self.n_seg = 0
         self.rows = {}
@@ -60,6 +62,7 @@ class PMSMData:
         
         if self.segments.shape != expected_shape:
              print(f"Error: Segments shape {self.segments.shape} != expected {expected_shape}")
+             # TODO: never ever use this. use raise instead. this is horrible for tests, when it crashes Python instead of a desired error.
              sys.exit()
              
         if self.isd1.shape != expected_shape:
@@ -67,10 +70,12 @@ class PMSMData:
              sys.exit()
 
         # Sanity check on values (optional but recommended)
+        # TODO: should it be like this? Is negative speed ok?
         if np.any(self.omega < 0):
              print("Warning: Negative speeds detected in grid data.")
 
     def select_k(self, k_skip):
+        # TODO: why is this here?
         if k_skip < 1: return
         i_T = np.arange(0, len(self.T), k_skip)
         i_omega = np.arange(0, len(self.omega), k_skip)

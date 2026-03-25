@@ -1,7 +1,9 @@
 import numpy as np
 import sys
 
+# TODO: we need to think whether we want to work for 5 phases or more general. i would prefer the second option. that would require lots of changes though.
 class Transform:
+    # TODO: use the same name for P and IPM. is it the best name?
     def __init__(self, P, om, add_u0, n_theta=700):
         self.n_phases = P.m
         self.add_u0 = add_u0  
@@ -39,7 +41,7 @@ class Transform:
             raise TypeError(f"Omega must be a scalar, got {type(om)}")
         self.compute_matrices(om)
     
-    def is_to_ia(self, is_vec):       
+    def is_to_ia(self, is_vec): 
         if len(is_vec) != 4:
             raise ValueError("Current vector must be length 4 (id1, iq1, id3, iq3)")
         return self.matrix_s_to_a @ is_vec

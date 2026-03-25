@@ -17,6 +17,7 @@ def voltage_constraint(is_vec, IPM, W):
     voltage_max = np.max(np.abs(u_phases))
     return IPM.Umax - voltage_max
 
+# TODO: do we want to have it here?
 def predict_torque_pirn(is_vec, omega, pirn_model, scaler, device):
     """Evaluates the neural network for a single vector."""
     if pirn_model is None or scaler is None:
@@ -35,6 +36,7 @@ def predict_torque_pirn(is_vec, omega, pirn_model, scaler, device):
 # 2. Analytical Optimization (Physics Model)
 # ==========================================
 
+# TODO: normal name here and later everywhere
 def reg_maxTorque(IPM, W, is0=None, opts=None):
     """
     Finds the MAXIMUM torque possible at a given speed (Analytical).
@@ -51,6 +53,7 @@ def reg_maxTorque(IPM, W, is0=None, opts=None):
         {"type": "ineq", "fun": voltage_constraint, "args": (IPM, W)},
     ]
 
+    # TODO: lots of code is written by chatGPT. simplify it. double check.
     # --- Multi-Start Candidates ---
     candidates = []
     # 1. Warm Start
@@ -65,6 +68,7 @@ def reg_maxTorque(IPM, W, is0=None, opts=None):
     best_res = None
     best_val = float('inf') # Minimizing negative torque
 
+    # TODO: this is far too complicated
     for start_vec in candidates:
         try:
             res = minimize(objective, start_vec, method="SLSQP", constraints=constraints, options=opts)
@@ -76,11 +80,12 @@ def reg_maxTorque(IPM, W, is0=None, opts=None):
     if best_res is not None:
         return best_res.x, -best_res.fun, True
 
+    # TODO: this is far too complicated
     # Fallback
     res = minimize(objective, g_mtpa, method="SLSQP", constraints=constraints, options=opts)
     return res.x, -res.fun, res.success
 
-
+# TODO: the same comments as above
 def reg_defTorque(IPM, tor, W, is0=None, opts=None):
     """
     Finds the Minimum Current vector for a TARGET torque (Analytical).
@@ -136,6 +141,8 @@ def reg_defTorque(IPM, tor, W, is0=None, opts=None):
 # 3. Neural Network Optimization (PIRN Model)
 # ==========================================
 
+# TODO: when I think about it, it should be a class with two functions (they need to have the same API)
+# TODO: rewrite this and the two functions above and merge them. they need to have the same arguments. all the other arguments should go into __init__
 def reg_maxTorque_PIRN_Compensated(IPM, W, pirn_model, scaler, device, omega=0.0, is0=None, opts=None):
     """
     Finds the MAXIMUM torque possible at a given speed (PIRN Model).
