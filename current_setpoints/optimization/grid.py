@@ -36,6 +36,8 @@ def _fill_grid_point(grid, W, is_vec, k_T, k_om, IPM):
     grid['clr'][k_T, k_om] = 3 * peaks_U + peaks_I
 
 # --- BASELINE GRID CALCULATION ---
+# TODO: this is an amazing example why to unify reg_maxTorque and reg_maxTorque_PIRN_compensated into a class.
+# TODO: functions like grid_calc and grid_calc_Compensated should never appear, there should be only one function, which takes the class as an argument
 def grid_calc(IPM, W, calc_opt):
     print("Starting Baseline Grid Calculation...")
     W.change_om(0)

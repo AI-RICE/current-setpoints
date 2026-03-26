@@ -36,6 +36,7 @@ class PMSMBase:
             raise ValueError(f"Vector {name} must be a column vector with length m-1 ({self.m - 1}).")
 
 
+# TODO: normal names
 class PMSMBase2(PMSMBase):
     def __init__(self, m, pp, Rs_vec, L, Psi_vec, TPsi_vec):
         super().__init__(m, pp)
