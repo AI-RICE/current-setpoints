@@ -2,9 +2,11 @@
 *.pkl
 *.npy
 *.csv
+*.mat
 
 __pycache__/
 
+/data/
 .venv/
 venv/
 env/

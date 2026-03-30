@@ -1,5 +1,5 @@
 import numpy as np
-from .data import PMSMData
+from .data import MachineData
 from .optimization import (
     reg_maxTorque, reg_defTorque, 
     reg_maxTorque_PIRN_Compensated, reg_defTorque_PIRN_Compensated
@@ -8,7 +8,7 @@ from .optimization import (
 def grid_to_data(grid, k_skip):
     T = grid['T']
     omega = grid['c_mech_speed'] * grid['om_vec']
-    return PMSMData(
+    return MachineData(
         T=T, omega=omega, segments=grid['clr'],
         isd1=grid['isd1'], isd3=grid['isd3'], isq1=grid['isq1'], isq3=grid['isq3'],
         k_skip=k_skip
