@@ -16,7 +16,7 @@ def load_aggregated_csv_data(file_path, col_map):
         raise ValueError(f"Missing required columns in CSV: {missing_cols}")
 
     data.rename(columns=col_map, inplace=True)
-    required_cols = ['omega', 'id1', 'iq1', 'id3', 'iq3', 'T_measured']
+    required_cols = ['omega', 'id1', 'iq1', 'id3', 'iq3', 'torq_meas']
     
     # Validation: NaNs
     if data[required_cols].isnull().values.any():

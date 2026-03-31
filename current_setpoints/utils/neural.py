@@ -8,30 +8,30 @@ from sklearn.preprocessing import StandardScaler
 # Constants needed for analytical part inside NN
 ANALYTICAL_BIAS_TERM = 0.0
 
-def get_analytical_tensors(ipm_model, device):
+def get_analytical_tensors(machine, device):
     """Helper to convert IPM model matrices to tensors."""
-    if ipm_model:
-        A_tensor = torch.from_numpy(ipm_model.A).float().to(device)
-        b_tensor = torch.from_numpy(ipm_model.b).float().to(device).unsqueeze(1)
+    if machine:
+        A_tensor = torch.from_numpy(machine.A).float().to(device)
+        b_tensor = torch.from_numpy(machine.b).float().to(device).unsqueeze(1)
         return A_tensor, b_tensor
     return None, None
 
-def T_analytical(x_phys_currents, A_tensor, B_tensor):
-    T_linear = torch.matmul(x_phys_currents, B_tensor).squeeze()
-    T_quadratic = torch.einsum(
+def torq_analytical(x_phys_currents, A_tensor, B_tensor):
+    torq_linear = torch.matmul(x_phys_currents, B_tensor).squeeze()
+    torq_quadratic = torch.einsum(
         "bi, ij, bj -> b", x_phys_currents, A_tensor, x_phys_currents
     )
-    return (T_quadratic + T_linear + ANALYTICAL_BIAS_TERM).unsqueeze(1)
+    return (torq_quadratic + torq_linear + ANALYTICAL_BIAS_TERM).unsqueeze(1)
 
-class PIRN_TorquePredictor(nn.Module):
-    def __init__(self, input_size, hidden_size, scaler_X, ipm_model, device):
-        super(PIRN_TorquePredictor, self).__init__()
+class NeuralTorquePredictor(nn.Module):
+    def __init__(self, input_size, hidden_size, scaler_X, machine, device):
+        super(NeuralTorquePredictor, self).__init__()
         self.device = device
         self.register_buffer("x_mean", torch.from_numpy(scaler_X.mean_).float().to(device))
         self.register_buffer("x_std", torch.from_numpy(scaler_X.scale_).float().to(device))
         
         # Register analytical matrices as buffers with exact names 
-        A_tensor, B_tensor = get_analytical_tensors(ipm_model, device)
+        A_tensor, B_tensor = get_analytical_tensors(machine, device)
         if A_tensor is not None and B_tensor is not None:
             self.register_buffer('A_TENSOR', A_tensor)
             self.register_buffer('B_TENSOR', B_tensor)
@@ -48,18 +48,18 @@ class PIRN_TorquePredictor(nn.Module):
         x_phys_currents = x_phys[:, 1:5]
         
         # Use the registered buffer names
-        T_analytical_out = T_analytical(x_phys_currents, self.A_TENSOR, self.B_TENSOR)
+        torq_analytical_out = torq_analytical(x_phys_currents, self.A_TENSOR, self.B_TENSOR)
         
-        T_NN_residual = self.fc1(x_normed)
+        torq_neural_residual = self.fc1(x_normed)
         
         # Apply GELU in the forward pass
-        T_NN_residual = self.gelu(T_NN_residual) 
+        torq_neural_residual = self.gelu(torq_neural_residual) 
         
-        T_NN_residual = self.fc2(T_NN_residual)
+        torq_neural_residual = self.fc2(torq_neural_residual)
         
-        return T_analytical_out + T_NN_residual
+        return torq_analytical_out + torq_neural_residual
 
-def load_pirn_model(weights_path, scaler_path, hidden_size, input_size, ipm_model, device):
+def load_neural_model(weights_path, scaler_path, hidden_size, input_size, machine, device):
     """
     Loads scaler and weights, initializes the model.
     Returns: (model, scaler)
@@ -69,26 +69,26 @@ def load_pirn_model(weights_path, scaler_path, hidden_size, input_size, ipm_mode
     scaler.mean_ = scaler_data["mean"]
     scaler.scale_ = scaler_data["scale"]
 
-    model = PIRN_TorquePredictor(input_size, hidden_size, scaler, ipm_model, device).to(device)
+    model = NeuralTorquePredictor(input_size, hidden_size, scaler, machine, device).to(device)
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
     
     return model, scaler
 
 #Inference wrapper
-def predict_torque_pirn(is_vec, omega, pirn_model, scaler, device):
+def predict_torque_neural(is_vec, omega, neural_model, scaler, device):
     """
     Evaluates the neural network for a single vector.
     Acts as a bridge between SciPy (NumPy) and PyTorch.
     """
-    if pirn_model is None or scaler is None:
-        raise ValueError("PIRN model/scaler not provided to prediction function.")
+    if neural_model is None or scaler is None:
+        raise ValueError("Neural model/scaler not provided to prediction function.")
 
     X_input = np.hstack(([omega], is_vec))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 
     with torch.no_grad():
-        T_predicted_tensor = pirn_model(X_tensor)
+        torq_predicted_tensor = neural_model(X_tensor)
 
-    return T_predicted_tensor.cpu().numpy().item() 
+    return torq_predicted_tensor.cpu().numpy().item() 

@@ -48,22 +48,22 @@ def plot_global_performance(df):
     if df is None: return
 
     rmse_analytical = np.sqrt(np.mean(df['Error_Analytical']**2))
-    rmse_pirn = np.sqrt(np.mean(df['Error_PIRN']**2))
+    rmse_neural = np.sqrt(np.mean(df['Error_Neural']**2))
     
     # FIG 1: Linearity
     fig1, axes1 = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    min_val = min(df['T_measured'].min(), df['T_model'].min())
-    max_val = max(df['T_measured'].max(), df['T_model'].max())
+    min_val = min(df['torq_meas'].min(), df['torq_model'].min())
+    max_val = max(df['torq_meas'].max(), df['torq_model'].max())
 
     def plot_fit(ax, y_pred, title, color):
-        ax.scatter(df['T_measured'], y_pred, alpha=0.5, s=10, c=color)
+        ax.scatter(df['torq_meas'], y_pred, alpha=0.5, s=10, c=color)
         ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
         ax.set_title(title)
         ax.set_xlabel('Measured Torque [Nm]')
         ax.grid(True, alpha=0.3)
 
-    plot_fit(axes1[0], df['T_model'], f'Analytical (RMSE={rmse_analytical:.3f})', 'blue')
-    plot_fit(axes1[1], df['T_pirn'], f'PIRN (RMSE={rmse_pirn:.3f})', 'green')
+    plot_fit(axes1[0], df['torq_model'], f'Analytical (RMSE={rmse_analytical:.3f})', 'blue')
+    plot_fit(axes1[1], df['torq_neural'], f'Neural (RMSE={rmse_neural:.3f})', 'green')
     axes1[0].set_ylabel('Predicted Torque [Nm]')
     plt.tight_layout()
 
@@ -73,9 +73,9 @@ def plot_global_performance(df):
     axes2[0].axhline(0, color='r', linestyle='--')
     axes2[0].set_title('Analytical Residuals')
     
-    axes2[1].scatter(df['omega'], df['Error_PIRN'], c=df['I_total'], cmap='viridis', s=15, alpha=0.7)
+    axes2[1].scatter(df['omega'], df['Error_Neural'], c=df['I_total'], cmap='viridis', s=15, alpha=0.7)
     axes2[1].axhline(0, color='r', linestyle='--')
-    axes2[1].set_title('PIRN Residuals')
+    axes2[1].set_title('Neural Residuals')
     
     fig2.colorbar(sc2, ax=axes2.ravel().tolist(), label='Current Magnitude [A]')
     fig2.suptitle("Error vs Speed (Colored by Current)")
@@ -84,11 +84,11 @@ def plot_global_performance(df):
     fig3, axes3 = plt.subplots(1, 2, figsize=(15, 5), sharey=True)
     v_lim = df['Error_Analytical'].abs().quantile(0.98)
     
-    sc3 = axes3[0].scatter(df['omega'], df['T_measured'], c=df['Error_Analytical'], cmap='seismic', s=30, vmin=-v_lim, vmax=v_lim)
+    sc3 = axes3[0].scatter(df['omega'], df['torq_meas'], c=df['Error_Analytical'], cmap='seismic', s=30, vmin=-v_lim, vmax=v_lim)
     axes3[0].set_title('Analytical Signed Error')
     
-    axes3[1].scatter(df['omega'], df['T_measured'], c=df['Error_PIRN'], cmap='seismic', s=30, vmin=-v_lim, vmax=v_lim)
-    axes3[1].set_title('PIRN Signed Error')
+    axes3[1].scatter(df['omega'], df['torq_meas'], c=df['Error_Neural'], cmap='seismic', s=30, vmin=-v_lim, vmax=v_lim)
+    axes3[1].set_title('Neural Signed Error')
     
     fig3.colorbar(sc3, ax=axes3.ravel().tolist(), label='Error Magnitude [Nm]')
     plt.show()
