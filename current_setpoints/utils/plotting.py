@@ -1,4 +1,4 @@
-# TODO: move it somewhere
+# TODO: (DONE) move it somewhere
  
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -27,16 +27,15 @@ def plot_grid_segments(data_obj):
     ax.set_xlabel('omega')
     ax.set_ylabel('torque')
     
-    for i_seg in range(1, data_obj.n_seg + 1):
-        seg_val = data_obj.i_to_seg[i_seg]
-        color = colors_map.get(int(seg_val), 'black')
-        
-        # Grab the new label, fallback to the number if it's not in our dictionary (like 8)
-        label_name = labels_map.get(int(seg_val), str(seg_val))
+    for seg_val in data_obj.unique_segments:
+        mask = (data_obj.segments ==seg_val)
+
+        color = colors_map.get(seg_val, 'black')
+        label_name = labels_map.get(seg_val, str(seg_val))
         
         ax.scatter(
-            data_obj.omega[data_obj.cols[i_seg]], 
-            data_obj.T[data_obj.rows[i_seg]], 
+            data_obj.omega_grid[mask], 
+            data_obj.torq_grid[mask], 
             s=10, c=color, marker='.', label=label_name
         )
         
@@ -47,6 +46,7 @@ def plot_grid_segments(data_obj):
     ax.legend(unique_legend.values(), unique_legend.keys(), loc='best')
     ax.grid(True)
     plt.show()
+
 def plot_global_performance(df):
     if df is None: return
 

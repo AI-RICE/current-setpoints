@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 
-# TODO: move somewhere else. is it going to be used for all data? if yes, move it to utils. if not, move it to ../../notebooks
+# TODO: (DONE) move somewhere else. is it going to be used for all data? if yes, move it to utils. if not, move it to ../../notebooks
 def load_aggregated_csv_data(file_path, col_map):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Aggregated CSV file not found at: {file_path}")

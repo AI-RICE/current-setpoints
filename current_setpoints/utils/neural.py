@@ -1,4 +1,4 @@
-# TODO: move it somewhere
+# TODO: (DONE) move it somewhere
 
 import numpy as np
 import torch

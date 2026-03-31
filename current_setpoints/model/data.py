@@ -1,5 +1,5 @@
 import numpy as np
-import sys
+import warnings
 
 
 class MachineData:
@@ -15,15 +15,13 @@ class MachineData:
         # 1. Check Dimensions
         self._check_dimensions()
 
-        # TODO: remove all the Matlab indexing artefacts
-        self.i_to_seg = {}
-        self.n_seg = 0
-        self.rows = {}
-        self.cols = {}
-        
-        if k_skip is not None:
+        # TODO: (DONE) remove all the Matlab indexing artefacts        
+        if k_skip is not None and k_skip > 1:
             self.select_k(k_skip)
-            
+
+        self.torq_grid, self.omega_grid = np.meshgrid(self.torq, self.omega, indexing='ij')    
+        self.unique_segments = np.unique(self.segments[~np.isnan(self.segments)]).astype(int)    
+
         self.compute_data()
 
     def _check_dimensions(self):
@@ -36,52 +34,28 @@ class MachineData:
         expected_shape = (n_torq, n_omega)
         
         if self.segments.shape != expected_shape:
-             print(f"Error: Segments shape {self.segments.shape} != expected {expected_shape}")
-             # TODO: never ever use this. use raise instead. this is horrible for tests, when it crashes Python instead of a desired error.
-             sys.exit()
+            # TODO: (DONE) never ever use this. use raise instead. this is horrible for tests, when it crashes Python instead of a desired error.
+            raise ValueError(f"Segments shape {self.segments.shape} != expected {expected_shape}")
              
         if self.isd1.shape != expected_shape:
-             print("Error: Current component dimensions do not match grid (torq x omega).")
-             sys.exit()
+            raise ValueError("Current component dimensions do not match grid (torq x omega).")
 
         # Sanity check on values (optional but recommended)
-        # TODO: should it be like this? Is negative speed ok?
+        # TODO: (DONE) should it be like this? Is negative speed ok? YES
         if np.any(self.omega < 0):
-             print("Warning: Negative speeds detected in grid data.")
+            warnings.warn(
+                "Negative speeds detected in grid data. Ensure reverse rotation is intended.", 
+                UserWarning
+            )
 
     def select_k(self, k_skip):
-        # TODO: why is this here?
-        if k_skip < 1: return
-        i_torq = np.arange(0, len(self.torq), k_skip)
-        i_omega = np.arange(0, len(self.omega), k_skip)
+        # TODO: (DONE) why is this here?
+        self.omega = self.omega[::k_skip]
+        self.torq = self.torq[::k_skip]
         
-        self.omega = self.omega[i_omega]
-        self.torq = self.torq[i_torq]
+        self.segments = self.segments[::k_skip, ::k_skip]
+        self.isd1 = self.isd1[::k_skip, ::k_skip]
+        self.isd3 = self.isd3[::k_skip, ::k_skip]
+        self.isq1 = self.isq1[::k_skip, ::k_skip]
+        self.isq3 = self.isq3[::k_skip, ::k_skip]
         
-        # Use np.ix_ for clean slicing of 2D arrays
-        mesh = np.ix_(i_torq, i_omega)
-        self.segments = self.segments[mesh]
-        self.isd1 = self.isd1[mesh]
-        self.isd3 = self.isd3[mesh]
-        self.isq1 = self.isq1[mesh]
-        self.isq3 = self.isq3[mesh]
-
-    def compute_data(self):
-        # Filter NaNs from unique segments check
-        segs = np.unique(self.segments[~np.isnan(self.segments)])
-        segs = np.sort(segs).astype(int)
-        
-        self.n_seg = len(segs)
-        self.i_to_seg = {i + 1: seg for i, seg in enumerate(segs)}
-        
-        for i_seg in range(1, self.n_seg + 1):
-            seg_val = self.i_to_seg[i_seg]
-            # Boolean mask for this segment
-            idx = (self.segments == seg_val)
-            row, col = np.where(idx)
-            
-            if len(row) == 0:
-                print(f"Warning: Segment {seg_val} exists but has no data points.")
-                
-            self.rows[i_seg] = row
-            self.cols[i_seg] = col
