@@ -12,13 +12,13 @@ from constraints import current_constraint, voltage_constraint
 # TODO: (DONE) rewrite this and the two functions above and merge them. they need to have the same arguments. all the other arguments should go into __init__
 
 class MotorOptimizer:
-    def __init__(self, model, default_opts=None):
+    def __init__(self, model, opts=None):
         """
         Initializes the optimizer with a specific torque model strategy.
         Applies a unified set of default solver options across all methods.
         """
         self.model = model
-        self.opts = default_opts or {"disp": False, "ftol": 1e-8, "maxiter": 500}
+        self.opts = opts if opts is not None else {"disp": False, "ftol": 1e-8, "maxiter": 500}
 
     def _get_base_constraints(self, transform):
         """
