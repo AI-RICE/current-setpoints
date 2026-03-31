@@ -12,10 +12,10 @@ class BaseMachine:
             [0, 0, 3, 0]
         ])
 
-    def set_max_pars(self, curr_max, volt_max, omg_max):        
+    def set_max_pars(self, curr_max, volt_max, omega_max):        
         self.curr_max = curr_max
         self.volt_max = volt_max
-        self.omg_max = omg_max
+        self.omega_max = omega_max
 
     def check_data(self):
         self._check_matrix(self.mat_A, False, 'mat_A')
