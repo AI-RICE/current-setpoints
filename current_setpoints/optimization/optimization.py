@@ -1,235 +1,100 @@
 import numpy as np
 from scipy.optimize import minimize
-import torch
+from constraints import current_constraint, voltage_constraint
 
-# ==========================================
-# 1. Constraints & Helpers
-# ==========================================
-
-def current_constraint(is_vec, IPM, W):
-    """Ensures current magnitude does not exceed Imax."""
-    current_max = np.abs(W.is_to_ia(is_vec))
-    return IPM.Imax - current_max
-
-def voltage_constraint(is_vec, IPM, W):
-    """Ensures voltage magnitude does not exceed Umax."""
-    u_phases = W.is_to_ua(is_vec)
-    voltage_max = np.max(np.abs(u_phases))
-    return IPM.Umax - voltage_max
-
-# TODO: do we want to have it here?
-def predict_torque_pirn(is_vec, omega, pirn_model, scaler, device):
-    """Evaluates the neural network for a single vector."""
-    if pirn_model is None or scaler is None:
-        raise ValueError("PIRN model/scaler not provided to prediction function.")
-
-    X_input = np.hstack(([omega], is_vec))
-    X_input_norm = scaler.transform(X_input.reshape(1, -1))
-    X_tensor = torch.from_numpy(X_input_norm).float().to(device)
-
-    with torch.no_grad():
-        T_predicted_tensor = pirn_model(X_tensor)
-
-    return T_predicted_tensor.cpu().numpy().item()
-
-# ==========================================
-# 2. Analytical Optimization (Physics Model)
-# ==========================================
-
-# TODO: normal name here and later everywhere
-def reg_maxTorque(IPM, W, is0=None, opts=None):
-    """
-    Finds the MAXIMUM torque possible at a given speed (Analytical).
-    Uses Multi-Start to ensure global maximum is found.
-    """
-    if opts is None: opts = {"disp": False, "ftol": 1e-8, "maxiter": 500}
-
-    def objective(is_vec):
-        # Minimize negative torque -> Maximize positive torque
-        return -(is_vec @ IPM.A @ is_vec + 2 * IPM.b @ is_vec)
-
-    constraints = [
-        {"type": "ineq", "fun": current_constraint, "args": (IPM, W)},
-        {"type": "ineq", "fun": voltage_constraint, "args": (IPM, W)},
-    ]
-
-    # TODO: lots of code is written by chatGPT. simplify it. double check.
-    # --- Multi-Start Candidates ---
-    candidates = []
-    # 1. Warm Start
-    if is0 is not None: candidates.append(is0)
-    # 2. MTPA Guess (High Q-axis)
-    g_mtpa = np.zeros(4); g_mtpa[1] = IPM.Imax * 0.95
-    candidates.append(g_mtpa)
-    # 3. Flux Weakening Guess (High Negative D-axis)
-    g_fw = np.zeros(4); g_fw[0] = -IPM.Imax * 0.9; g_fw[1] = IPM.Imax * 0.1
-    candidates.append(g_fw)
-
-    best_res = None
-    best_val = float('inf') # Minimizing negative torque
-
-    # TODO: this is far too complicated
-    for start_vec in candidates:
-        try:
-            res = minimize(objective, start_vec, method="SLSQP", constraints=constraints, options=opts)
-            if res.success and res.fun < best_val:
-                best_val = res.fun
-                best_res = res
-        except: continue
-
-    if best_res is not None:
-        return best_res.x, -best_res.fun, True
-
-    # TODO: this is far too complicated
-    # Fallback
-    res = minimize(objective, g_mtpa, method="SLSQP", constraints=constraints, options=opts)
-    return res.x, -res.fun, res.success
-
-# TODO: the same comments as above
-def reg_defTorque(IPM, tor, W, is0=None, opts=None):
-    """
-    Finds the Minimum Current vector for a TARGET torque (Analytical).
-    Uses Multi-Start to eliminate 'snow' noise.
-    """
-    if opts is None: opts = {"disp": False, "ftol": 1e-9, "maxiter": 500}
-    
-    def objective(is_vec):
-        return np.sum(is_vec**2)
-
-    def mycon_eq(is_vec):
-        torque_achieved = is_vec @ IPM.A @ is_vec + 2 * IPM.b @ is_vec
-        return torque_achieved - tor
-
-    constraints = [
-        {"type": "eq", "fun": mycon_eq},
-        {"type": "ineq", "fun": current_constraint, "args": (IPM, W)},
-        {"type": "ineq", "fun": voltage_constraint, "args": (IPM, W)},
-    ]
-
-    # --- Multi-Start Candidates ---
-    candidates = []
-    # 1. Warm Start
-    if is0 is not None: candidates.append(is0)
-    else: candidates.append(np.array([1.0, 0.0, 0.0, 0.0]))
-    # 2. MTPA Guess
-    g_mtpa = np.zeros(4); g_mtpa[1] = IPM.Imax * 0.9
-    candidates.append(g_mtpa)
-    # 3. Flux Weakening Guess
-    g_fw = np.zeros(4); g_fw[0] = -IPM.Imax * 0.8; g_fw[1] = IPM.Imax * 0.2
-    candidates.append(g_fw)
-
-    best_res = None
-    best_cost = float('inf')
-
-    for start_vec in candidates:
-        try:
-            res = minimize(objective, start_vec, method="SLSQP", constraints=constraints, options=opts)
-            if res.success and res.fun < best_cost:
-                best_cost = res.fun
-                best_res = res
-        except: continue
-
-    if best_res is not None:
-        return best_res.x, True
-    
-    # Fallback
-    fallback = is0 if is0 is not None else candidates[1]
-    res = minimize(objective, fallback, method="SLSQP", constraints=constraints, options=opts)
-    return res.x, res.success
-
-# ==========================================
-# 3. Neural Network Optimization (PIRN Model)
-# ==========================================
-
+# TODO: (DONE) do we want to have it here?
+# TODO: (DONE) normal name here and later everywhere
+# TODO: (DONE) lots of code is written by chatGPT. simplify it. double check.
+# TODO: (DONE) this is far too complicated
+# TODO: (DONE) this is far too complicated
+# TODO: (DONE) the same comments as above
 # TODO: when I think about it, it should be a class with two functions (they need to have the same API)
 # TODO: rewrite this and the two functions above and merge them. they need to have the same arguments. all the other arguments should go into __init__
-def reg_maxTorque_PIRN_Compensated(IPM, W, pirn_model, scaler, device, omega=0.0, is0=None, opts=None):
+
+def torque_optimizer(objective_fun, constraints, candidates, opts):
     """
-    Finds the MAXIMUM torque possible at a given speed (PIRN Model).
+    Core optimization engine handling multi-start evaluation and exception catching.
     """
-    if opts is None: opts = {"disp": False, "ftol": 1e-8, "maxiter": 500}
-
-    def objective(is_vec):
-        return -predict_torque_pirn(is_vec, omega, pirn_model, scaler, device)
-
-    constraints = [
-        {"type": "ineq", "fun": current_constraint, "args": (IPM, W)},
-        {"type": "ineq", "fun": voltage_constraint, "args": (IPM, W)},
-    ]
-
-    # --- Multi-Start Candidates ---
-    candidates = []
-    if is0 is not None: candidates.append(is0)
-    
-    g_mtpa = np.zeros(4); g_mtpa[1] = IPM.Imax
-    candidates.append(g_mtpa)
-    
-    g_fw = np.zeros(4); g_fw[0] = -IPM.Imax * 0.8; g_fw[1] = IPM.Imax * 0.2
-    candidates.append(g_fw)
-
     best_res = None
-    best_val = float('inf') 
+    best_val = float('inf')
 
     for start_vec in candidates:
         try:
-            res = minimize(objective, start_vec, method="SLSQP", constraints=constraints, options=opts)
+            res = minimize(
+                objective_fun, 
+                start_vec, 
+                method="SLSQP", 
+                constraints=constraints, 
+                options=opts
+            )
             if res.success and res.fun < best_val:
                 best_val = res.fun
                 best_res = res
-        except: continue
+        except Exception:
+            continue
 
     if best_res is not None:
-        return best_res.x, -best_res.fun, True
+        return best_res.x, best_res.fun, True
 
-    # Fallback
-    res = minimize(objective, g_mtpa, method="SLSQP", constraints=constraints, options=opts)
-    return res.x, -res.fun, res.success
+    # Fallback to the second candidate (usually MTPA) if all multi-starts fail
+    fallback_guess = candidates[1] if len(candidates) > 1 else candidates[0]
+    res = minimize(
+        objective_fun, 
+        fallback_guess, 
+        method="SLSQP", 
+        constraints=constraints, 
+        options=opts
+    )
+    return res.x, res.fun, res.success
 
 
-def reg_defTorque_PIRN_Compensated(IPM, tor, W, pirn_model, scaler, device, omega, is0=None, opts=None):
+def maximize_torque(model, W, is0=None, opts=None):
     """
-    Finds the Minimum Current vector for a TARGET torque (PIRN Model).
+    API Wrapper: Maximizes torque by minimizing negative torque.
     """
-    if opts is None: opts = {"disp": False, "ftol": 1e-9, "maxiter": 500}
+    if opts is None: 
+        opts = {"disp": False, "ftol": 1e-8, "maxiter": 500}
 
+    # Objective: Minimize negative torque
+    def objective(is_vec):
+        return -model.calculate_torque(is_vec)
+
+    constraints = [
+        {"type": "ineq", "fun": current_constraint, "args": (model.IPM, W)},
+        {"type": "ineq", "fun": voltage_constraint, "args": (model.IPM, W)},
+    ]
+
+    candidates = model.get_candidates(is0)
+    
+    best_x, best_val, success = torque_optimizer(objective, constraints, candidates, opts)
+    
+    # Return positive torque
+    return best_x, -best_val, success
+
+
+def minimize_current(model, target_torque, W, is0=None, opts=None):
+    """
+    API Wrapper: Finds the minimum current vector to hit a specific target torque.
+    """
+    if opts is None: 
+        opts = {"disp": False, "ftol": 1e-9, "maxiter": 500}
+
+    # Objective: Minimize sum of squared currents
     def objective(is_vec):
         return np.sum(is_vec**2)
 
+    # Equality Constraint: Achieved torque must equal target torque
     def eq_cons(is_vec):
-        return predict_torque_pirn(is_vec, omega, pirn_model, scaler, device) - tor
+        return model.calculate_torque(is_vec) - target_torque
 
     constraints = [
         {"type": "eq", "fun": eq_cons},
-        {"type": "ineq", "fun": current_constraint, "args": (IPM, W)},
-        {"type": "ineq", "fun": voltage_constraint, "args": (IPM, W)},
+        {"type": "ineq", "fun": current_constraint, "args": (model.IPM, W)},
+        {"type": "ineq", "fun": voltage_constraint, "args": (model.IPM, W)},
     ]
 
-    # --- Multi-Start Candidates ---
-    candidates = []
-    if is0 is not None: candidates.append(is0)
-    else: candidates.append(np.array([0.0, 1.0, 0.0, 0.0]))
-
-    g_mtpa = np.zeros(4); g_mtpa[1] = IPM.Imax * 0.9
-    candidates.append(g_mtpa)
-
-    g_fw = np.zeros(4); g_fw[0] = -IPM.Imax * 0.8; g_fw[1] = IPM.Imax * 0.2
-    candidates.append(g_fw)
-
-    best_res = None
-    best_cost = float('inf')
-
-    for start_vec in candidates:
-        try:
-            res = minimize(objective, start_vec, method="SLSQP", constraints=constraints, options=opts)
-            if res.success and res.fun < best_cost:
-                best_cost = res.fun
-                best_res = res
-        except: continue
-
-    if best_res is not None:
-        return best_res.x, True
+    candidates = model.get_candidates(is0)
     
-    # Fallback
-    fallback = is0 if is0 is not None else candidates[1]
-    res = minimize(objective, fallback, method="SLSQP", constraints=constraints, options=opts)
-    return res.x, res.success
+    best_x, _, success = torque_optimizer(objective, constraints, candidates, opts)
+    
+    return best_x, success

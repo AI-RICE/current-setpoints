@@ -74,3 +74,21 @@ def load_pirn_model(weights_path, scaler_path, hidden_size, input_size, ipm_mode
     model.eval()
     
     return model, scaler
+
+#Inference wrapper
+def predict_torque_pirn(is_vec, omega, pirn_model, scaler, device):
+    """
+    Evaluates the neural network for a single vector.
+    Acts as a bridge between SciPy (NumPy) and PyTorch.
+    """
+    if pirn_model is None or scaler is None:
+        raise ValueError("PIRN model/scaler not provided to prediction function.")
+
+    X_input = np.hstack(([omega], is_vec))
+    X_input_norm = scaler.transform(X_input.reshape(1, -1))
+    X_tensor = torch.from_numpy(X_input_norm).float().to(device)
+
+    with torch.no_grad():
+        T_predicted_tensor = pirn_model(X_tensor)
+
+    return T_predicted_tensor.cpu().numpy().item() 
