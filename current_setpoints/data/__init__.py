@@ -1,5 +1,11 @@
+"""
+Motor Machine Models Module
+
+This module provides the base and concrete implementations for different 
+motor machine topologies, including generic and IEEE-standardized models.
+"""
+
 # TODO: (DONE) finish
-# __init__.py
 from .machines import BaseMachine, GenericMachine, IEEEMachine2
 
 __all__ = [
