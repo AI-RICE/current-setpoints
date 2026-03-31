@@ -1,201 +1,201 @@
 import numpy as np
-from .data import MachineData
+from model.data import MachineData
 from .optimization import (
     reg_maxTorque, reg_defTorque, 
     reg_maxTorque_PIRN_Compensated, reg_defTorque_PIRN_Compensated
 )
 
-def grid_to_data(grid, k_skip):
-    T = grid['T']
-    omega = grid['c_mech_speed'] * grid['om_vec']
+def grid_to_data(grid, n_skip):
+    torq = grid['vec_torq']
+    omega = grid['const_mech_speed'] * grid['vec_omega']
     return MachineData(
-        T=T, omega=omega, segments=grid['clr'],
+        torq=torq, omega=omega, segments=grid['grid_segments'],
         isd1=grid['isd1'], isd3=grid['isd3'], isq1=grid['isq1'], isq3=grid['isq3'],
-        k_skip=k_skip
+        n_skip=n_skip
     )
 
-def _init_grid_arrays(n_T, n_om):
-    keys = ['isd1', 'isd3', 'isq1', 'isq3', 'mI', 'mU', 
-            'epsIdiff', 'epsUdiff', 'clr', 'mU13', 'U0rms', 'mU0']
-    grid = {k: np.full((n_T, n_om), np.nan) for k in keys}
-    grid['max_T'] = np.full((1, n_om), np.nan)
+def _init_grid_arrays(n_torq, n_omega):
+    keys = ['isd1', 'isd3', 'isq1', 'isq3', 'grid_curr_peak', 'grid_volt_peak', 
+            'grid_curr_ang_diff', 'grid_volt_ang_diff', 'grid_segments', 'grid_volt_raw_peak', 'grid_volt_0_rms', 'grid_volt_0_peak']
+    grid = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
+    grid['vec_torq_max'] = np.full((1, n_omega), np.nan)
     return grid
 
-def _fill_grid_point(grid, W, is_vec, k_T, k_om, IPM):
-    Im, eps_diff, _, Um, beta_diff, mU13, U0rms, mU0 = W.maximal_IU(is_vec)
-    peaks_I, peaks_U = W.number_of_peaks(is_vec, IPM)
+def _fill_grid_point(grid, transform, vec_curr_dq, idx_torq, idx_omega, machine):
+    curr_peak, curr_ang_diff, _, volt_peak, volt_ang_diff, volt_raw_peak, volt_0_rms, volt_0_peak = transform.get_max_vals(vec_curr_dq)
+    n_curr_peaks, n_volt_peaks = transform.count_peaks(vec_curr_dq, machine)
     
-    grid['isd1'][k_T, k_om] = is_vec[0]
-    grid['isq1'][k_T, k_om] = is_vec[1]
-    grid['isd3'][k_T, k_om] = is_vec[2]
-    grid['isq3'][k_T, k_om] = is_vec[3]
-    grid['mI'][k_T, k_om] = Im
-    grid['mU'][k_T, k_om] = Um
-    grid['epsIdiff'][k_T, k_om] = eps_diff
-    grid['epsUdiff'][k_T, k_om] = beta_diff
-    grid['clr'][k_T, k_om] = 3 * peaks_U + peaks_I
+    grid['isd1'][idx_torq, idx_omega] = vec_curr_dq[0]
+    grid['isq1'][idx_torq, idx_omega] = vec_curr_dq[1]
+    grid['isd3'][idx_torq, idx_omega] = vec_curr_dq[2]
+    grid['isq3'][idx_torq, idx_omega] = vec_curr_dq[3]
+    grid['grid_curr_peak'][idx_torq, idx_omega] = curr_peak
+    grid['grid_volt_peak'][idx_torq, idx_omega] = volt_peak
+    grid['grid_curr_ang_diff'][idx_torq, idx_omega] = curr_ang_diff
+    grid['grid_volt_ang_diff'][idx_torq, idx_omega] = volt_ang_diff
+    grid['grid_segments'][idx_torq, idx_omega] = 3 * n_volt_peaks + n_curr_peaks
 
 # --- BASELINE GRID CALCULATION ---
 # TODO: this is an amazing example why to unify reg_maxTorque and reg_maxTorque_PIRN_compensated into a class.
 # TODO: functions like grid_calc and grid_calc_Compensated should never appear, there should be only one function, which takes the class as an argument
-def grid_calc(IPM, W, calc_opt):
+def grid_calc(machine, transform, dict_opts):
     print("Starting Baseline Grid Calculation...")
-    W.change_om(0)
-    _, max_T_global, _ = reg_maxTorque(IPM, W, is0=None, opts=calc_opt['opts'])    
+    transform.set_omega(0)
+    _, torq_max_global, _ = reg_maxTorque(machine, transform, vec_curr_dq_guess=None, opts=dict_opts['opts'])    
     
     grid = {}
-    grid['c_mech_speed'] = 30 / (np.pi * IPM.pp)    
-    grid['T'] = np.linspace(calc_opt['min_T'], max_T_global, calc_opt['n_T'])
-    grid['om_vec'] = np.linspace(
-        calc_opt['min_om'] / grid['c_mech_speed'], 
-        IPM.nmax / grid['c_mech_speed'], 
-        calc_opt['n_om']
+    grid['const_mech_speed'] = 30 / (np.pi * machine.pp)    
+    grid['vec_torq'] = np.linspace(dict_opts['torq_min'], torq_max_global, dict_opts['n_torq'])
+    grid['vec_omega'] = np.linspace(
+        dict_opts['omega_min'] / grid['const_mech_speed'], 
+        machine.nmax / grid['const_mech_speed'], 
+        dict_opts['n_omega']
     )
     
-    n_T, n_om = calc_opt['n_T'], calc_opt['n_om']
-    grid.update(_init_grid_arrays(n_T, n_om))
+    n_torq, n_omega = dict_opts['n_torq'], dict_opts['n_omega']
+    grid.update(_init_grid_arrays(n_torq, n_omega))
 
-    for k_om in range(n_om):
-        omega_val = grid['om_vec'][k_om]
-        print(f"Calculating: Omega step {k_om + 1}/{n_om} ({omega_val * grid['c_mech_speed']:.1f} RPM)") 
+    for idx_omega in range(n_omega):
+        omega_target = grid['vec_omega'][idx_omega]
+        print(f"Calculating: Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)") 
         
-        W.change_om(omega_val)
+        transform.set_omega(omega_target)
         
         # 1. Find Max Torque (Ceiling)
         # The optimization function now handles multi-start internally
-        _, grid['max_T'][0, k_om], _ = reg_maxTorque(IPM, W, is0=None, opts=calc_opt['opts'])
+        _, grid['vec_torq_max'][0, idx_omega], _ = reg_maxTorque(machine, transform, vec_curr_dq_guess=None, opts=dict_opts['opts'])
         
         # Initialize warm start variable
-        is_vec = np.array([1.0, 0.0, 0.0, 0.0])
+        vec_curr_dq = np.array([1.0, 0.0, 0.0, 0.0])
 
-        for k_T in range(n_T):
-            torque_val = grid['T'][k_T]
+        for idx_torq in range(n_torq):
+            torq_target = grid['vec_torq'][idx_torq]
             
             # Stop if the requested torque is physically impossible
-            if torque_val > grid['max_T'][0, k_om] or torque_val > max_T_global:
+            if torq_target > grid['vec_torq_max'][0, idx_omega] or torq_target > torq_max_global:
                 break
                 
             # 2. Find Optimal Vector
-            # We pass 'is_vec' (result from previous torque step) as the primary guess.
+            # We pass 'vec_curr_dq' (result from previous torque step) as the primary guess.
             # If it fails, reg_defTorque will automatically try MTPA and Flux-Weakening guesses.
-            is_vec, success = reg_defTorque(IPM, torque_val, W, is0=is_vec, opts=calc_opt['opts'])
+            vec_curr_dq, success = reg_defTorque(machine, torq_target, transform, vec_curr_dq_guess=vec_curr_dq, opts=dict_opts['opts'])
             
             if success:
-                _fill_grid_point(grid, W, is_vec, k_T, k_om, IPM)
+                _fill_grid_point(grid, transform, vec_curr_dq, idx_torq, idx_omega, machine)
             
     print("Baseline Grid Calculation Complete.")
     return grid
 
 # --- COMPENSATED (PIRN) GRID CALCULATION ---
-def grid_calc_Compensated(IPM, W, calc_opt, pirn_model, scaler, device):
+def grid_calc_Compensated(machine, transform, dict_opts, pirn_model, scaler, device):
     print("Starting Compensated (PIRN) Grid Calculation...")
-    W.change_om(0)
-    _, max_T_analytical, _ = reg_maxTorque(IPM, W, is0=None, opts=calc_opt['opts'])
+    transform.set_omega(0)
+    _, torq_max_analytical, _ = reg_maxTorque(machine, transform, vec_curr_dq_guess=None, opts=dict_opts['opts'])
     
     grid = {}
-    grid['c_mech_speed'] = 30 / (np.pi * IPM.pp)     
-    grid['T'] = np.linspace(calc_opt['min_T'], max_T_analytical, calc_opt['n_T'])
-    grid['om_vec'] = np.linspace(
-        calc_opt['min_om'] / grid['c_mech_speed'], 
-        IPM.nmax / grid['c_mech_speed'], 
-        calc_opt['n_om']
+    grid['const_mech_speed'] = 30 / (np.pi * machine.pp)     
+    grid['vec_torq'] = np.linspace(dict_opts['torq_min'], torq_max_analytical, dict_opts['n_torq'])
+    grid['vec_omega'] = np.linspace(
+        dict_opts['omega_min'] / grid['const_mech_speed'], 
+        machine.nmax / grid['const_mech_speed'], 
+        dict_opts['n_omega']
     )
     
-    n_T, n_om = calc_opt['n_T'], calc_opt['n_om']
-    grid.update(_init_grid_arrays(n_T, n_om))
+    n_torq, n_omega = dict_opts['n_torq'], dict_opts['n_omega']
+    grid.update(_init_grid_arrays(n_torq, n_omega))
 
-    for k_om in range(n_om):
-        omega_val = grid['om_vec'][k_om]
-        print(f"Calculating (PIRN): Omega step {k_om + 1}/{n_om} ({omega_val * grid['c_mech_speed']:.1f} RPM)")
+    for idx_omega in range(n_omega):
+        omega_target = grid['vec_omega'][idx_omega]
+        print(f"Calculating (PIRN): Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)")
         
-        W.change_om(omega_val)
+        transform.set_omega(omega_target)
 
         # 1. Find Max Torque
-        _, local_max_T, _ = reg_maxTorque_PIRN_Compensated(
-            IPM, W, pirn_model, scaler, device, omega_val, is0=None, opts=calc_opt['opts']
+        _, torq_max_local, _ = reg_maxTorque_PIRN_Compensated(
+            machine, transform, pirn_model, scaler, device, omega_target, vec_curr_dq_guess=None, opts=dict_opts['opts']
         )
-        grid['max_T'][0, k_om] = local_max_T
+        grid['vec_torq_max'][0, idx_omega] = torq_max_local
         
         # Initialize warm start
-        previous_is_vec = None
+        vec_curr_dq_prev = None
 
-        for k_T in range(n_T):
-            torque_val = grid['T'][k_T]
+        for idx_torq in range(n_torq):
+            torq_target = grid['vec_torq'][idx_torq]
             
-            if torque_val > local_max_T: 
+            if torq_target > torq_max_local: 
                 continue 
 
             # Use previous result as primary guess
-            is0_guess = previous_is_vec 
+            vec_curr_dq_guess = vec_curr_dq_prev 
             
             # 2. Find Optimal Vector
             # The optimization function handles 3-candidate retry logic internally.
-            is_vec_attempt, exitflag = reg_defTorque_PIRN_Compensated(
-                IPM, torque_val, W, pirn_model, scaler, device, omega_val, is0=is0_guess, opts=calc_opt['opts']
+            vec_curr_dq_attempt, success = reg_defTorque_PIRN_Compensated(
+                machine, torq_target, transform, pirn_model, scaler, device, omega_target, vec_curr_dq_guess=vec_curr_dq_guess, opts=dict_opts['opts']
             )
             
-            if exitflag:
-                previous_is_vec = is_vec_attempt
-                _fill_grid_point(grid, W, is_vec_attempt, k_T, k_om, IPM)
+            if success:
+                vec_curr_dq_prev = vec_curr_dq_attempt
+                _fill_grid_point(grid, transform, vec_curr_dq_attempt, idx_torq, idx_omega, machine)
 
     print("Compensated Grid Calculation Complete.")
     return grid
 
 
-def grid_calc_Recalculated(IPM, W, calc_opt, pirn_model, scaler, device, corr_grid):
+def grid_calc_Recalculated(machine, transform, dict_opts, pirn_model, scaler, device, dict_grid_corr):
     print("Starting Recalculated Grid Calculation (Stateless / Always Baseline)...")
     
-    n_T = len(corr_grid['T'])
-    n_om = len(corr_grid['om_vec'])
+    n_torq = len(dict_grid_corr['vec_torq'])
+    n_omega = len(dict_grid_corr['vec_omega'])
     
     grid = {}
-    grid['c_mech_speed'] = corr_grid['c_mech_speed']
-    grid['T'] = corr_grid['T']
-    grid['om_vec'] = corr_grid['om_vec']
-    grid.update(_init_grid_arrays(n_T, n_om))
+    grid['const_mech_speed'] = dict_grid_corr['const_mech_speed']
+    grid['vec_torq'] = dict_grid_corr['vec_torq']
+    grid['vec_omega'] = dict_grid_corr['vec_omega']
+    grid.update(_init_grid_arrays(n_torq, n_omega))
     
-    T_targets = corr_grid['T_pirn_matrix']
+    grid_torq_targets = dict_grid_corr['grid_torq_pirn']
 
-    for k_om in range(n_om):
-        omega_val = grid['om_vec'][k_om]
-        print(f"Recalculating: Omega step {k_om + 1}/{n_om}")
+    for idx_omega in range(n_omega):
+        omega_target = grid['vec_omega'][idx_omega]
+        print(f"Recalculating: Omega step {idx_omega + 1}/{n_omega}")
         
-        W.change_om(omega_val)
+        transform.set_omega(omega_target)
 
         # 1. Find Physical Max Torque ceiling
-        _, local_max_T, _ = reg_maxTorque_PIRN_Compensated(
-            IPM, W, pirn_model, scaler, device, omega_val, is0=None, opts=calc_opt['opts']
+        _, torq_max_local, _ = reg_maxTorque_PIRN_Compensated(
+            machine, transform, pirn_model, scaler, device, omega_target, vec_curr_dq_guess=None, opts=dict_opts['opts']
         )
-        grid['max_T'][0, k_om] = local_max_T
+        grid['vec_torq_max'][0, idx_omega] = torq_max_local
         
-        # Note: We REMOVED 'previous_is_vec' entirely.
+        # Note: We REMOVED 'vec_curr_dq_prev' entirely.
 
-        for k_T in range(n_T):
-            torque_val = T_targets[k_T, k_om]
+        for idx_torq in range(n_torq):
+            torq_target = grid_torq_targets[idx_torq, idx_omega]
             
             # 2. ALWAYS Start from Baseline
-            is_base = np.array([
-                corr_grid['isd1'][k_T, k_om], corr_grid['isq1'][k_T, k_om],
-                corr_grid['isd3'][k_T, k_om], corr_grid['isq3'][k_T, k_om]
+            vec_curr_dq_base = np.array([
+                dict_grid_corr['isd1'][idx_torq, idx_omega], dict_grid_corr['isq1'][idx_torq, idx_omega],
+                dict_grid_corr['isd3'][idx_torq, idx_omega], dict_grid_corr['isq3'][idx_torq, idx_omega]
             ])
             
-            if np.isnan(torque_val) or np.isnan(is_base[0]) or torque_val > local_max_T: 
+            if np.isnan(torq_target) or np.isnan(vec_curr_dq_base[0]) or torq_target > torq_max_local: 
                 continue 
 
             # 3. Optimization
-            # We strictly use 'is_base' as the guess (is0)
-            is_opt, exitflag = reg_defTorque_PIRN_Compensated(
-                IPM, torque_val, W, pirn_model, scaler, device, omega_val, is0=is_base, opts=calc_opt['opts']
+            # We strictly use 'vec_curr_dq_base' as the guess (vec_curr_dq_guess)
+            vec_curr_dq_opt, success = reg_defTorque_PIRN_Compensated(
+                machine, torq_target, transform, pirn_model, scaler, device, omega_target, vec_curr_dq_guess=vec_curr_dq_base, opts=dict_opts['opts']
             )
             
             # 4. Simple Safety Check
             # If optimization fails, we revert to baseline values (Safety)
-            if not exitflag:
-                final_is = is_base
+            if not success:
+                vec_curr_dq_final = vec_curr_dq_base
             else:
-                final_is = is_opt
+                vec_curr_dq_final = vec_curr_dq_opt
 
-            _fill_grid_point(grid, W, final_is, k_T, k_om, IPM)
+            _fill_grid_point(grid, transform, vec_curr_dq_final, idx_torq, idx_omega, machine)
 
     print("Recalculated Grid Calculation Complete.")
     return grid

@@ -1,9 +1,6 @@
-# TODO: (DONE) move it somewhere
- 
+# TODO: (DONE) move it somewhere 
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
-
 
 
 def plot_grid_segments(data_obj):
@@ -28,7 +25,7 @@ def plot_grid_segments(data_obj):
     ax.set_ylabel('torque')
     
     for seg_val in data_obj.unique_segments:
-        mask = (data_obj.segments ==seg_val)
+        mask = (data_obj.segments == seg_val)
 
         color = colors_map.get(seg_val, 'black')
         label_name = labels_map.get(seg_val, str(seg_val))
