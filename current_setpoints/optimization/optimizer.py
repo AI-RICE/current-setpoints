@@ -80,6 +80,7 @@ class MotorOptimizer:
         best_val = float("inf")
 
         for vec_start in candidates:
+            # TODO: delete
             try:
                 res = minimize(
                     objective_fun,
