@@ -6,6 +6,7 @@ class Transform:
     """
     Handles reference frame transformations (DQ to Phase) and voltage/current
     calculations for multiphase machines, including zero-sequence injection.
+    Supports dynamic flux map updates.
     """
 
     def __init__(
@@ -15,11 +16,12 @@ class Transform:
         Initializes the transform instance with machine parameters and resolution.
 
         Args:
-            machine: Object containing n_phases, R_stat, L_stat, and flux_volt.
+            machine: Object containing n_phases, R_stat, L_stat, flux_volt, and update_state.
             omega: Initial electrical speed in rad/s.
             add_volt_0: Boolean flag to enable zero-sequence (SVPWM) voltage injection.
             n_theta: Angular resolution for phase mapping.
         """
+        self.machine: MachineProtocol = machine  # Store reference for dynamic updates
         self.n_phases: int = machine.n_phases
         self.add_volt_0: bool = add_volt_0
 
@@ -30,21 +32,18 @@ class Transform:
         n_theta = round(n_theta / (2 * machine.n_phases)) * 2 * machine.n_phases
         self.vec_theta: np.ndarray = np.linspace(0, 2 * np.pi, n_theta + 1)
 
-        self.compute_matrices_init(machine)
+        self.compute_matrices_init()
         self.compute_matrices(omega)
 
-    def compute_matrices_init(self, machine: Any) -> None:
+    def compute_matrices_init(self) -> None:
         """
         Computes speed-independent matrices for the DQ-to-Phase transformation.
-
-        Args:
-            machine: Machine object containing physical constant matrices.
+        Note: BEMF is no longer precomputed here because flux is dynamic.
         """
-        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = machine.R_stat @ np.eye(4)
+        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat @ np.eye(4)
         self.mat_curr_dq_to_volt_dq_omega: np.ndarray = (
-            machine.mat_crossc @ machine.L_stat
+            self.machine.mat_crossc @ self.machine.L_stat
         )
-        self.vec_volt_bemf_dq_omega: np.ndarray = machine.mat_crossc @ machine.flux_volt
 
         cos_theta = np.cos(self.vec_theta)
         sin_theta = np.sin(self.vec_theta)
@@ -56,7 +55,8 @@ class Transform:
 
     def compute_matrices(self, omega: float) -> None:
         """
-        Updates speed-dependent matrices (impedance and Back-EMF).
+        Updates speed-dependent impedance matrices.
+        Note: BEMF is calculated on the fly in the getters.
 
         Args:
             omega: Electrical speed in rad/s.
@@ -66,11 +66,9 @@ class Transform:
             self.mat_curr_dq_to_volt_dq_fixed
             + omega * self.mat_curr_dq_to_volt_dq_omega
         )
-        self.vec_volt_bemf_dq: np.ndarray = omega * self.vec_volt_bemf_dq_omega
         self.mat_curr_dq_to_volt_ph: np.ndarray = (
             self.mat_dq_to_ph @ self.mat_curr_dq_to_volt_dq
         )
-        self.vec_volt_bemf_ph: np.ndarray = self.mat_dq_to_ph @ self.vec_volt_bemf_dq
 
     def set_omega(self, omega: float) -> None:
         """
@@ -99,7 +97,7 @@ class Transform:
 
     def get_volt_dq(self, vec_curr_dq: np.ndarray) -> np.ndarray:
         """
-        Calculates the DQ voltage vector based on current and speed.
+        Calculates the DQ voltage vector based on current, speed, and dynamic flux.
 
         Args:
             vec_curr_dq: 4-element current vector.
@@ -107,7 +105,14 @@ class Transform:
         Returns:
             np.ndarray: 4-element voltage vector.
         """
-        return self.mat_curr_dq_to_volt_dq @ vec_curr_dq + self.vec_volt_bemf_dq
+        # 1. Update machine state dynamically to fetch correct flux for this operating point
+        self.machine.update_state(self.omega, vec_curr_dq)
+        
+        # 2. Calculate dynamic BEMF
+        vec_volt_bemf_dq = self.omega * (self.machine.mat_crossc @ self.machine.flux_volt)
+        
+        # 3. Calculate total voltage
+        return self.mat_curr_dq_to_volt_dq @ vec_curr_dq + vec_volt_bemf_dq
 
     def get_volt_ph(
         self, vec_curr_dq: np.ndarray
@@ -127,7 +132,16 @@ class Transform:
                 f"Input current vector shape mismatch: {vec_curr_dq.shape}"
             )
 
-        vec_volt_raw = self.mat_curr_dq_to_volt_ph @ vec_curr_dq + self.vec_volt_bemf_ph
+        # 1. Update machine state dynamically to fetch correct flux
+        self.machine.update_state(self.omega, vec_curr_dq)
+        
+        # 2. Calculate dynamic BEMF in DQ, then transform to Phase
+        vec_volt_bemf_dq = self.omega * (self.machine.mat_crossc @ self.machine.flux_volt)
+        vec_volt_bemf_ph = self.mat_dq_to_ph @ vec_volt_bemf_dq
+
+        # 3. Calculate raw phase voltage
+        vec_volt_raw = self.mat_curr_dq_to_volt_ph @ vec_curr_dq + vec_volt_bemf_ph
+        
         if self.add_volt_0:
             mat_volt_res = vec_volt_raw[:-1].reshape(-1, self.n_phases)
             vec_volt_0 = -0.5 * (

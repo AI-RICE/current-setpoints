@@ -114,7 +114,10 @@ class MotorOptimizer:
         candidates = self.model.get_candidates(vec_curr_guess)
 
         def objective(vec_curr_dq: np.ndarray) -> float:
-            # Negated because minimize() finds the minimum
+            # 1. Update dynamic flux state for the optimizer's current guess
+            self.model.machine.update_state(transform.omega, vec_curr_dq)
+            
+            # 2. Negated because minimize() finds the minimum
             return -self.model.calculate_torque(vec_curr_dq)
 
         vec_curr_dq_best, best_val, success = self._run_optimization(
@@ -149,12 +152,16 @@ class MotorOptimizer:
 
         # Append equality constraint: produced torque must equal target torque
         def eq_cons(vec_curr_dq: np.ndarray) -> float:
+            # 1. Update dynamic flux state for the optimizer's current guess
+            self.model.machine.update_state(transform.omega, vec_curr_dq)
+            
+            # 2. Evaluate torque discrepancy
             return self.model.calculate_torque(vec_curr_dq) - torq_target
 
         constraints.append({"type": "eq", "fun": eq_cons})
 
         def objective(vec_curr_dq: np.ndarray) -> float:
-            # Minimize squared magnitude of current vector
+            # Minimize squared magnitude of current vector (no flux needed here)
             return np.sum(vec_curr_dq**2)
 
         vec_curr_dq_best, _, success = self._run_optimization(

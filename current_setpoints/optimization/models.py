@@ -15,9 +15,19 @@ class BaseTorqueModel(ABC):
         Initializes the torque model with machine parameters.
 
         Args:
-            machine: Object containing motor constants (e.g., A matrix, b vector, curr_max).
+            machine: Object containing motor constants and dynamic state logic.
         """
         self.machine = machine
+        self.omega: float = 0.0  # Speed must be tracked for dynamic flux updates
+
+    def set_omega(self, omega: float) -> None:
+        """
+        Syncs the model with the current electrical speed of the optimization loop.
+
+        Args:
+            omega: Electrical speed in rad/s.
+        """
+        self.omega = omega
 
     @abstractmethod
     def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
@@ -73,6 +83,7 @@ class ModelAnalytical(BaseTorqueModel):
     """
     Classic physics-based torque model.
     Uses the matrix form: T = i^T Ai + 2bi.
+    Supports dynamic flux maps by updating the machine state before calculation.
     """
 
     def __init__(self, machine: Any) -> None:
@@ -81,7 +92,11 @@ class ModelAnalytical(BaseTorqueModel):
     def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
         """
         Computes torque using the machine's analytical quadratic form.
+        Dynamically updates the machine's flux state before evaluation.
         """
+        # CRITICAL: Fetch the correct dynamic flux for this specific current & speed
+        self.machine.update_state(self.omega, vec_curr_dq)
+        
         return (
             vec_curr_dq @ self.machine.mat_A @ vec_curr_dq
             + 2 * self.machine.vec_b @ vec_curr_dq
@@ -96,7 +111,7 @@ class ModelNeural(BaseTorqueModel):
     """
 
     def __init__(
-        self, machine: Any, neural_model: Any, scaler: Any, device: Any, omega: float
+        self, machine: Any, neural_model: Any, scaler: Any, device: Any
     ) -> None:
         """
         Initializes the neural model with the trained network and scaling logic.
@@ -106,13 +121,11 @@ class ModelNeural(BaseTorqueModel):
             neural_model: Loaded PyTorch/TensorFlow model.
             scaler: Input/Output scaler (e.g., StandardScaler) for normalization.
             device: Computation device (e.g., 'cpu' or 'cuda').
-            omega: Electrical speed in rad/s.
         """
         super().__init__(machine)
         self.neural_model = neural_model
         self.scaler = scaler
         self.device = device
-        self.omega = omega
 
     def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
         """
@@ -125,4 +138,5 @@ class ModelNeural(BaseTorqueModel):
             neural_model=self.neural_model,
             scaler=self.scaler,
             device=self.device,
+            machine=self.machine,
         )

@@ -1,5 +1,6 @@
 import numpy as np
-from typing import List, Union
+from typing import Union, List
+from .parameters import FluxValues
 
 
 class BaseMachine:
@@ -57,11 +58,6 @@ class BaseMachine:
     def _check_matrix(self, mat: np.ndarray, allow_scalar: bool, name: str) -> None:
         """
         Internal helper to verify square matrix dimensions.
-
-        Args:
-            mat: Matrix to check.
-            allow_scalar: If True, skips the n_phases-1 size check.
-            name: Display name of the matrix for error messages.
         """
         if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:
             raise ValueError(f"Matrix {name} must be square.")
@@ -73,10 +69,6 @@ class BaseMachine:
     def _check_vector(self, vec: np.ndarray, name: str) -> None:
         """
         Internal helper to verify vector dimensions.
-
-        Args:
-            vec: Vector to check.
-            name: Display name of the vector for error messages.
         """
         if vec.ndim > 1 and vec.shape[1] != 1:
             raise ValueError(f"Vector {name} must be a column vector.")
@@ -89,7 +81,7 @@ class BaseMachine:
 class GenericMachine(BaseMachine):
     """
     Implementation of a machine model based on resistance, inductance,
-    and flux linkage vectors.
+    and a dynamic/constant flux provider.
     """
 
     def __init__(
@@ -98,37 +90,57 @@ class GenericMachine(BaseMachine):
         n_ppairs: int,
         R_stat_vec: Union[np.ndarray, List[float]],
         L_stat: np.ndarray,
-        flux_volt_vec: Union[np.ndarray, List[float]],
-        flux_torq_vec: Union[np.ndarray, List[float]],
+        machine_name: str,
+        flux_values: FluxValues,
     ) -> None:
         """
-        Initializes the generic machine with specific electrical parameters.
+        Initializes the generic machine with specific electrical parameters and a flux provider.
 
         Args:
             n_phases: Number of physical phases.
             n_ppairs: Number of pole pairs.
             R_stat_vec: Stator resistance values for each harmonic subspace.
             L_stat: Stator inductance matrix.
-            flux_volt_vec: Flux linkage vector for voltage calculation (Back-EMF).
-            flux_torq_vec: Flux linkage vector used for torque calculation.
+            machine_name: String identifier for the flux provider to look up data.
+            flux_values: Dependency-injected provider for fetching flux.
         """
         super().__init__(n_phases, n_ppairs)
 
-        R_stat_vec = np.array(R_stat_vec).flatten()
-        flux_volt_vec = np.array(flux_volt_vec).flatten()
-        flux_torq_vec = np.array(flux_torq_vec).flatten()
-        L_stat = np.array(L_stat)
+        self.machine_name = machine_name
+        self.flux_values = flux_values
 
-        self.flux_volt: np.ndarray = flux_volt_vec
-        self.flux_torq: np.ndarray = flux_torq_vec
+        R_stat_vec = np.array(R_stat_vec).flatten()
         self.R_stat: np.ndarray = np.diag(R_stat_vec)
-        self.L_stat: np.ndarray = L_stat
+        self.L_stat: np.ndarray = np.array(L_stat)
         self.mat_A: np.ndarray = np.zeros((4, 4))
 
-        self.vec_b: np.ndarray = (self.n_phases * self.n_ppairs / 4) * (
+        # Placeholders to pass matrix checks before the first dynamic update
+        self.flux_volt: np.ndarray = np.zeros(self.n_phases - 1)
+        self.flux_torq: np.ndarray = np.zeros(self.n_phases - 1)
+        self.vec_b: np.ndarray = np.zeros(self.n_phases - 1)
+
+        # Populate the initial state using a zero current vector
+        dummy_vec_curr_dq = np.zeros(self.n_phases - 1)
+        self.update_state(omega=0.0, vec_curr_dq=dummy_vec_curr_dq)
+
+        self.check_data()
+
+    def update_state(self, omega: float, vec_curr_dq: np.ndarray) -> None:
+        """
+        Fetches updated flux values from the provider based on the current operating
+        point and recalculates the dynamic dependent vector (vec_b).
+
+        This MUST be called by your simulation/optimization loop whenever currents
+        or speed change.
+        """
+        self.flux_volt, self.flux_torq = self.flux_values.get_flux(
+            self.machine_name, omega, vec_curr_dq
+        )
+
+        # vec_b relies on flux_torq, so it updates whenever the operating point changes
+        self.vec_b = (self.n_phases * self.n_ppairs / 4) * (
             self.mat_crossc @ self.flux_torq
         )
-        self.check_data()
 
 
 class IEEEMachine2(GenericMachine):
@@ -136,9 +148,10 @@ class IEEEMachine2(GenericMachine):
     Specific 5-phase machine model based on standard IEEE benchmark data.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, flux_values: FluxValues) -> None:
         """
-        Initializes the IEEEMachine2 with hardcoded benchmark parameters.
+        Initializes the IEEEMachine2 with benchmark electrical parameters and connects
+        it to the centralized flux provider.
         """
         n_phases = 5
         n_ppairs = 8
@@ -154,14 +167,12 @@ class IEEEMachine2(GenericMachine):
             )
             * 1e-3
         )
-        flux_volt_vec = [0.0115, 0.0018, 0, 0]
-        flux_torq_vec = [
-            1.12810358e-02,
-            -6.28421072e-04,
-            1.55053034e-04,
-            -4.81016476e-05,
-        ]
 
         super().__init__(
-            n_phases, n_ppairs, R_stat_vec, L_stat, flux_volt_vec, flux_torq_vec
+            n_phases=n_phases,
+            n_ppairs=n_ppairs,
+            R_stat_vec=R_stat_vec,
+            L_stat=L_stat,
+            machine_name="IEEEMachine2",
+            flux_values=flux_values,
         )

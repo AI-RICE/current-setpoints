@@ -6,5 +6,6 @@ motor machine topologies, including generic and IEEE-standardized models.
 """
 
 from .machines import BaseMachine, GenericMachine, IEEEMachine2
+from .parameters import FluxValues
 
-__all__ = ["BaseMachine", "GenericMachine", "IEEEMachine2"]
+__all__ = ["BaseMachine", "GenericMachine", "IEEEMachine2", "FluxValues"]

@@ -10,22 +10,22 @@ ANALYTICAL_BIAS_TERM: float = 0.0
 
 def get_analytical_tensors(
     machine: Any, device: torch.device
-) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+) -> Optional[torch.Tensor]:
     """
     Helper to convert IPM model matrices from a machine object to PyTorch tensors.
+    Note: B_tensor is no longer fetched here because it is dynamically updated.
 
     Args:
-        machine: Machine object containing 'A' and 'b' numpy matrices.
+        machine: Machine object containing 'mat_A' numpy matrix.
         device: The target torch device (CPU/CUDA).
 
     Returns:
-        Tuple: (A_tensor, b_tensor) if machine is provided, else (None, None).
+        torch.Tensor: A_tensor if machine is provided, else None.
     """
     if machine:
         A_tensor = torch.from_numpy(machine.mat_A).float().to(device)
-        b_tensor = torch.from_numpy(machine.vec_bb).float().to(device).unsqueeze(1)
-        return A_tensor, b_tensor
-    return None, None
+        return A_tensor
+    return None
 
 
 def torq_analytical(
@@ -37,7 +37,7 @@ def torq_analytical(
     Args:
         x_phys_currents: Batch of physical current vectors.
         A_tensor: Quadratic machine parameter tensor.
-        B_tensor: Linear machine parameter tensor.
+        B_tensor: Linear machine parameter tensor (dynamically updated).
 
     Returns:
         torch.Tensor: Calculated analytical torque component.
@@ -53,12 +53,12 @@ class NeuralTorquePredictor(nn.Module):
     """
     Physics-Informed Residual Network (PIRN) for torque prediction.
     Combines an analytical quadratic motor model with a neural residual.
+    Supports dynamic flux maps by accepting B_tensor at the forward pass.
     """
 
     x_mean: torch.Tensor
     x_std: torch.Tensor
     A_TENSOR: torch.Tensor
-    B_TENSOR: torch.Tensor
 
     def __init__(
         self,
@@ -69,7 +69,7 @@ class NeuralTorquePredictor(nn.Module):
         device: torch.device,
     ) -> None:
         """
-        Initializes the predictor, registering normalization parameters and machine tensors.
+        Initializes the predictor, registering normalization parameters and static tensors.
 
         Args:
             input_size: Number of input features.
@@ -87,11 +87,10 @@ class NeuralTorquePredictor(nn.Module):
             "x_std", torch.from_numpy(scaler_X.scale_).float().to(device)
         )
 
-        # Register analytical matrices as buffers with exact names
-        A_tensor, B_tensor = get_analytical_tensors(machine, device)
-        if A_tensor is not None and B_tensor is not None:
+        # Register ONLY the static analytical matrix (mat_A)
+        A_tensor = get_analytical_tensors(machine, device)
+        if A_tensor is not None:
             self.register_buffer("A_TENSOR", A_tensor)
-            self.register_buffer("B_TENSOR", B_tensor)
 
         self.fc1 = nn.Linear(input_size, hidden_size)
 
@@ -100,12 +99,13 @@ class NeuralTorquePredictor(nn.Module):
 
         self.fc2 = nn.Linear(hidden_size, 1)
 
-    def forward(self, x_normed: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_normed: torch.Tensor, B_tensor: torch.Tensor) -> torch.Tensor:
         """
         Forward pass: denormalizes inputs, calculates analytical torque, and adds neural residual.
 
         Args:
             x_normed: Normalized input tensor [omega, id1, iq1, id3, iq3].
+            B_tensor: Dynamic linear machine parameter tensor for the current operating point.
 
         Returns:
             torch.Tensor: Total predicted torque.
@@ -113,9 +113,9 @@ class NeuralTorquePredictor(nn.Module):
         x_phys = x_normed * self.x_std + self.x_mean
         x_phys_currents = x_phys[:, 1:5]
 
-        # Use the registered buffer names
+        # Calculate physics part using the dynamic B_tensor
         torq_analytical_out = torq_analytical(
-            x_phys_currents, self.A_TENSOR, self.B_TENSOR
+            x_phys_currents, self.A_TENSOR, B_tensor
         )
 
         torq_neural_residual = self.fc1(x_normed)
@@ -171,6 +171,7 @@ def predict_torque_neural(
     neural_model: NeuralTorquePredictor,
     scaler: StandardScaler,
     device: torch.device,
+    machine: Any,  # Added machine reference to fetch dynamic vec_b
 ) -> float:
     """
     Evaluates the neural network for a single vector.
@@ -182,6 +183,7 @@ def predict_torque_neural(
         neural_model: Initialized NeuralTorquePredictor.
         scaler: Fitted StandardScaler.
         device: Device for calculation.
+        machine: Machine object (updated dynamically) to fetch accurate vec_b.
 
     Returns:
         float: Predicted electromagnetic torque.
@@ -189,11 +191,17 @@ def predict_torque_neural(
     if neural_model is None or scaler is None:
         raise ValueError("Neural model/scaler not provided to prediction function.")
 
+    # 1. Prepare input vector
     X_input = np.hstack(([omega], vec_curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 
+    # 2. Grab the dynamically updated vec_b from the machine state
+    # (MotorOptimizer guarantees machine.update_state() was just called)
+    B_tensor = torch.from_numpy(machine.vec_b).float().to(device).unsqueeze(1)
+
+    # 3. Predict
     with torch.no_grad():
-        torq_predicted_tensor = neural_model(X_tensor)
+        torq_predicted_tensor = neural_model(X_tensor, B_tensor)
 
     return torq_predicted_tensor.cpu().numpy().item()
