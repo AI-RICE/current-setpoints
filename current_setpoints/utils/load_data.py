@@ -3,7 +3,6 @@ import pandas as pd
 from typing import Dict
 
 
-# TODO: (DONE) move somewhere else. is it going to be used for all data? if yes, move it to utils. if not, move it to ../../notebooks
 def load_aggregated_csv_data(file_path: str, col_map: Dict[str, str]) -> pd.DataFrame:
     """
     Loads, validates, and renames motor data from a CSV file.

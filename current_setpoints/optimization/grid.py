@@ -3,13 +3,13 @@ from typing import Dict, Any, Optional
 from model.data import MachineData
 
 
-def grid_to_data(grid: Dict[str, Any], n_skip: int) -> MachineData:
+def grid_to_data(grid: Dict[str, Any], k_skip: int) -> MachineData:
     """
     Converts a grid dictionary into a structured MachineData object.
 
     Args:
         grid: Dictionary containing optimization results and vectors.
-        n_skip: Number of initial samples to skip for training/processing.
+        k_skip: Number of initial samples to skip for training/processing.
 
     Returns:
         MachineData: Encapsulated motor data for training or analysis.
@@ -24,7 +24,7 @@ def grid_to_data(grid: Dict[str, Any], n_skip: int) -> MachineData:
         isd3=grid["isd3"],
         isq1=grid["isq1"],
         isq3=grid["isq3"],
-        n_skip=n_skip,
+        k_skip=k_skip,
     )
 
 
@@ -108,8 +108,6 @@ def _fill_grid_point(
     grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt_peaks + n_curr_peaks
 
 
-# TODO: (DONE) this is an amazing example why to unify reg_maxTorque and reg_maxTorque_PIRN_compensated into a class.
-# TODO: (DONE) functions like grid_calc and grid_calc_Compensated should never appear, there should be only one function, which takes the class as an argument
 def calculate_grid(
     optimizer: Any,
     transform: Any,
@@ -143,6 +141,9 @@ def calculate_grid(
     machine = optimizer.model.machine
     grid: Dict[str, Any] = {}
     grid["const_mech_speed"] = 30 / (np.pi * machine.n_ppairs)
+
+    torq_max_global: float = 0.0
+    grid_torq_targets: Any = None
 
     if mode == "standard":
         # Determine global torque scale at zero speed (Maximum capability)
@@ -196,6 +197,8 @@ def calculate_grid(
                     break
 
             else:  # recalculated
+                # Type-checker hint: We know it's not None if mode is 'recalculated'
+                assert dict_grid_corr is not None
                 torq_target = grid_torq_targets[idx_torq, idx_omega]
                 # Use baseline current as the warm-start guess
                 vec_curr_dq_guess = np.array(

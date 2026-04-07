@@ -1,8 +1,10 @@
 import numpy as np
-from typing import Any
+from model.transform import Transform 
+from utils._types import MachineProtocol 
 
-
-def current_constraint(vec_curr_dq: np.ndarray, machine: Any, transform: Any) -> float:
+def current_constraint(
+    vec_curr_dq: np.ndarray, machine: MachineProtocol, transform: Transform
+) -> float:
     """
     Ensures the peak physical phase current does not exceed the machine's maximum rating.
     In Scipy's SLSQP, a positive return value means the constraint is satisfied (val >= 0).
@@ -13,7 +15,7 @@ def current_constraint(vec_curr_dq: np.ndarray, machine: Any, transform: Any) ->
         transform: The Transform instance providing the DQ-to-Phase mapping.
 
     Returns:
-        np.ndarray: The margin between current limit and peak phase current.
+        float: The margin between current limit and peak phase current.
     """
     vec_curr_ph = transform.get_curr_ph(vec_curr_dq)
     curr_peak = np.max(np.abs(vec_curr_ph))
@@ -21,7 +23,9 @@ def current_constraint(vec_curr_dq: np.ndarray, machine: Any, transform: Any) ->
     return machine.curr_max - curr_peak
 
 
-def voltage_constraint(vec_curr_dq: np.ndarray, machine: Any, transform: Any) -> float:
+def voltage_constraint(
+    vec_curr_dq: np.ndarray, machine: MachineProtocol, transform: Transform
+) -> float:
     """
     Ensures the peak phase voltage (including zero-sequence injection if enabled)
     does not exceed the available DC-link/inverter voltage limit.

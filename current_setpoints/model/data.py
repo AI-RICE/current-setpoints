@@ -1,6 +1,6 @@
 import numpy as np
 import warnings
-from typing import Optional, Union, List, Any
+from typing import Optional, Union, List
 
 
 class MachineData:
@@ -44,7 +44,6 @@ class MachineData:
         # 1. Check Dimensions
         self._check_dimensions()
 
-        # TODO: (DONE) remove all the Matlab indexing artefacts
         if k_skip is not None and k_skip > 1:
             self.select_k(k_skip)
 
@@ -71,7 +70,6 @@ class MachineData:
         expected_shape = (n_torq, n_omega)
 
         if self.segments.shape != expected_shape:
-            # TODO: (DONE) never ever use this. use raise instead. this is horrible for tests, when it crashes Python instead of a desired error.
             raise ValueError(
                 f"Segments shape {self.segments.shape} != expected {expected_shape}"
             )
@@ -81,8 +79,6 @@ class MachineData:
                 "Current component dimensions do not match grid (torq x omega)."
             )
 
-        # Sanity check on values (optional but recommended)
-        # TODO: (DONE) should it be like this? Is negative speed ok? YES
         if np.any(self.omega < 0):
             warnings.warn(
                 "Negative speeds detected in grid data. Ensure reverse rotation is intended.",
@@ -96,7 +92,6 @@ class MachineData:
         Args:
             k_skip: The step size for slicing the arrays.
         """
-        # TODO: (DONE) why is this here?
         self.omega = self.omega[::k_skip]
         self.torq = self.torq[::k_skip]
 

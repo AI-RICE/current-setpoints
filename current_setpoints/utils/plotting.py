@@ -1,5 +1,5 @@
-# TODO: (DONE) move it somewhere
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 import numpy as np
 import pandas as pd
 from typing import Any, Optional
@@ -87,7 +87,7 @@ def plot_global_performance(df: Optional[pd.DataFrame]) -> None:
     min_val = min(df["torq_meas"].min(), df["torq_model"].min())
     max_val = max(df["torq_meas"].max(), df["torq_model"].max())
 
-    def plot_fit(ax: plt.Axes, y_pred: pd.Series, title: str, color: str) -> None:
+    def plot_fit(ax: Axes, y_pred: pd.Series, title: str, color: str) -> None:
         """Helper to plot predicted vs measured torque scatter."""
         ax.scatter(df["torq_meas"], y_pred, alpha=0.5, s=10, c=color)
         ax.plot([min_val, max_val], [min_val, max_val], "r--", lw=2)

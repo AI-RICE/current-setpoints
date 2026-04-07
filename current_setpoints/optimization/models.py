@@ -72,7 +72,7 @@ class BaseTorqueModel(ABC):
 class ModelAnalytical(BaseTorqueModel):
     """
     Classic physics-based torque model.
-    Uses the matrix form: $T = \mathbf{i}^T \mathbf{A} \mathbf{i} + 2\mathbf{b} \mathbf{i}$.
+    Uses the matrix form: T = i^T Ai + 2bi.
     """
 
     def __init__(self, machine: Any) -> None:

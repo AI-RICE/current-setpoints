@@ -7,8 +7,7 @@ from typing import Any, Tuple, Optional
 # Constants needed for analytical part inside NN
 ANALYTICAL_BIAS_TERM: float = 0.0
 
-#TODO: dat tam rovnou tridu misto any
-#TODO: the same error everywhere
+
 def get_analytical_tensors(
     machine: Any, device: torch.device
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
@@ -55,6 +54,11 @@ class NeuralTorquePredictor(nn.Module):
     Physics-Informed Residual Network (PIRN) for torque prediction.
     Combines an analytical quadratic motor model with a neural residual.
     """
+
+    x_mean: torch.Tensor
+    x_std: torch.Tensor
+    A_TENSOR: torch.Tensor
+    B_TENSOR: torch.Tensor
 
     def __init__(
         self,
@@ -162,7 +166,7 @@ def load_neural_model(
 
 # Inference wrapper
 def predict_torque_neural(
-    is_vec: np.ndarray,
+    vec_curr_dq: np.ndarray,
     omega: float,
     neural_model: NeuralTorquePredictor,
     scaler: StandardScaler,
@@ -173,7 +177,7 @@ def predict_torque_neural(
     Acts as a bridge between SciPy (NumPy) and PyTorch.
 
     Args:
-        is_vec: NumPy array of currents [id1, iq1, id3, iq3].
+        vec_curr_dq: NumPy array of currents [id1, iq1, id3, iq3].
         omega: Electrical speed (scalar).
         neural_model: Initialized NeuralTorquePredictor.
         scaler: Fitted StandardScaler.
@@ -185,7 +189,7 @@ def predict_torque_neural(
     if neural_model is None or scaler is None:
         raise ValueError("Neural model/scaler not provided to prediction function.")
 
-    X_input = np.hstack(([omega], is_vec))
+    X_input = np.hstack(([omega], vec_curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Any, List, Union, Optional
+from typing import List, Union
 
 
 class BaseMachine:
@@ -7,6 +7,14 @@ class BaseMachine:
     Abstract foundation for electrical machine models. Defines common physical
     constants and structural validation logic for multiphase systems.
     """
+
+    mat_A: np.ndarray
+    L_stat: np.ndarray
+    R_stat: np.ndarray
+    vec_b: np.ndarray
+    curr_max: float
+    volt_max: float
+    omega_max: float
 
     def __init__(self, n_phases: int, n_ppairs: int) -> None:
         """

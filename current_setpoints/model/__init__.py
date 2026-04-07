@@ -10,6 +10,4 @@ logic required for electromagnetic motor analysis, including:
 from .data import MachineData
 from .transform import Transform
 
-# The __all__ list explicitly defines the public API for this subpackage.
-# It ensures that 'from model import *' only exposes these two classes.
 __all__ = ["MachineData", "Transform"]
