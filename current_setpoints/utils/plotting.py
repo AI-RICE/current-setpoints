@@ -66,7 +66,7 @@ def plot_grid_segments(data_obj: Any) -> None:
     ax.grid(True)
     plt.show()
 
-
+#TODO: should be universal for all models
 def plot_global_performance(df: Optional[pd.DataFrame]) -> None:
     """
     Generates a comprehensive performance comparison between Analytical and

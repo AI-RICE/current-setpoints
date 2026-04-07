@@ -10,5 +10,4 @@ This package provides a comprehensive suite of tools for:
 
 from . import data, model, optimization, utils
 
-# Defines the public interface of the package
 __all__ = ["data", "model", "optimization", "utils"]
