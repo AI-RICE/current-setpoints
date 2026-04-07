@@ -39,7 +39,7 @@ class MachineData:
         self.isd1: np.ndarray = np.array(isd1)
         self.isd3: np.ndarray = np.array(isd3)
         self.isq1: np.ndarray = np.array(isq1)
-        self.isq3: np.ndarray = np.ndarray(isq3)
+        self.isq3: np.ndarray = np.array(isq3)
 
         # 1. Check Dimensions
         self._check_dimensions()

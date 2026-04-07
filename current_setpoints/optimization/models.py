@@ -83,8 +83,8 @@ class ModelAnalytical(BaseTorqueModel):
         Computes torque using the machine's analytical quadratic form.
         """
         return (
-            vec_curr_dq @ self.machine.A @ vec_curr_dq
-            + 2 * self.machine.b @ vec_curr_dq
+            vec_curr_dq @ self.machine.mat_A @ vec_curr_dq
+            + 2 * self.machine.vec_b @ vec_curr_dq
         )
 
 

@@ -1,11 +1,8 @@
-# TODO: (DONE) finish
 import numpy as np
 from typing import Any
 
 
-def current_constraint(
-    vec_curr_dq: np.ndarray, machine: Any, transform: Any
-) -> np.ndarray:
+def current_constraint(vec_curr_dq: np.ndarray, machine: Any, transform: Any) -> float:
     """
     Ensures the peak physical phase current does not exceed the machine's maximum rating.
     In Scipy's SLSQP, a positive return value means the constraint is satisfied (val >= 0).

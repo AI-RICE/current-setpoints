@@ -3,15 +3,6 @@ from scipy.optimize import minimize
 from typing import Dict, Any, Optional, Tuple, List, Callable
 from constraints import current_constraint, voltage_constraint
 
-# TODO: (DONE) do we want to have it here?
-# TODO: (DONE) normal name here and later everywhere
-# TODO: (DONE) lots of code is written by chatGPT. simplify it. double check.
-# TODO: (DONE) this is far too complicated
-# TODO: (DONE) this is far too complicated
-# TODO: (DONE) the same comments as above
-# TODO: (DONE) when I think about it, it should be a class with two functions (they need to have the same API)
-# TODO: (DONE) rewrite this and the two functions above and merge them. they need to have the same arguments. all the other arguments should go into __init__
-
 
 class MotorOptimizer:
     """
@@ -80,22 +71,17 @@ class MotorOptimizer:
         best_val = float("inf")
 
         for vec_start in candidates:
-            # TODO: delete
-            try:
-                res = minimize(
-                    objective_fun,
-                    vec_start,
-                    method="SLSQP",
-                    constraints=constraints,
-                    options=opts,
-                )
-                # Select the result with the lowest cost among successful runs
-                if res.success and res.fun < best_val:
-                    best_val = res.fun
-                    best_res = res
-            except Exception:
-                # Silently skip starts that result in numerical errors
-                continue
+            res = minimize(
+                objective_fun,
+                vec_start,
+                method="SLSQP",
+                constraints=constraints,
+                options=opts,
+            )
+            # Select the result with the lowest cost among successful runs
+            if res.success and res.fun < best_val:
+                best_val = res.fun
+                best_res = res
 
         # If at least one start was successful, return the best one
         if best_res is not None:
@@ -103,7 +89,7 @@ class MotorOptimizer:
 
         # Fallback
         nan_vector = np.full(candidates[0].shape, np.nan)
-        return nan_vector, float('inf'), False
+        return nan_vector, float("inf"), False
 
     def maximize_torque(
         self,

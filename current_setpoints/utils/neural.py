@@ -1,4 +1,3 @@
-# TODO: (DONE) move it somewhere
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,7 +7,8 @@ from typing import Any, Tuple, Optional
 # Constants needed for analytical part inside NN
 ANALYTICAL_BIAS_TERM: float = 0.0
 
-
+#TODO: dat tam rovnou tridu misto any
+#TODO: the same error everywhere
 def get_analytical_tensors(
     machine: Any, device: torch.device
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
@@ -23,8 +23,8 @@ def get_analytical_tensors(
         Tuple: (A_tensor, b_tensor) if machine is provided, else (None, None).
     """
     if machine:
-        A_tensor = torch.from_numpy(machine.A).float().to(device)
-        b_tensor = torch.from_numpy(machine.b).float().to(device).unsqueeze(1)
+        A_tensor = torch.from_numpy(machine.mat_A).float().to(device)
+        b_tensor = torch.from_numpy(machine.vec_bb).float().to(device).unsqueeze(1)
         return A_tensor, b_tensor
     return None, None
 
