@@ -28,15 +28,15 @@ class BaseMachine:
         self.n_phases: int = n_phases
         self.n_ppairs: int = n_ppairs
         self.k_phase: float = n_phases / 2
-        
+
         # Dynamically generate the cross-coupling matrix based on phase count.
         # This maps the harmonic subspaces (1, 3, 5, 7...) to block diagonals.
         dim = self.n_phases - 1
         self.mat_crossc: np.ndarray = np.zeros((dim, dim))
         for i in range(dim // 2):
             h = 2 * i + 1  # Harmonic number
-            self.mat_crossc[2*i, 2*i+1] = -h
-            self.mat_crossc[2*i+1, 2*i] = h
+            self.mat_crossc[2 * i, 2 * i + 1] = -h
+            self.mat_crossc[2 * i + 1, 2 * i] = h
 
     def set_max_pars(self, curr_max: float, volt_max: float, omega_max: float) -> None:
         """
@@ -121,20 +121,16 @@ class GenericMachine(BaseMachine):
         R_stat_vec = np.array(R_stat_vec).flatten()
         self.R_stat: np.ndarray = np.diag(R_stat_vec)
         self.L_stat: np.ndarray = np.array(L_stat)
-        
-        # Dynamically size mat_A to (n_phases-1, n_phases-1)
+
+        # 1. Initialize the required quadratic parameter matrix
         dim = self.n_phases - 1
         self.mat_A: np.ndarray = np.zeros((dim, dim))
 
-        # Placeholders to pass matrix checks before the first dynamic update
-        self.flux_volt: np.ndarray = np.zeros(dim)
-        self.flux_torq: np.ndarray = np.zeros(dim)
-        self.vec_b: np.ndarray = np.zeros(dim)
-
-        # Populate the initial state using a zero current vector
+        # 2. Bootstrap the dynamic machine state at 0 speed and 0 current
         dummy_vec_curr_dq = np.zeros(dim)
         self.update_state(omega=0.0, vec_curr_dq=dummy_vec_curr_dq)
 
+        # 3. Validate matrix/vector dimensions
         self.check_data()
 
     def update_state(self, omega: float, vec_curr_dq: np.ndarray) -> None:
@@ -148,7 +144,7 @@ class GenericMachine(BaseMachine):
         self.flux_volt, self.flux_torq = self.flux_values.get_flux(
             self.machine_name, omega, vec_curr_dq
         )
-        
+
         # Runtime validation: ensure fetched fluxes match our phase constraints
         self._check_vector(self.flux_torq, "flux_torq (from FluxValues)")
         self._check_vector(self.flux_volt, "flux_volt (from FluxValues)")

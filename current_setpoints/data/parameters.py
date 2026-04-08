@@ -49,7 +49,6 @@ class FluxValues:
             return data[0].copy(), data[1].copy()
 
         if callable(data):
-            # Assuming dynamic maps generate fresh arrays on each call, no copy needed
             return data(omega, vec_curr_dq)
 
         raise TypeError(f"Invalid flux data format in registry for '{machine_name}'")

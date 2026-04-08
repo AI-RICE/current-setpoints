@@ -89,6 +89,6 @@ class MachineData:
         self.torq = self.torq[::k_skip]
 
         self.segments = self.segments[::k_skip, ::k_skip]
-        
+
         # Subsample along the torque and omega axes (indices 1 and 2), keeping all DQ dimensions (index 0)
         self.curr_dq_grid = self.curr_dq_grid[:, ::k_skip, ::k_skip]
