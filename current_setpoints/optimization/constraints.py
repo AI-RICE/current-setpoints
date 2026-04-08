@@ -1,9 +1,10 @@
 import numpy as np
-from model.transform import Transform 
-from utils._types import MachineProtocol 
+from ..model import Transform
+from ..data import BaseMachine
+
 
 def current_constraint(
-    vec_curr_dq: np.ndarray, machine: MachineProtocol, transform: Transform
+    vec_curr_dq: np.ndarray, machine: BaseMachine, transform: Transform
 ) -> float:
     """
     Ensures the peak physical phase current does not exceed the machine's maximum rating.
@@ -24,7 +25,7 @@ def current_constraint(
 
 
 def voltage_constraint(
-    vec_curr_dq: np.ndarray, machine: MachineProtocol, transform: Transform
+    vec_curr_dq: np.ndarray, machine: BaseMachine, transform: Transform
 ) -> float:
     """
     Ensures the peak phase voltage (including zero-sequence injection if enabled)

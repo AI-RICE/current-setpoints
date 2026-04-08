@@ -1,7 +1,7 @@
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Optional, Any
-from utils.neural import predict_torque_neural
+from ..utils import predict_torque_neural
 
 
 class BaseTorqueModel(ABC):
@@ -19,7 +19,7 @@ class BaseTorqueModel(ABC):
             machine: Object containing motor constants and dynamic state logic.
         """
         self.machine = machine
-        self.omega: float = 0.0  # Speed must be tracked for dynamic flux updates
+        self.omega: float = 0.0
 
     def set_omega(self, omega: float) -> None:
         """
@@ -61,23 +61,20 @@ class BaseTorqueModel(ABC):
         dim = self.machine.n_phases - 1
         candidates: List[np.ndarray] = []
 
-        # 1. Primary Guess: Use provided warm-start or a default small vector
         if vec_curr_dq_guess is not None:
             candidates.append(vec_curr_dq_guess)
         else:
             default_guess = np.zeros(dim)
-            default_guess[0] = 1.0  # Slight d1-axis magnetization
+            default_guess[0] = 1.0
             candidates.append(default_guess)
 
-        # 2. MTPA Guess: High Q-axis (Typical for maximum torque per ampere)
         g_mtpa = np.zeros(dim)
-        g_mtpa[1] = self.machine.curr_max * 0.95  # q1-axis
+        g_mtpa[1] = self.machine.curr_max * 0.95
         candidates.append(g_mtpa)
 
-        # 3. Flux Weakening Guess: High Negative D-axis (Required for high-speed operation)
         g_fw = np.zeros(dim)
-        g_fw[0] = -self.machine.curr_max * 0.9  # d1-axis
-        g_fw[1] = self.machine.curr_max * 0.1   # q1-axis
+        g_fw[0] = -self.machine.curr_max * 0.9
+        g_fw[1] = self.machine.curr_max * 0.1
         candidates.append(g_fw)
 
         return candidates
@@ -98,9 +95,8 @@ class ModelAnalytical(BaseTorqueModel):
         Computes torque using the machine's analytical quadratic form.
         Dynamically updates the machine's flux state before evaluation.
         """
-        # CRITICAL: Fetch the correct dynamic flux for this specific current & speed
         self.machine.update_state(self.omega, vec_curr_dq)
-        
+
         return float(
             vec_curr_dq @ self.machine.mat_A @ vec_curr_dq
             + 2 * self.machine.vec_b @ vec_curr_dq
@@ -135,7 +131,6 @@ class ModelNeural(BaseTorqueModel):
         """
         Computes torque by passing current and speed through the neural network.
         """
-        # Passing the instance variables into the utility function
         return predict_torque_neural(
             vec_curr_dq=vec_curr_dq,
             omega=self.omega,

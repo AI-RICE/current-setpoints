@@ -3,7 +3,6 @@ Motor Analysis Package
 Exposes utilities for data loading, neural torque prediction, and visualization.
 """
 
-from ._types import MachineProtocol
 from .load_data import load_aggregated_csv_data
 from .neural import (
     NeuralTorquePredictor,
@@ -14,7 +13,6 @@ from .neural import (
 from .plotting import plot_grid_segments, plot_global_performance
 
 __all__ = [
-    "MachineProtocol",
     "load_aggregated_csv_data",
     "NeuralTorquePredictor",
     "load_neural_model",

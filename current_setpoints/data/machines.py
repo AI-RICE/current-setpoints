@@ -1,42 +1,68 @@
 import numpy as np
+from abc import ABC, abstractmethod
 from typing import Union, List
 from .parameters import FluxValues
 
 
-class BaseMachine:
+class BaseMachine(ABC):
     """
     Abstract foundation for electrical machine models. Defines common physical
-    constants and structural validation logic for multiphase systems.
+    constants, structural validation logic, and enforces implementation
+    rules for multiphase systems.
     """
 
-    mat_A: np.ndarray
-    L_stat: np.ndarray
-    R_stat: np.ndarray
-    vec_b: np.ndarray
-    curr_max: float
-    volt_max: float
-    omega_max: float
-
-    def __init__(self, n_phases: int, n_ppairs: int) -> None:
+    def __init__(
+        self,
+        n_phases: int,
+        n_ppairs: int,
+        R_stat: np.ndarray,
+        L_stat: np.ndarray,
+        curr_max: float = 0.0,
+        volt_max: float = 0.0,
+        omega_max: float = 0.0,
+    ) -> None:
         """
-        Initializes the base machine constants.
+        Initializes the base machine constants and core matrices.
 
         Args:
             n_phases: Number of physical phases.
             n_ppairs: Number of pole pairs.
+            R_stat: Stator resistance matrix.
+            L_stat: Stator inductance matrix.
+            curr_max: Maximum peak phase current [A].
+            volt_max: Maximum peak phase voltage [V].
+            omega_max: Maximum electrical speed [rad/s].
         """
         self.n_phases: int = n_phases
         self.n_ppairs: int = n_ppairs
         self.k_phase: float = n_phases / 2
 
-        # Dynamically generate the cross-coupling matrix based on phase count.
-        # This maps the harmonic subspaces (1, 3, 5, 7...) to block diagonals.
+        self.R_stat: np.ndarray = R_stat
+        self.L_stat: np.ndarray = L_stat
+        self.curr_max: float = curr_max
+        self.volt_max: float = volt_max
+        self.omega_max: float = omega_max
+
         dim = self.n_phases - 1
+
+        self.mat_A: np.ndarray = np.zeros((dim, dim))
+        self.vec_b: np.ndarray = np.zeros(dim)
+        self.flux_volt: np.ndarray = np.zeros(dim)
+        self.flux_torq: np.ndarray = np.zeros(dim)
+
         self.mat_crossc: np.ndarray = np.zeros((dim, dim))
         for i in range(dim // 2):
-            h = 2 * i + 1  # Harmonic number
+            h = 2 * i + 1
             self.mat_crossc[2 * i, 2 * i + 1] = -h
             self.mat_crossc[2 * i + 1, 2 * i] = h
+
+    @abstractmethod
+    def update_state(self, omega: float, vec_curr_dq: np.ndarray) -> None:
+        """
+        Abstract method. Forces any child class to implement their own
+        logic for updating internal flux vectors and dependent states.
+        """
+        pass
 
     def set_max_pars(self, curr_max: float, volt_max: float, omega_max: float) -> None:
         """
@@ -47,16 +73,15 @@ class BaseMachine:
             volt_max: Maximum peak phase voltage [V].
             omega_max: Maximum electrical speed [rad/s].
         """
-        self.curr_max: float = curr_max
-        self.volt_max: float = volt_max
-        self.omega_max: float = omega_max
+        self.curr_max = curr_max
+        self.volt_max = volt_max
+        self.omega_max = omega_max
 
     def check_data(self) -> None:
         """
         Validates that all internal matrices and vectors match the expected
         dimensions based on the number of phases.
         """
-        # Strictly enforce dimensions on all structural matrices
         self._check_matrix(self.mat_A, "mat_A")
         self._check_matrix(self.L_stat, "L_stat")
         self._check_matrix(self.R_stat, "R_stat")
@@ -113,24 +138,24 @@ class GenericMachine(BaseMachine):
             machine_name: String identifier for the flux provider to look up data.
             flux_values: Dependency-injected provider for fetching flux.
         """
-        super().__init__(n_phases, n_ppairs)
+
+        R_stat_matrix = np.diag(np.array(R_stat_vec).flatten())
+        L_stat_matrix = np.array(L_stat)
+
+        super().__init__(
+            n_phases=n_phases,
+            n_ppairs=n_ppairs,
+            R_stat=R_stat_matrix,
+            L_stat=L_stat_matrix,
+        )
 
         self.machine_name = machine_name
         self.flux_values = flux_values
 
-        R_stat_vec = np.array(R_stat_vec).flatten()
-        self.R_stat: np.ndarray = np.diag(R_stat_vec)
-        self.L_stat: np.ndarray = np.array(L_stat)
-
-        # 1. Initialize the required quadratic parameter matrix
         dim = self.n_phases - 1
-        self.mat_A: np.ndarray = np.zeros((dim, dim))
-
-        # 2. Bootstrap the dynamic machine state at 0 speed and 0 current
         dummy_vec_curr_dq = np.zeros(dim)
         self.update_state(omega=0.0, vec_curr_dq=dummy_vec_curr_dq)
 
-        # 3. Validate matrix/vector dimensions
         self.check_data()
 
     def update_state(self, omega: float, vec_curr_dq: np.ndarray) -> None:
@@ -145,11 +170,9 @@ class GenericMachine(BaseMachine):
             self.machine_name, omega, vec_curr_dq
         )
 
-        # Runtime validation: ensure fetched fluxes match our phase constraints
         self._check_vector(self.flux_torq, "flux_torq (from FluxValues)")
         self._check_vector(self.flux_volt, "flux_volt (from FluxValues)")
 
-        # vec_b relies on flux_torq, so it updates whenever the operating point changes
         self.vec_b = (self.n_phases * self.n_ppairs / 4) * (
             self.mat_crossc @ self.flux_torq
         )

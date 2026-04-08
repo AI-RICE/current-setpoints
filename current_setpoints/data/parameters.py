@@ -45,7 +45,6 @@ class FluxValues:
         data = self._registry[machine_name]
 
         if isinstance(data, tuple):
-            # Return copies to prevent accidental in-place mutation of the central registry
             return data[0].copy(), data[1].copy()
 
         if callable(data):

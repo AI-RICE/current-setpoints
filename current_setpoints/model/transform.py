@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Any, Tuple
-from utils._types import MachineProtocol
+from ..data import BaseMachine
+
 
 class Transform:
     """
@@ -10,7 +11,7 @@ class Transform:
     """
 
     def __init__(
-        self, machine: MachineProtocol, omega: float, add_volt_0: bool, n_theta: int = 700
+        self, machine: BaseMachine, omega: float, add_volt_0: bool, n_theta: int = 700
     ) -> None:
         """
         Initializes the transform instance with machine parameters and resolution.
@@ -21,12 +22,11 @@ class Transform:
             add_volt_0: Boolean flag to enable zero-sequence (SVPWM) voltage injection.
             n_theta: Angular resolution for phase mapping.
         """
-        self.machine: MachineProtocol = machine  # Store reference for dynamic updates
+        self.machine: BaseMachine = machine
         self.n_phases: int = machine.n_phases
-        self.dim: int = self.n_phases - 1  # Number of DQ components
+        self.dim: int = self.n_phases - 1
         self.add_volt_0: bool = add_volt_0
 
-        # Validate theta resolution
         if n_theta <= 0:
             raise ValueError("n_theta must be positive")
 
@@ -41,19 +41,19 @@ class Transform:
         Computes speed-independent matrices for the DQ-to-Phase transformation.
         Note: BEMF is no longer precomputed here because flux is dynamic.
         """
-        # Generalized identity matrix for the R_stat multiplication
-        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat @ np.eye(self.dim)
+        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat @ np.eye(
+            self.dim
+        )
         self.mat_curr_dq_to_volt_dq_omega: np.ndarray = (
             self.machine.mat_crossc @ self.machine.L_stat
         )
 
-        # Dynamically build the DQ-to-Phase transformation matrix for all harmonics
         cols = []
         for i in range(self.dim // 2):
             h = 2 * i + 1  # Harmonic number: 1, 3, 5, 7...
             cols.append(np.cos(h * self.vec_theta))
             cols.append(-np.sin(h * self.vec_theta))
-        
+
         self.mat_dq_to_ph: np.ndarray = np.column_stack(cols)
 
     def compute_matrices(self, omega: float) -> None:
@@ -108,13 +108,12 @@ class Transform:
         Returns:
             np.ndarray: DQ voltage vector.
         """
-        # 1. Update machine state dynamically to fetch correct flux for this operating point
         self.machine.update_state(self.omega, vec_curr_dq)
-        
-        # 2. Calculate dynamic BEMF
-        vec_volt_bemf_dq = self.omega * (self.machine.mat_crossc @ self.machine.flux_volt)
-        
-        # 3. Calculate total voltage
+
+        vec_volt_bemf_dq = self.omega * (
+            self.machine.mat_crossc @ self.machine.flux_volt
+        )
+
         return self.mat_curr_dq_to_volt_dq @ vec_curr_dq + vec_volt_bemf_dq
 
     def get_volt_ph(
@@ -130,21 +129,19 @@ class Transform:
             Tuple: (final_phase_voltage, zero_sequence_voltage, raw_phase_voltage).
         """
         if vec_curr_dq.ndim != 1 or len(vec_curr_dq) != self.dim:
-            # Critical check for optimization loops
             raise ValueError(
                 f"Input current vector shape mismatch: {vec_curr_dq.shape}. Expected ({self.dim},)"
             )
 
-        # 1. Update machine state dynamically to fetch correct flux
         self.machine.update_state(self.omega, vec_curr_dq)
-        
-        # 2. Calculate dynamic BEMF in DQ, then transform to Phase
-        vec_volt_bemf_dq = self.omega * (self.machine.mat_crossc @ self.machine.flux_volt)
+
+        vec_volt_bemf_dq = self.omega * (
+            self.machine.mat_crossc @ self.machine.flux_volt
+        )
         vec_volt_bemf_ph = self.mat_dq_to_ph @ vec_volt_bemf_dq
 
-        # 3. Calculate raw phase voltage
         vec_volt_raw = self.mat_curr_dq_to_volt_ph @ vec_curr_dq + vec_volt_bemf_ph
-        
+
         if self.add_volt_0:
             mat_volt_res = vec_volt_raw[:-1].reshape(-1, self.n_phases)
             vec_volt_0 = -0.5 * (
@@ -181,19 +178,19 @@ class Transform:
         volt_0_peak = np.max(np.abs(vec_volt_0))
         vec_volt_dq = self.get_volt_dq(vec_curr_dq)
 
-        # Phase calculations (relies on 1st and 3rd harmonics to shape the flat-top)
-        # We wrap this in a dimension check just in case someone tries a 3-phase machine
         if self.dim >= 4:
             curr_ang_1 = np.arctan2(vec_curr_dq[1], vec_curr_dq[0])
             curr_ang_3 = np.arctan2(vec_curr_dq[3], vec_curr_dq[2])
             curr_ang_diff = np.abs(
-                np.mod(curr_ang_1 * 3 + np.pi, 2 * np.pi) - np.mod(curr_ang_3, 2 * np.pi)
+                np.mod(curr_ang_1 * 3 + np.pi, 2 * np.pi)
+                - np.mod(curr_ang_3, 2 * np.pi)
             )
 
             volt_ang_1 = np.arctan2(vec_volt_dq[1], vec_volt_dq[0])
             volt_ang_3 = np.arctan2(vec_volt_dq[3], vec_volt_dq[2])
             volt_ang_diff = np.abs(
-                np.mod(volt_ang_1 * 3 + np.pi, 2 * np.pi) - np.mod(volt_ang_3, 2 * np.pi)
+                np.mod(volt_ang_1 * 3 + np.pi, 2 * np.pi)
+                - np.mod(volt_ang_3, 2 * np.pi)
             )
         else:
             curr_ang_diff = 0.0

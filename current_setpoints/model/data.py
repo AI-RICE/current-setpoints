@@ -34,7 +34,6 @@ class MachineData:
         self.segments: np.ndarray = np.array(segments)
         self.curr_dq_grid: np.ndarray = np.array(curr_dq_grid)
 
-        # 1. Check Dimensions
         self._check_dimensions()
 
         if k_skip is not None and k_skip > 1:
@@ -90,5 +89,4 @@ class MachineData:
 
         self.segments = self.segments[::k_skip, ::k_skip]
 
-        # Subsample along the torque and omega axes (indices 1 and 2), keeping all DQ dimensions (index 0)
         self.curr_dq_grid = self.curr_dq_grid[:, ::k_skip, ::k_skip]

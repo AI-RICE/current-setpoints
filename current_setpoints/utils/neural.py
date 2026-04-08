@@ -4,7 +4,6 @@ import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
 from typing import Any, Tuple, Optional
 
-# Constants needed for analytical part inside NN
 ANALYTICAL_BIAS_TERM: float = 0.0
 
 
@@ -88,14 +87,12 @@ class NeuralTorquePredictor(nn.Module):
             "x_std", torch.from_numpy(scaler_X.scale_).float().to(device)
         )
 
-        # Register ONLY the static analytical matrix (mat_A)
         A_tensor = get_analytical_tensors(machine, device)
         if A_tensor is not None:
             self.register_buffer("A_TENSOR", A_tensor)
 
         self.fc1 = nn.Linear(input_size, hidden_size)
 
-        # Changed activation to GELU
         self.gelu = nn.GELU()
 
         self.fc2 = nn.Linear(hidden_size, 1)
@@ -112,20 +109,10 @@ class NeuralTorquePredictor(nn.Module):
             torch.Tensor: Total predicted torque.
         """
         x_phys = x_normed * self.x_std + self.x_mean
-        
-        # Dynamically slice all elements after index 0 (omega) to get the N-element current vector
         x_phys_currents = x_phys[:, 1:]
-
-        # Calculate physics part using the dynamic B_tensor
-        torq_analytical_out = torq_analytical(
-            x_phys_currents, self.A_TENSOR, B_tensor
-        )
-
+        torq_analytical_out = torq_analytical(x_phys_currents, self.A_TENSOR, B_tensor)
         torq_neural_residual = self.fc1(x_normed)
-
-        # Apply GELU in the forward pass
         torq_neural_residual = self.gelu(torq_neural_residual)
-
         torq_neural_residual = self.fc2(torq_neural_residual)
 
         return torq_analytical_out + torq_neural_residual
@@ -174,7 +161,7 @@ def predict_torque_neural(
     neural_model: NeuralTorquePredictor,
     scaler: StandardScaler,
     device: torch.device,
-    machine: Any,  # Added machine reference to fetch dynamic vec_b
+    machine: Any,
 ) -> float:
     """
     Evaluates the neural network for a single vector.
@@ -194,16 +181,12 @@ def predict_torque_neural(
     if neural_model is None or scaler is None:
         raise ValueError("Neural model/scaler not provided to prediction function.")
 
-    # 1. Prepare input vector (dimension-agnostic)
     X_input = np.hstack(([omega], vec_curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 
-    # 2. Grab the dynamically updated vec_b from the machine state
-    # (MotorOptimizer guarantees machine.update_state() was just called)
     B_tensor = torch.from_numpy(machine.vec_b).float().to(device).unsqueeze(1)
 
-    # 3. Predict
     with torch.no_grad():
         torq_predicted_tensor = neural_model(X_tensor, B_tensor)
 

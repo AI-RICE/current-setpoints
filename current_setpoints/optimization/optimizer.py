@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import minimize
 from typing import Dict, Any, Optional, Tuple, List, Callable
-from constraints import current_constraint, voltage_constraint
+from .constraints import current_constraint, voltage_constraint
 
 
 class MotorOptimizer:
@@ -79,16 +79,13 @@ class MotorOptimizer:
                 constraints=constraints,
                 options=opts,
             )
-            # Select the result with the lowest cost among successful runs
             if res.success and res.fun < best_val:
                 best_val = res.fun
                 best_res = res
 
-        # If at least one start was successful, return the best one
         if best_res is not None:
             return best_res.x, best_res.fun, True
 
-        # Fallback
         nan_vector = np.full(candidates[0].shape, np.nan)
         return nan_vector, float("inf"), False
 
@@ -115,10 +112,8 @@ class MotorOptimizer:
         candidates = self.model.get_candidates(vec_curr_guess)
 
         def objective(vec_curr_dq: np.ndarray) -> float:
-            # 1. Update dynamic flux state for the optimizer's current guess
             self.model.machine.update_state(transform.omega, vec_curr_dq)
-            
-            # 2. Negated because minimize() finds the minimum
+
             return -self.model.calculate_torque(vec_curr_dq)
 
         vec_curr_dq_best, best_val, success = self._run_optimization(
@@ -151,18 +146,14 @@ class MotorOptimizer:
         constraints = self._get_base_constraints(transform)
         candidates = self.model.get_candidates(vec_curr_guess)
 
-        # Append equality constraint: produced torque must equal target torque
         def eq_cons(vec_curr_dq: np.ndarray) -> float:
-            # 1. Update dynamic flux state for the optimizer's current guess
             self.model.machine.update_state(transform.omega, vec_curr_dq)
-            
-            # 2. Evaluate torque discrepancy
+
             return self.model.calculate_torque(vec_curr_dq) - torq_target
 
         constraints.append({"type": "eq", "fun": eq_cons})
 
         def objective(vec_curr_dq: np.ndarray) -> float:
-            # Minimize squared magnitude of current vector (no flux needed here)
             return np.sum(vec_curr_dq**2)
 
         vec_curr_dq_best, _, success = self._run_optimization(

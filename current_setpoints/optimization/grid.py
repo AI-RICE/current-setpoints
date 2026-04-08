@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Dict, Any, Optional
-from model.data import MachineData
+from ..model import MachineData
 
 
 def grid_to_data(grid: Dict[str, Any], k_skip: int) -> MachineData:
@@ -47,15 +47,13 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> Dict[str, np.ndarr
         "grid_volt_0_rms",
         "grid_volt_0_peak",
     ]
-    
-    # Explicitly type hint the dictionary to allow arrays of any shape
+
     grid: Dict[str, np.ndarray] = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
-    
+
     grid["vec_torq_max"] = np.full((1, n_omega), np.nan)
-    
-    # Initialize the generalized 3D current grid
+
     grid["curr_dq_grid"] = np.full((dim, n_torq, n_omega), np.nan)
-    
+
     return grid
 
 
@@ -78,7 +76,6 @@ def _fill_grid_point(
         idx_omega: Current speed index.
         machine: The Machine object for physical limits and peak counting.
     """
-    # Extract peaks and angles from the transform
     (
         curr_peak,
         curr_ang_diff,
@@ -90,19 +87,15 @@ def _fill_grid_point(
         volt_0_peak,
     ) = transform.get_max_vals(vec_curr_dq)
 
-    # Determine which constraints are active (peaks)
     n_curr_peaks, n_volt_peaks = transform.count_peaks(vec_curr_dq, machine)
 
-    # Store DQ currents in the 3D grid
     grid["curr_dq_grid"][:, idx_torq, idx_omega] = vec_curr_dq
 
-    # Store calculated physical quantities
     grid["grid_curr_peak"][idx_torq, idx_omega] = curr_peak
     grid["grid_volt_peak"][idx_torq, idx_omega] = volt_peak
     grid["grid_curr_ang_diff"][idx_torq, idx_omega] = curr_ang_diff
     grid["grid_volt_ang_diff"][idx_torq, idx_omega] = volt_ang_diff
 
-    # Segment logic: unique ID representing which constraints are active
     grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt_peaks + n_curr_peaks
 
 
@@ -135,10 +128,9 @@ def calculate_grid(
 
     print(f"Starting {mode.capitalize()} Grid Calculation...")
 
-    # Extract machine properties from the unified model hierarchy
     machine = optimizer.model.machine
-    dim = machine.n_phases - 1  # Get dynamic vector length
-    
+    dim = machine.n_phases - 1
+
     grid: Dict[str, Any] = {}
     grid["const_mech_speed"] = 30 / (np.pi * machine.n_ppairs)
 
@@ -146,7 +138,6 @@ def calculate_grid(
     grid_torq_targets: Any = None
 
     if mode == "standard":
-        # Determine global torque scale at zero speed (Maximum capability)
         transform.set_omega(0)
         _, torq_max_global, _ = optimizer.maximize_torque(transform=transform)
 
@@ -157,7 +148,7 @@ def calculate_grid(
             machine.omega_max / grid["const_mech_speed"],
             n_omega,
         )
-    else:  # recalculated
+    else:
         if dict_grid_corr is None:
             raise ValueError("dict_grid_corr must be provided for recalculated mode.")
         n_torq = len(dict_grid_corr["vec_torq"])
@@ -166,46 +157,38 @@ def calculate_grid(
         grid["vec_omega"] = dict_grid_corr["vec_omega"]
         grid_torq_targets = dict_grid_corr["grid_torq_pirn"]
 
-    # Allocate memory for results, passing the dynamic dimension
     grid.update(_init_grid_arrays(dim, n_torq, n_omega))
 
-    # Main calculation loop
     for idx_omega in range(n_omega):
         omega_target = grid["vec_omega"][idx_omega]
         print(
             f"Calculating: Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)"
         )
 
-        # Synchronize transform matrices with current speed
         transform.set_omega(omega_target)
 
-        # Find Physical Max Torque ceiling for this specific speed (voltage limited)
         _, torq_max_local, _ = optimizer.maximize_torque(transform=transform)
         grid["vec_torq_max"][0, idx_omega] = torq_max_local
 
-        # Initial guess for the first torque step in a speed column
         vec_curr_dq_prev = np.zeros(dim)
-        vec_curr_dq_prev[0] = 1.0  # Slight d-axis magnetization to seed the optimizer
+        vec_curr_dq_prev[0] = 1.0
 
         for idx_torq in range(n_torq):
-            # --- A. Setup Target and Guess based on Mode ---
             if mode == "standard":
                 torq_target = grid["vec_torq"][idx_torq]
                 vec_curr_dq_guess = vec_curr_dq_prev
 
-                # Boundary check: Exit if target is physically impossible at this speed
                 if torq_target > torq_max_local or torq_target > torq_max_global:
                     break
 
-            else:  # recalculated
-                # Type-checker hint: We know it's not None if mode is 'recalculated'
+            else:
                 assert dict_grid_corr is not None
                 torq_target = grid_torq_targets[idx_torq, idx_omega]
-                
-                # Use baseline current as the warm-start guess directly from the 3D grid
-                vec_curr_dq_guess = dict_grid_corr["curr_dq_grid"][:, idx_torq, idx_omega]
 
-                # Skip invalid or unreachable data points
+                vec_curr_dq_guess = dict_grid_corr["curr_dq_grid"][
+                    :, idx_torq, idx_omega
+                ]
+
                 if (
                     np.isnan(torq_target)
                     or np.any(np.isnan(vec_curr_dq_guess))
@@ -213,23 +196,19 @@ def calculate_grid(
                 ):
                     continue
 
-            # --- B. Execute Optimization (Find minimum current for target torque) ---
             vec_curr_dq_opt, success = optimizer.minimize_current(
                 torq_target=torq_target,
                 transform=transform,
                 vec_curr_guess=vec_curr_dq_guess,
             )
 
-            # --- C. Handle Results and Fallbacks ---
             if mode == "standard":
                 if success:
-                    # Successfully solved: update warm-start for the next torque step
                     vec_curr_dq_prev = vec_curr_dq_opt
                     _fill_grid_point(
                         grid, transform, vec_curr_dq_opt, idx_torq, idx_omega, machine
                     )
-            else:  # recalculated
-                # Use optimized result if successful, otherwise fallback to the corrected baseline guess
+            else:
                 vec_curr_dq_final = vec_curr_dq_opt if success else vec_curr_dq_guess
                 _fill_grid_point(
                     grid, transform, vec_curr_dq_final, idx_torq, idx_omega, machine

@@ -29,17 +29,14 @@ def load_aggregated_csv_data(file_path: str, col_map: Dict[str, str]) -> pd.Data
     data: pd.DataFrame = pd.read_csv(file_path)
     csv_names = col_map.keys()
 
-    # Validation: Missing Columns
     missing_cols = [col for col in csv_names if col not in data.columns]
     if missing_cols:
         raise ValueError(f"Missing required columns in CSV: {missing_cols}")
 
     data.rename(columns=col_map, inplace=True)
-    
-    # Dynamically define required columns based on the provided mapping
+
     required_cols = list(col_map.values())
 
-    # Validation: NaNs
     if data[required_cols].isnull().values.any():
         print("Warning: NaNs found in mapped columns. Dropping invalid rows.")
         data.dropna(subset=required_cols, inplace=True)
