@@ -23,6 +23,7 @@ class Transform:
         """
         self.machine: MachineProtocol = machine  # Store reference for dynamic updates
         self.n_phases: int = machine.n_phases
+        self.dim: int = self.n_phases - 1  # Number of DQ components
         self.add_volt_0: bool = add_volt_0
 
         # Validate theta resolution
@@ -40,18 +41,20 @@ class Transform:
         Computes speed-independent matrices for the DQ-to-Phase transformation.
         Note: BEMF is no longer precomputed here because flux is dynamic.
         """
-        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat @ np.eye(4)
+        # Generalized identity matrix for the R_stat multiplication
+        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat @ np.eye(self.dim)
         self.mat_curr_dq_to_volt_dq_omega: np.ndarray = (
             self.machine.mat_crossc @ self.machine.L_stat
         )
 
-        cos_theta = np.cos(self.vec_theta)
-        sin_theta = np.sin(self.vec_theta)
-        cos_3theta = np.cos(3 * self.vec_theta)
-        sin_3theta = np.sin(3 * self.vec_theta)
-        self.mat_dq_to_ph: np.ndarray = np.array(
-            [cos_theta, -sin_theta, cos_3theta, -sin_3theta]
-        ).T
+        # Dynamically build the DQ-to-Phase transformation matrix for all harmonics
+        cols = []
+        for i in range(self.dim // 2):
+            h = 2 * i + 1  # Harmonic number: 1, 3, 5, 7...
+            cols.append(np.cos(h * self.vec_theta))
+            cols.append(-np.sin(h * self.vec_theta))
+        
+        self.mat_dq_to_ph: np.ndarray = np.column_stack(cols)
 
     def compute_matrices(self, omega: float) -> None:
         """
@@ -86,13 +89,13 @@ class Transform:
         Transforms DQ currents into phase current time-series.
 
         Args:
-            vec_curr_dq: 4-element current vector [id1, iq1, id3, iq3].
+            vec_curr_dq: DQ current vector.
 
         Returns:
             np.ndarray: Vector of currents in the phase domain.
         """
-        if len(vec_curr_dq) != 4:
-            raise ValueError("Current vector must be length 4 (id1, iq1, id3, iq3)")
+        if len(vec_curr_dq) != self.dim:
+            raise ValueError(f"Current vector must be length {self.dim}")
         return self.mat_dq_to_ph @ vec_curr_dq
 
     def get_volt_dq(self, vec_curr_dq: np.ndarray) -> np.ndarray:
@@ -100,10 +103,10 @@ class Transform:
         Calculates the DQ voltage vector based on current, speed, and dynamic flux.
 
         Args:
-            vec_curr_dq: 4-element current vector.
+            vec_curr_dq: DQ current vector.
 
         Returns:
-            np.ndarray: 4-element voltage vector.
+            np.ndarray: DQ voltage vector.
         """
         # 1. Update machine state dynamically to fetch correct flux for this operating point
         self.machine.update_state(self.omega, vec_curr_dq)
@@ -121,15 +124,15 @@ class Transform:
         Calculates phase voltages, including zero-sequence components if enabled.
 
         Args:
-            vec_curr_dq: 4-element current vector.
+            vec_curr_dq: DQ current vector.
 
         Returns:
             Tuple: (final_phase_voltage, zero_sequence_voltage, raw_phase_voltage).
         """
-        if vec_curr_dq.ndim != 1 or len(vec_curr_dq) != 4:
+        if vec_curr_dq.ndim != 1 or len(vec_curr_dq) != self.dim:
             # Critical check for optimization loops
             raise ValueError(
-                f"Input current vector shape mismatch: {vec_curr_dq.shape}"
+                f"Input current vector shape mismatch: {vec_curr_dq.shape}. Expected ({self.dim},)"
             )
 
         # 1. Update machine state dynamically to fetch correct flux
@@ -164,7 +167,7 @@ class Transform:
         Computes peak values, angles, and RMS metrics for current and voltage.
 
         Args:
-            vec_curr_dq: 4-element current vector.
+            vec_curr_dq: DQ current vector.
 
         Returns:
             Tuple: (curr_peak, curr_ang_diff, vec_volt_dq, volt_peak, volt_ang_diff,
@@ -178,18 +181,23 @@ class Transform:
         volt_0_peak = np.max(np.abs(vec_volt_0))
         vec_volt_dq = self.get_volt_dq(vec_curr_dq)
 
-        # Phase calculations
-        curr_ang_1 = np.arctan2(vec_curr_dq[1], vec_curr_dq[0])
-        curr_ang_3 = np.arctan2(vec_curr_dq[3], vec_curr_dq[2])
-        curr_ang_diff = np.abs(
-            np.mod(curr_ang_1 * 3 + np.pi, 2 * np.pi) - np.mod(curr_ang_3, 2 * np.pi)
-        )
+        # Phase calculations (relies on 1st and 3rd harmonics to shape the flat-top)
+        # We wrap this in a dimension check just in case someone tries a 3-phase machine
+        if self.dim >= 4:
+            curr_ang_1 = np.arctan2(vec_curr_dq[1], vec_curr_dq[0])
+            curr_ang_3 = np.arctan2(vec_curr_dq[3], vec_curr_dq[2])
+            curr_ang_diff = np.abs(
+                np.mod(curr_ang_1 * 3 + np.pi, 2 * np.pi) - np.mod(curr_ang_3, 2 * np.pi)
+            )
 
-        volt_ang_1 = np.arctan2(vec_volt_dq[1], vec_volt_dq[0])
-        volt_ang_3 = np.arctan2(vec_volt_dq[3], vec_volt_dq[2])
-        volt_ang_diff = np.abs(
-            np.mod(volt_ang_1 * 3 + np.pi, 2 * np.pi) - np.mod(volt_ang_3, 2 * np.pi)
-        )
+            volt_ang_1 = np.arctan2(vec_volt_dq[1], vec_volt_dq[0])
+            volt_ang_3 = np.arctan2(vec_volt_dq[3], vec_volt_dq[2])
+            volt_ang_diff = np.abs(
+                np.mod(volt_ang_1 * 3 + np.pi, 2 * np.pi) - np.mod(volt_ang_3, 2 * np.pi)
+            )
+        else:
+            curr_ang_diff = 0.0
+            volt_ang_diff = 0.0
 
         return (
             curr_peak,
@@ -209,7 +217,7 @@ class Transform:
         Determines the number of active peaks hitting physical limits for current and voltage.
 
         Args:
-            vec_curr_dq: 4-element current vector.
+            vec_curr_dq: DQ current vector.
             machine: Machine object containing curr_max and volt_max.
             tol: Numerical tolerance for comparing peaks to limits.
 

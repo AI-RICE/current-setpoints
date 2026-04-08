@@ -45,9 +45,11 @@ class FluxValues:
         data = self._registry[machine_name]
 
         if isinstance(data, tuple):
-            return data[0], data[1]
+            # Return copies to prevent accidental in-place mutation of the central registry
+            return data[0].copy(), data[1].copy()
 
         if callable(data):
+            # Assuming dynamic maps generate fresh arrays on each call, no copy needed
             return data(omega, vec_curr_dq)
 
         raise TypeError(f"Invalid flux data format in registry for '{machine_name}'")

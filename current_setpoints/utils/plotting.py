@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 import numpy as np
 import pandas as pd
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 
 def plot_grid_segments(data_obj: Any) -> None:
@@ -46,14 +46,15 @@ def plot_grid_segments(data_obj: Any) -> None:
     for seg_val in data_obj.unique_segments:
         mask = data_obj.segments == seg_val
 
-        color = colors_map.get(seg_val, "black")
-        label_name = labels_map.get(seg_val, str(seg_val))
+        # Dynamic fallback for N-phase machines generating higher segment IDs
+        color = colors_map.get(seg_val, np.random.rand(3,))
+        label_name = labels_map.get(seg_val, f"Segment_{seg_val}")
 
         ax.scatter(
             data_obj.omega_grid[mask],
             data_obj.torq_grid[mask],
             s=10,
-            c=color,
+            c=[color] * mask.sum(), # Enforce color format to avoid Matplotlib warnings
             marker=".",
             label=label_name,
         )
@@ -66,94 +67,123 @@ def plot_grid_segments(data_obj: Any) -> None:
     ax.grid(True)
     plt.show()
 
-#TODO: should be universal for all models
-def plot_global_performance(df: Optional[pd.DataFrame]) -> None:
+
+def plot_global_performance(
+    df: Optional[pd.DataFrame], models: Optional[List[str]] = None
+) -> None:
     """
-    Generates a comprehensive performance comparison between Analytical and
-    Neural torque models, including linearity, residuals, and error heatmaps.
+    Generates a comprehensive performance comparison for any number of torque models,
+    including linearity, residuals, and error heatmaps.
 
     Args:
-        df: DataFrame containing 'torq_meas', 'torq_model', 'torq_neural',
-            'Error_Analytical', 'Error_Neural', 'omega', and 'I_total'.
+        df: DataFrame containing 'torq_meas', 'omega', 'I_total', and 
+            model-specific columns (e.g., 'torq_Analytical', 'Error_Analytical').
+        models: Optional list of model names to plot. If None, auto-detects based on 'Error_' columns.
     """
-    if df is None:
+    if df is None or df.empty:
+        print("Provided DataFrame is empty or None.")
         return
 
-    rmse_analytical = np.sqrt(np.mean(df["Error_Analytical"] ** 2))
-    rmse_neural = np.sqrt(np.mean(df["Error_Neural"] ** 2))
+    # Auto-detect models based on columns starting with "Error_"
+    if models is None:
+        models = [col.replace("Error_", "") for col in df.columns if col.startswith("Error_")]
 
-    # FIG 1: Linearity
-    fig1, axes1 = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    min_val = min(df["torq_meas"].min(), df["torq_model"].min())
-    max_val = max(df["torq_meas"].max(), df["torq_model"].max())
+    if not models:
+        print("No model error columns found (expected format: 'Error_ModelName').")
+        return
 
-    def plot_fit(ax: Axes, y_pred: pd.Series, title: str, color: str) -> None:
+    n_models = len(models)
+
+    # --- FIG 1: Linearity ---
+    fig1, axes1 = plt.subplots(1, n_models, figsize=(7 * n_models, 5), sharey=True)
+    # Ensure axes1 is always iterable even if n_models == 1
+    if n_models == 1:
+        axes1 = [axes1]
+
+    # Calculate global min/max for the diagonal reference line
+    min_val = df["torq_meas"].min()
+    max_val = df["torq_meas"].max()
+
+    def plot_fit(ax: Axes, y_pred: pd.Series, title: str) -> None:
         """Helper to plot predicted vs measured torque scatter."""
-        ax.scatter(df["torq_meas"], y_pred, alpha=0.5, s=10, c=color)
+        ax.scatter(df["torq_meas"], y_pred, alpha=0.5, s=10)
         ax.plot([min_val, max_val], [min_val, max_val], "r--", lw=2)
         ax.set_title(title)
         ax.set_xlabel("Measured Torque [Nm]")
         ax.grid(True, alpha=0.3)
 
-    plot_fit(
-        axes1[0], df["torq_model"], f"Analytical (RMSE={rmse_analytical:.3f})", "blue"
-    )
-    plot_fit(axes1[1], df["torq_neural"], f"Neural (RMSE={rmse_neural:.3f})", "green")
+    for i, model in enumerate(models):
+        error_col = f"Error_{model}"
+        
+        # Support legacy naming ('torq_model') or standard naming ('torq_Analytical')
+        pred_col = f"torq_{model}"
+        if pred_col not in df.columns and model == "Analytical" and "torq_model" in df.columns:
+            pred_col = "torq_model"
+            
+        if pred_col in df.columns:
+            rmse = np.sqrt(np.mean(df[error_col] ** 2))
+            plot_fit(axes1[i], df[pred_col], f"{model} (RMSE={rmse:.3f})")
+            
+            # Update global min/max for the diagonal line based on predictions
+            min_val = min(min_val, df[pred_col].min())
+            max_val = max(max_val, df[pred_col].max())
+
     axes1[0].set_ylabel("Predicted Torque [Nm]")
     plt.tight_layout()
 
-    # FIG 2: Residuals vs Speed
-    fig2, axes2 = plt.subplots(1, 2, figsize=(15, 5), sharey=True)
-    sc2 = axes2[0].scatter(
-        df["omega"],
-        df["Error_Analytical"],
-        c=df["I_total"],
-        cmap="viridis",
-        s=15,
-        alpha=0.7,
-    )
-    axes2[0].axhline(0, color="r", linestyle="--")
-    axes2[0].set_title("Analytical Residuals")
+    # --- FIG 2: Residuals vs Speed ---
+    fig2, axes2 = plt.subplots(1, n_models, figsize=(7 * n_models, 5), sharey=True)
+    if n_models == 1:
+        axes2 = [axes2]
 
-    axes2[1].scatter(
-        df["omega"],
-        df["Error_Neural"],
-        c=df["I_total"],
-        cmap="viridis",
-        s=15,
-        alpha=0.7,
-    )
-    axes2[1].axhline(0, color="r", linestyle="--")
-    axes2[1].set_title("Neural Residuals")
+    sc2 = None
+    for i, model in enumerate(models):
+        sc2 = axes2[i].scatter(
+            df["omega"],
+            df[f"Error_{model}"],
+            c=df["I_total"],
+            cmap="viridis",
+            s=15,
+            alpha=0.7,
+        )
+        axes2[i].axhline(0, color="r", linestyle="--")
+        axes2[i].set_title(f"{model} Residuals")
+        axes2[i].set_xlabel("Speed [rad/s]")
 
-    fig2.colorbar(sc2, ax=axes2.ravel().tolist(), label="Current Magnitude [A]")
+    axes2[0].set_ylabel("Error [Nm]")
+    
+    # Explicit 'is not None' check to satisfy Pylance typing
+    if sc2 is not None:
+        fig2.colorbar(sc2, ax=axes2, label="Current Magnitude [A]")
+        
     fig2.suptitle("Error vs Speed (Colored by Current)")
 
-    # FIG 3: Heatmap
-    fig3, axes3 = plt.subplots(1, 2, figsize=(15, 5), sharey=True)
-    v_lim = df["Error_Analytical"].abs().quantile(0.98)
+    # --- FIG 3: Heatmap ---
+    fig3, axes3 = plt.subplots(1, n_models, figsize=(7 * n_models, 5), sharey=True)
+    if n_models == 1:
+        axes3 = [axes3]
 
-    sc3 = axes3[0].scatter(
-        df["omega"],
-        df["torq_meas"],
-        c=df["Error_Analytical"],
-        cmap="seismic",
-        s=30,
-        vmin=-v_lim,
-        vmax=v_lim,
-    )
-    axes3[0].set_title("Analytical Signed Error")
+    # Calculate global symmetric color limit based on the worst 98th percentile error across all models
+    v_lim = max([df[f"Error_{m}"].abs().quantile(0.98) for m in models])
 
-    axes3[1].scatter(
-        df["omega"],
-        df["torq_meas"],
-        c=df["Error_Neural"],
-        cmap="seismic",
-        s=30,
-        vmin=-v_lim,
-        vmax=v_lim,
-    )
-    axes3[1].set_title("Neural Signed Error")
+    sc3 = None
+    for i, model in enumerate(models):
+        sc3 = axes3[i].scatter(
+            df["omega"],
+            df["torq_meas"],
+            c=df[f"Error_{model}"],
+            cmap="seismic",
+            s=30,
+            vmin=-v_lim,
+            vmax=v_lim,
+        )
+        axes3[i].set_title(f"{model} Signed Error")
+        axes3[i].set_xlabel("Speed [rad/s]")
 
-    fig3.colorbar(sc3, ax=axes3.ravel().tolist(), label="Error Magnitude [Nm]")
+    axes3[0].set_ylabel("Measured Torque [Nm]")
+    
+    # Explicit 'is not None' check to satisfy Pylance typing
+    if sc3 is not None:
+        fig3.colorbar(sc3, ax=axes3, label="Error Magnitude [Nm]")
+    
     plt.show()

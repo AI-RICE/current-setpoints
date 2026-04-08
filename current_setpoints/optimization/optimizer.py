@@ -7,7 +7,8 @@ from constraints import current_constraint, voltage_constraint
 class MotorOptimizer:
     """
     Unified solver class for motor control optimization problems.
-    Provides methods to find maximum torque or minimum current operating points.
+    Provides methods to find maximum torque or minimum current operating points
+    for any n-phase machine.
     """
 
     def __init__(self, model: Any, opts: Optional[Dict[str, Any]] = None) -> None:
@@ -61,7 +62,7 @@ class MotorOptimizer:
         Args:
             objective_fun: The scalar function to minimize.
             constraints: List of scipy constraints.
-            candidates: List of starting DQ vectors [id1, iq1, id3, iq3].
+            candidates: List of starting N-dimensional DQ vectors.
             opts: Solver options for minimize().
 
         Returns:

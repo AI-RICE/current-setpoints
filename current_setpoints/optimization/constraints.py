@@ -10,7 +10,7 @@ def current_constraint(
     In Scipy's SLSQP, a positive return value means the constraint is satisfied (val >= 0).
 
     Args:
-        vec_curr_dq: 4-element current vector [id1, iq1, id3, iq3].
+        vec_curr_dq: N-element current vector (e.g., length 4 for 5-phase, 8 for 9-phase).
         machine: The Machine object containing 'curr_max'.
         transform: The Transform instance providing the DQ-to-Phase mapping.
 
@@ -31,7 +31,7 @@ def voltage_constraint(
     does not exceed the available DC-link/inverter voltage limit.
 
     Args:
-        vec_curr_dq: 4-element current vector [id1, iq1, id3, iq3].
+        vec_curr_dq: N-element current vector (e.g., length 4 for 5-phase, 8 for 9-phase).
         machine: The Machine object containing 'volt_max'.
         transform: The Transform instance providing voltage matrices and SVPWM logic.
 

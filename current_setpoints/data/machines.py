@@ -28,9 +28,15 @@ class BaseMachine:
         self.n_phases: int = n_phases
         self.n_ppairs: int = n_ppairs
         self.k_phase: float = n_phases / 2
-        self.mat_crossc: np.ndarray = np.array(
-            [[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 0, -3], [0, 0, 3, 0]]
-        )
+        
+        # Dynamically generate the cross-coupling matrix based on phase count.
+        # This maps the harmonic subspaces (1, 3, 5, 7...) to block diagonals.
+        dim = self.n_phases - 1
+        self.mat_crossc: np.ndarray = np.zeros((dim, dim))
+        for i in range(dim // 2):
+            h = 2 * i + 1  # Harmonic number
+            self.mat_crossc[2*i, 2*i+1] = -h
+            self.mat_crossc[2*i+1, 2*i] = h
 
     def set_max_pars(self, curr_max: float, volt_max: float, omega_max: float) -> None:
         """
@@ -50,31 +56,34 @@ class BaseMachine:
         Validates that all internal matrices and vectors match the expected
         dimensions based on the number of phases.
         """
-        self._check_matrix(self.mat_A, False, "mat_A")
-        self._check_matrix(self.L_stat, False, "L_stat")
-        self._check_matrix(self.R_stat, True, "R_stat")
+        # Strictly enforce dimensions on all structural matrices
+        self._check_matrix(self.mat_A, "mat_A")
+        self._check_matrix(self.L_stat, "L_stat")
+        self._check_matrix(self.R_stat, "R_stat")
         self._check_vector(self.vec_b, "vec_b")
 
-    def _check_matrix(self, mat: np.ndarray, allow_scalar: bool, name: str) -> None:
+    def _check_matrix(self, mat: np.ndarray, name: str) -> None:
         """
-        Internal helper to verify square matrix dimensions.
+        Internal helper to strictly verify square matrix dimensions.
         """
         if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:
             raise ValueError(f"Matrix {name} must be square.")
-        if not allow_scalar and mat.shape[0] != self.n_phases - 1:
+        if mat.shape[0] != self.n_phases - 1:
             raise ValueError(
-                f"Matrix {name} must be square and sized to n_phases-1 ({self.n_phases - 1})."
+                f"Matrix {name} must be sized to n_phases-1 ({self.n_phases - 1}x{self.n_phases - 1}). "
+                f"Got {mat.shape[0]}x{mat.shape[1]}."
             )
 
     def _check_vector(self, vec: np.ndarray, name: str) -> None:
         """
-        Internal helper to verify vector dimensions.
+        Internal helper to strictly verify vector dimensions.
         """
         if vec.ndim > 1 and vec.shape[1] != 1:
-            raise ValueError(f"Vector {name} must be a column vector.")
+            raise ValueError(f"Vector {name} must be a 1D or column vector.")
         if vec.shape[0] != self.n_phases - 1:
             raise ValueError(
-                f"Vector {name} must be a column vector with length n_phases-1 ({self.n_phases - 1})."
+                f"Vector {name} must have length n_phases-1 ({self.n_phases - 1}). "
+                f"Got length {vec.shape[0]}."
             )
 
 
@@ -112,15 +121,18 @@ class GenericMachine(BaseMachine):
         R_stat_vec = np.array(R_stat_vec).flatten()
         self.R_stat: np.ndarray = np.diag(R_stat_vec)
         self.L_stat: np.ndarray = np.array(L_stat)
-        self.mat_A: np.ndarray = np.zeros((4, 4))
+        
+        # Dynamically size mat_A to (n_phases-1, n_phases-1)
+        dim = self.n_phases - 1
+        self.mat_A: np.ndarray = np.zeros((dim, dim))
 
         # Placeholders to pass matrix checks before the first dynamic update
-        self.flux_volt: np.ndarray = np.zeros(self.n_phases - 1)
-        self.flux_torq: np.ndarray = np.zeros(self.n_phases - 1)
-        self.vec_b: np.ndarray = np.zeros(self.n_phases - 1)
+        self.flux_volt: np.ndarray = np.zeros(dim)
+        self.flux_torq: np.ndarray = np.zeros(dim)
+        self.vec_b: np.ndarray = np.zeros(dim)
 
         # Populate the initial state using a zero current vector
-        dummy_vec_curr_dq = np.zeros(self.n_phases - 1)
+        dummy_vec_curr_dq = np.zeros(dim)
         self.update_state(omega=0.0, vec_curr_dq=dummy_vec_curr_dq)
 
         self.check_data()
@@ -136,6 +148,10 @@ class GenericMachine(BaseMachine):
         self.flux_volt, self.flux_torq = self.flux_values.get_flux(
             self.machine_name, omega, vec_curr_dq
         )
+        
+        # Runtime validation: ensure fetched fluxes match our phase constraints
+        self._check_vector(self.flux_torq, "flux_torq (from FluxValues)")
+        self._check_vector(self.flux_volt, "flux_volt (from FluxValues)")
 
         # vec_b relies on flux_torq, so it updates whenever the operating point changes
         self.vec_b = (self.n_phases * self.n_ppairs / 4) * (

@@ -6,7 +6,8 @@ from typing import Optional, Union, List
 class MachineData:
     """
     Container class for motor grid data. Handles dimensionality validation,
-    subsampling, and coordinate grid generation for motor performance mapping.
+    subsampling, and coordinate grid generation for motor performance mapping
+    across any number of phases/harmonics.
     """
 
     def __init__(
@@ -14,10 +15,7 @@ class MachineData:
         torq: Union[np.ndarray, List[float]],
         omega: Union[np.ndarray, List[float]],
         segments: np.ndarray,
-        isd1: np.ndarray,
-        isd3: np.ndarray,
-        isq1: np.ndarray,
-        isq3: np.ndarray,
+        curr_dq_grid: np.ndarray,
         k_skip: Optional[int] = None,
     ) -> None:
         """
@@ -26,20 +24,15 @@ class MachineData:
         Args:
             torq: Torque vector or list.
             omega: Speed vector or list.
-            segments: Matrix representing active constraint segments.
-            isd1: Matrix of d1-axis currents.
-            isd3: Matrix of d3-axis currents.
-            isq1: Matrix of q1-axis currents.
-            isq3: Matrix of q3-axis currents.
+            segments: 2D Matrix representing active constraint segments.
+            curr_dq_grid: 3D array of DQ currents with shape (dim, n_torq, n_omega),
+                          where dim is the number of DQ components (e.g., 4 for 5-phase, 8 for 9-phase).
             k_skip: Optional factor to downsample the grid (e.g., take every k-th point).
         """
         self.torq: np.ndarray = np.array(torq).flatten()
         self.omega: np.ndarray = np.array(omega).flatten()
         self.segments: np.ndarray = np.array(segments)
-        self.isd1: np.ndarray = np.array(isd1)
-        self.isd3: np.ndarray = np.array(isd3)
-        self.isq1: np.ndarray = np.array(isq1)
-        self.isq3: np.ndarray = np.array(isq3)
+        self.curr_dq_grid: np.ndarray = np.array(curr_dq_grid)
 
         # 1. Check Dimensions
         self._check_dimensions()
@@ -62,7 +55,7 @@ class MachineData:
         Ensures all input arrays are compatible with torq and omega dimensions.
 
         Raises:
-            ValueError: If any current or segment matrix shape does not match (len(torq), len(omega)).
+            ValueError: If any grid shape does not match (n_torq, n_omega).
         """
         n_torq = len(self.torq)
         n_omega = len(self.omega)
@@ -74,9 +67,9 @@ class MachineData:
                 f"Segments shape {self.segments.shape} != expected {expected_shape}"
             )
 
-        if self.isd1.shape != expected_shape:
+        if self.curr_dq_grid.ndim != 3 or self.curr_dq_grid.shape[1:] != expected_shape:
             raise ValueError(
-                "Current component dimensions do not match grid (torq x omega)."
+                f"curr_dq_grid shape {self.curr_dq_grid.shape} must be (dim, {n_torq}, {n_omega})."
             )
 
         if np.any(self.omega < 0):
@@ -96,7 +89,6 @@ class MachineData:
         self.torq = self.torq[::k_skip]
 
         self.segments = self.segments[::k_skip, ::k_skip]
-        self.isd1 = self.isd1[::k_skip, ::k_skip]
-        self.isd3 = self.isd3[::k_skip, ::k_skip]
-        self.isq1 = self.isq1[::k_skip, ::k_skip]
-        self.isq3 = self.isq3[::k_skip, ::k_skip]
+        
+        # Subsample along the torque and omega axes (indices 1 and 2), keeping all DQ dimensions (index 0)
+        self.curr_dq_grid = self.curr_dq_grid[:, ::k_skip, ::k_skip]

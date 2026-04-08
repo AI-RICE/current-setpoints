@@ -53,7 +53,8 @@ class NeuralTorquePredictor(nn.Module):
     """
     Physics-Informed Residual Network (PIRN) for torque prediction.
     Combines an analytical quadratic motor model with a neural residual.
-    Supports dynamic flux maps by accepting B_tensor at the forward pass.
+    Supports dynamic flux maps by accepting B_tensor at the forward pass
+    for any n-phase machine.
     """
 
     x_mean: torch.Tensor
@@ -72,7 +73,7 @@ class NeuralTorquePredictor(nn.Module):
         Initializes the predictor, registering normalization parameters and static tensors.
 
         Args:
-            input_size: Number of input features.
+            input_size: Number of input features (1 for omega + N for currents).
             hidden_size: Number of neurons in the hidden layer.
             scaler_X: Fitted Scikit-Learn StandardScaler for input normalization.
             machine: Machine object for analytical grounding.
@@ -104,14 +105,16 @@ class NeuralTorquePredictor(nn.Module):
         Forward pass: denormalizes inputs, calculates analytical torque, and adds neural residual.
 
         Args:
-            x_normed: Normalized input tensor [omega, id1, iq1, id3, iq3].
+            x_normed: Normalized input tensor [omega, i_d1, i_q1, ...].
             B_tensor: Dynamic linear machine parameter tensor for the current operating point.
 
         Returns:
             torch.Tensor: Total predicted torque.
         """
         x_phys = x_normed * self.x_std + self.x_mean
-        x_phys_currents = x_phys[:, 1:5]
+        
+        # Dynamically slice all elements after index 0 (omega) to get the N-element current vector
+        x_phys_currents = x_phys[:, 1:]
 
         # Calculate physics part using the dynamic B_tensor
         torq_analytical_out = torq_analytical(
@@ -178,7 +181,7 @@ def predict_torque_neural(
     Acts as a bridge between SciPy (NumPy) and PyTorch.
 
     Args:
-        vec_curr_dq: NumPy array of currents [id1, iq1, id3, iq3].
+        vec_curr_dq: NumPy array of currents (N-dimensional).
         omega: Electrical speed (scalar).
         neural_model: Initialized NeuralTorquePredictor.
         scaler: Fitted StandardScaler.
@@ -191,7 +194,7 @@ def predict_torque_neural(
     if neural_model is None or scaler is None:
         raise ValueError("Neural model/scaler not provided to prediction function.")
 
-    # 1. Prepare input vector
+    # 1. Prepare input vector (dimension-agnostic)
     X_input = np.hstack(([omega], vec_curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)

@@ -7,7 +7,8 @@ from utils.neural import predict_torque_neural
 class BaseTorqueModel(ABC):
     """
     Abstract Base Class for motor torque models.
-    Provides a unified interface for both analytical and neural-network-based torque calculations.
+    Provides a unified interface for both analytical and neural-network-based torque calculations
+    for any n-phase machine.
     """
 
     def __init__(self, machine: Any) -> None:
@@ -36,7 +37,7 @@ class BaseTorqueModel(ABC):
         Must be implemented by subclasses.
 
         Args:
-            vec_curr_dq: 4-element current array [id1, iq1, id3, iq3].
+            vec_curr_dq: N-element current array (e.g., length 4 for 5-phase, 8 for 9-phase).
 
         Returns:
             float: Calculated electromagnetic torque in Nm.
@@ -55,25 +56,28 @@ class BaseTorqueModel(ABC):
             vec_curr_dq_guess: Optional user-provided warm-start vector.
 
         Returns:
-            List[np.ndarray]: List of 4-element current vectors to be used as starting points.
+            List[np.ndarray]: List of N-element current vectors to be used as starting points.
         """
+        dim = self.machine.n_phases - 1
         candidates: List[np.ndarray] = []
 
         # 1. Primary Guess: Use provided warm-start or a default small vector
         if vec_curr_dq_guess is not None:
             candidates.append(vec_curr_dq_guess)
         else:
-            candidates.append(np.array([1.0, 0.0, 0.0, 0.0]))
+            default_guess = np.zeros(dim)
+            default_guess[0] = 1.0  # Slight d1-axis magnetization
+            candidates.append(default_guess)
 
         # 2. MTPA Guess: High Q-axis (Typical for maximum torque per ampere)
-        g_mtpa = np.zeros(4)
-        g_mtpa[1] = self.machine.curr_max * 0.95
+        g_mtpa = np.zeros(dim)
+        g_mtpa[1] = self.machine.curr_max * 0.95  # q1-axis
         candidates.append(g_mtpa)
 
         # 3. Flux Weakening Guess: High Negative D-axis (Required for high-speed operation)
-        g_fw = np.zeros(4)
-        g_fw[0] = -self.machine.curr_max * 0.9
-        g_fw[1] = self.machine.curr_max * 0.1
+        g_fw = np.zeros(dim)
+        g_fw[0] = -self.machine.curr_max * 0.9  # d1-axis
+        g_fw[1] = self.machine.curr_max * 0.1   # q1-axis
         candidates.append(g_fw)
 
         return candidates
@@ -97,7 +101,7 @@ class ModelAnalytical(BaseTorqueModel):
         # CRITICAL: Fetch the correct dynamic flux for this specific current & speed
         self.machine.update_state(self.omega, vec_curr_dq)
         
-        return (
+        return float(
             vec_curr_dq @ self.machine.mat_A @ vec_curr_dq
             + 2 * self.machine.vec_b @ vec_curr_dq
         )

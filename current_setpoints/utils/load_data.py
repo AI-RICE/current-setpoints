@@ -8,7 +8,8 @@ def load_aggregated_csv_data(file_path: str, col_map: Dict[str, str]) -> pd.Data
     Loads, validates, and renames motor data from a CSV file.
 
     Checks for file existence, ensures all required mapping columns are present,
-    renames columns for internal consistency, and handles missing values.
+    renames columns for internal consistency, and handles missing values dynamically
+    for any n-phase machine.
 
     Args:
         file_path: System path to the target CSV file.
@@ -34,11 +35,13 @@ def load_aggregated_csv_data(file_path: str, col_map: Dict[str, str]) -> pd.Data
         raise ValueError(f"Missing required columns in CSV: {missing_cols}")
 
     data.rename(columns=col_map, inplace=True)
-    required_cols = ["omega", "id1", "iq1", "id3", "iq3", "torq_meas"]
+    
+    # Dynamically define required columns based on the provided mapping
+    required_cols = list(col_map.values())
 
     # Validation: NaNs
     if data[required_cols].isnull().values.any():
-        print("Warning: NaNs found in required columns. Dropping invalid rows.")
+        print("Warning: NaNs found in mapped columns. Dropping invalid rows.")
         data.dropna(subset=required_cols, inplace=True)
 
     print(f"Loaded {len(data)} valid data points from CSV.")
