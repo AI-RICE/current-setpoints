@@ -151,6 +151,10 @@ class GenericMachine(BaseMachine):
 
         self.machine_name = machine_name
         self.flux_values = flux_values
+        #TODO: zeptat se Lukase (podle jeho kodu)
+        #self.mat_A = (self.n_phases * self.n_ppairs / 4) * (
+        #    self.mat_crossc @ self.L_stat + self.L_stat @ self.mat_crossc.T
+        #)
 
         dim = self.n_phases - 1
         dummy_vec_curr_dq = np.zeros(dim)

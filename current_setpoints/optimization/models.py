@@ -106,7 +106,7 @@ class ModelAnalytical(BaseTorqueModel):
 class ModelNeural(BaseTorqueModel):
     """
     Neural-network-based torque model.
-    Used for PIRN-compensated calculations or complex saturation models where
+    Used for NTM-compensated calculations or complex saturation models where
     analytical equations are insufficient.
     """
 

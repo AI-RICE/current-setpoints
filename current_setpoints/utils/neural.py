@@ -11,7 +11,7 @@ def get_analytical_tensors(
     machine: Any, device: torch.device
 ) -> Optional[torch.Tensor]:
     """
-    Helper to convert IPM model matrices from a machine object to PyTorch tensors.
+    Helper to convert machine model matrices from a machine object to PyTorch tensors.
     Note: B_tensor is no longer fetched here because it is dynamically updated.
 
     Args:
@@ -31,17 +31,19 @@ def torq_analytical(
     x_phys_currents: torch.Tensor, A_tensor: torch.Tensor, B_tensor: torch.Tensor
 ) -> torch.Tensor:
     """
-    Computes the analytical component of torque using the quadratic form T = i^T A i + b^T i.
+    Computes the analytical component of torque using the quadratic form T = i^T A i + 2b^T i.
 
     Args:
-        x_phys_currents: Batch of physical current vectors.
-        A_tensor: Quadratic machine parameter tensor.
-        B_tensor: Linear machine parameter tensor (dynamically updated).
+        x_phys_currents: Batch of physical current vectors. Shape: [batch, features]
+        A_tensor: Quadratic machine parameter tensor. Shape: [features, features]
+        B_tensor: Linear machine parameter tensor (dynamically updated). Shape: [batch, features, 1]
 
     Returns:
-        torch.Tensor: Calculated analytical torque component.
+        torch.Tensor: Calculated analytical torque component. Shape: [batch, 1]
     """
-    torq_linear = torch.matmul(x_phys_currents, B_tensor).squeeze()
+    # Use einsum for the linear part to safely handle batched dot products
+    torq_linear = 2 * torch.einsum("bi, bi -> b", x_phys_currents, B_tensor.squeeze(-1))
+
     torq_quadratic = torch.einsum(
         "bi, ij, bj -> b", x_phys_currents, A_tensor, x_phys_currents
     )
@@ -50,7 +52,7 @@ def torq_analytical(
 
 class NeuralTorquePredictor(nn.Module):
     """
-    Physics-Informed Residual Network (PIRN) for torque prediction.
+    Neural torque model (NTM) for torque prediction.
     Combines an analytical quadratic motor model with a neural residual.
     Supports dynamic flux maps by accepting B_tensor at the forward pass
     for any n-phase machine.
@@ -92,9 +94,7 @@ class NeuralTorquePredictor(nn.Module):
             self.register_buffer("A_TENSOR", A_tensor)
 
         self.fc1 = nn.Linear(input_size, hidden_size)
-
         self.gelu = nn.GELU()
-
         self.fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, x_normed: torch.Tensor, B_tensor: torch.Tensor) -> torch.Tensor:
@@ -110,7 +110,9 @@ class NeuralTorquePredictor(nn.Module):
         """
         x_phys = x_normed * self.x_std + self.x_mean
         x_phys_currents = x_phys[:, 1:]
+
         torq_analytical_out = torq_analytical(x_phys_currents, self.A_TENSOR, B_tensor)
+
         torq_neural_residual = self.fc1(x_normed)
         torq_neural_residual = self.gelu(torq_neural_residual)
         torq_neural_residual = self.fc2(torq_neural_residual)
@@ -181,11 +183,15 @@ def predict_torque_neural(
     if neural_model is None or scaler is None:
         raise ValueError("Neural model/scaler not provided to prediction function.")
 
+    machine.update_state(omega=omega, vec_curr_dq=vec_curr_dq)
+
     X_input = np.hstack(([omega], vec_curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 
-    B_tensor = torch.from_numpy(machine.vec_b).float().to(device).unsqueeze(1)
+    B_tensor = (
+        torch.from_numpy(machine.vec_b).float().to(device).unsqueeze(0).unsqueeze(-1)
+    )
 
     with torch.no_grad():
         torq_predicted_tensor = neural_model(X_tensor, B_tensor)

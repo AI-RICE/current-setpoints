@@ -10,6 +10,7 @@ from .neural import (
     predict_torque_neural,
     torq_analytical,
 )
+from .plot_config import PlotConfig
 from .plotting import plot_grid_segments, plot_global_performance
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "load_neural_model",
     "predict_torque_neural",
     "torq_analytical",
+    "PlotConfig",
     "plot_grid_segments",
     "plot_global_performance",
 ]
