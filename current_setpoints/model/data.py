@@ -1,6 +1,7 @@
-import numpy as np
 import warnings
-from typing import Optional, Union, List
+from typing import List, Optional, Union
+
+import numpy as np
 
 
 class MachineData:
@@ -75,6 +76,7 @@ class MachineData:
             warnings.warn(
                 "Negative speeds detected in grid data. Ensure reverse rotation is intended.",
                 UserWarning,
+                stacklevel=2,
             )
 
     def select_k(self, k_skip: int) -> None:

@@ -1,6 +1,8 @@
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import numpy as np
 from scipy.optimize import minimize
-from typing import Dict, Any, Optional, Tuple, List, Callable
+
 from .constraints import current_constraint, voltage_constraint
 
 

@@ -1,6 +1,7 @@
+from typing import Any, Dict, Optional
+
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import Any, Optional, Dict
 
 
 class PlotConfig:
@@ -57,17 +58,15 @@ class PlotConfig:
     def apply_deduplicated_legend(
         cls, figure_or_ax: Any, loc: str = "best", **kwargs
     ) -> None:
-        """Extracts handles/labels from one or multiple axes, deduplicates, sorts, and plots the legend."""
         by_label = {}
-        axes = (
-            figure_or_ax.axes
-            if hasattr(figure_or_ax, "axes")
-            else np.atleast_1d(figure_or_ax)
-        )
-        if hasattr(axes, "flat"):
-            axes = axes.flat
 
-        for ax in axes:
+        if hasattr(figure_or_ax, "get_axes") and callable(figure_or_ax.get_axes):
+            axes_list = figure_or_ax.axes
+        else:
+            # Safely force single Axes or n-dimensional arrays of Axes into a flat 1D iterable
+            axes_list = np.atleast_1d(figure_or_ax).flatten()
+
+        for ax in axes_list:
             handles, labels = ax.get_legend_handles_labels()
             for h, lbl in zip(handles, labels):
                 if lbl not in by_label:
@@ -84,7 +83,7 @@ class PlotConfig:
         sorted_labels = sorted(by_label.keys(), key=get_sort_key)
         sorted_handles = [by_label[lbl] for lbl in sorted_labels]
 
-        target = figure_or_ax if hasattr(figure_or_ax, "legend") else axes[0]
+        target = figure_or_ax if hasattr(figure_or_ax, "legend") else axes_list[0]
         target.legend(sorted_handles, sorted_labels, loc=loc, **kwargs)
 
     @classmethod
@@ -98,7 +97,6 @@ class PlotConfig:
         y_label: str = "Torque [Nm]",
         cbar_kwargs: Optional[Dict] = None,
     ) -> None:
-        """Shared boilerplate for generating 2D square-scatter colormaps (used by Errors and Losses)."""
         omega_2d, torq_2d = np.meshgrid(omega_rpm, vec_torq)
 
         x_vals = omega_2d[mask]

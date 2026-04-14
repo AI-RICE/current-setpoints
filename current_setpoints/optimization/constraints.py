@@ -1,6 +1,7 @@
 import numpy as np
-from ..model import Transform
+
 from ..data import BaseMachine
+from ..model import Transform
 
 
 def current_constraint(

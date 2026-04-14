@@ -10,8 +10,9 @@ from .neural import (
     predict_torque_neural,
     torq_analytical,
 )
+from .nn_utils import evaluate_model, prepare_fold_dataloaders, train_model
 from .plot_config import PlotConfig
-from .plotting import plot_grid_segments, plot_global_performance
+from .plotting import plot_global_performance, plot_grid_segments
 
 __all__ = [
     "load_aggregated_csv_data",
@@ -19,6 +20,9 @@ __all__ = [
     "load_neural_model",
     "predict_torque_neural",
     "torq_analytical",
+    "train_model",
+    "evaluate_model",
+    "prepare_fold_dataloaders",
     "PlotConfig",
     "plot_grid_segments",
     "plot_global_performance",

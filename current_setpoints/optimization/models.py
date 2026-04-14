@@ -1,6 +1,9 @@
-import numpy as np
 from abc import ABC, abstractmethod
-from typing import List, Optional, Any
+from typing import Any, List, Optional
+
+import numpy as np
+
+from ..data import BaseMachine
 from ..utils import predict_torque_neural
 
 
@@ -11,7 +14,7 @@ class BaseTorqueModel(ABC):
     for any n-phase machine.
     """
 
-    def __init__(self, machine: Any) -> None:
+    def __init__(self, machine: BaseMachine) -> None:
         """
         Initializes the torque model with machine parameters.
 
@@ -87,7 +90,7 @@ class ModelAnalytical(BaseTorqueModel):
     Supports dynamic flux maps by updating the machine state before calculation.
     """
 
-    def __init__(self, machine: Any) -> None:
+    def __init__(self, machine: BaseMachine) -> None:
         super().__init__(machine)
 
     def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
@@ -111,7 +114,7 @@ class ModelNeural(BaseTorqueModel):
     """
 
     def __init__(
-        self, machine: Any, neural_model: Any, scaler: Any, device: Any
+        self, machine: BaseMachine, neural_model: Any, scaler: Any, device: Any
     ) -> None:
         """
         Initializes the neural model with the trained network and scaling logic.

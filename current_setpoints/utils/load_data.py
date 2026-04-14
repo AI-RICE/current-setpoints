@@ -1,6 +1,7 @@
 import os
-import pandas as pd
 from typing import Dict
+
+import pandas as pd
 
 
 def load_aggregated_csv_data(file_path: str, col_map: Dict[str, str]) -> pd.DataFrame:

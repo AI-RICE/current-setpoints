@@ -1,14 +1,17 @@
+from typing import Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
-from typing import Any, Tuple, Optional
+
+from ..data import BaseMachine
 
 ANALYTICAL_BIAS_TERM: float = 0.0
 
 
 def get_analytical_tensors(
-    machine: Any, device: torch.device
+    machine: BaseMachine, device: torch.device
 ) -> Optional[torch.Tensor]:
     """
     Helper to convert machine model matrices from a machine object to PyTorch tensors.
@@ -41,7 +44,6 @@ def torq_analytical(
     Returns:
         torch.Tensor: Calculated analytical torque component. Shape: [batch, 1]
     """
-    # Use einsum for the linear part to safely handle batched dot products
     torq_linear = 2 * torch.einsum("bi, bi -> b", x_phys_currents, B_tensor.squeeze(-1))
 
     torq_quadratic = torch.einsum(
@@ -67,7 +69,7 @@ class NeuralTorquePredictor(nn.Module):
         input_size: int,
         hidden_size: int,
         scaler_X: StandardScaler,
-        machine: Any,
+        machine: BaseMachine,
         device: torch.device,
     ) -> None:
         """
@@ -80,7 +82,7 @@ class NeuralTorquePredictor(nn.Module):
             machine: Machine object for analytical grounding.
             device: Computation device.
         """
-        super(NeuralTorquePredictor, self).__init__()
+        super().__init__()
         self.device = device
         self.register_buffer(
             "x_mean", torch.from_numpy(scaler_X.mean_).float().to(device)
@@ -125,7 +127,7 @@ def load_neural_model(
     scaler_path: str,
     hidden_size: int,
     input_size: int,
-    machine: Any,
+    machine: BaseMachine,
     device: torch.device,
 ) -> Tuple[NeuralTorquePredictor, StandardScaler]:
     """
@@ -163,7 +165,7 @@ def predict_torque_neural(
     neural_model: NeuralTorquePredictor,
     scaler: StandardScaler,
     device: torch.device,
-    machine: Any,
+    machine: BaseMachine,
 ) -> float:
     """
     Evaluates the neural network for a single vector.

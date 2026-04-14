@@ -1,6 +1,9 @@
+from typing import Any, Dict, Optional
+
 import numpy as np
 import torch
-from typing import Dict, Any, Optional
+
+from ..data import BaseMachine
 from ..model import MachineData
 
 
@@ -64,7 +67,7 @@ def _fill_grid_point(
     vec_curr_dq: np.ndarray,
     idx_torq: int,
     idx_omega: int,
-    machine: Any,
+    machine: BaseMachine,
 ) -> None:
     """
     Calculates physical metrics for a specific DQ current vector and stores them in the grid.
@@ -223,10 +226,10 @@ def get_correction_grid(
     dict_grid: Dict[str, Any],
     neural_model: torch.nn.Module,
     scaler: Any,
-    device: torch.device
+    device: torch.device,
 ) -> Dict[str, Any]:
     """
-    Computes the correction grid by predicting torque using the neural model 
+    Computes the correction grid by predicting torque using the neural model
     on the analytical baseline currents. Supports an arbitrary number of phases.
 
     Args:
@@ -239,37 +242,39 @@ def get_correction_grid(
         Dict: A copy of the baseline grid, appended with the 'grid_torq_neural' matrix.
     """
     print("Computing Phase-Agnostic ML Correction Grid...")
-    
-    dict_grid_corr = {k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()}
 
-    dim, n_torq, n_omega = dict_grid_corr["curr_dq_grid"].shape 
+    dict_grid_corr = {
+        k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()
+    }
+
+    dim, n_torq, n_omega = dict_grid_corr["curr_dq_grid"].shape
 
     grid_torq_neural = np.full((n_torq, n_omega), np.nan)
 
     omega_2d = np.tile(dict_grid_corr["vec_omega"], (n_torq, 1))
-  
+
     curr_flat = dict_grid_corr["curr_dq_grid"].reshape(dim, -1)
     omega_flat = omega_2d.flatten()
-    
+
     valid_mask = ~np.isnan(curr_flat[0, :])
-    
+
     if np.any(valid_mask):
         omega_valid = omega_flat[valid_mask]
         curr_valid = curr_flat[:, valid_mask]
-        
+
         X_in = np.vstack([omega_valid, curr_valid]).T
-        
+
         X_scaled = scaler.transform(X_in)
         X_tensor = torch.from_numpy(X_scaled).float().to(device)
-        
+
         with torch.no_grad():
             preds = neural_model(X_tensor).cpu().numpy().flatten()
-            
+
         torq_neural_flat = np.full(n_torq * n_omega, np.nan)
         torq_neural_flat[valid_mask] = preds
-        
+
         grid_torq_neural = torq_neural_flat.reshape(n_torq, n_omega)
-        
+
     dict_grid_corr["grid_torq_neural"] = grid_torq_neural
-    
+
     return dict_grid_corr

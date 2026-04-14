@@ -1,5 +1,7 @@
+from typing import Tuple
+
 import numpy as np
-from typing import Any, Tuple
+
 from ..data import BaseMachine
 
 
@@ -208,7 +210,7 @@ class Transform:
         )
 
     def count_peaks(
-        self, vec_curr_dq: np.ndarray, machine: Any, tol: float = 1e-4
+        self, vec_curr_dq: np.ndarray, machine: BaseMachine, tol: float = 1e-4
     ) -> Tuple[int, int]:
         """
         Determines the number of active peaks hitting physical limits for current and voltage.
