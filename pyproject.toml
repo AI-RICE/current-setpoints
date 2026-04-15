@@ -7,7 +7,7 @@ name = "current-setpoints"
 version = "0.1.0"
 description = "A library for calculating optimal current setpoints for PMSM drives using analytical and neural models"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "Tereza Matasova", email = "matasovt@fel.zcu.cz" }
@@ -41,7 +41,7 @@ include = ["*"]
 exclude = ["tests*"]
 
 [tool.ruff]
-target-version = "py38"
+target-version = "py311"
 line-length = 88
 
 extend-exclude = ["*.ipynb"]

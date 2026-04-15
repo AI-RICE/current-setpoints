@@ -37,16 +37,23 @@ class MotorOptimizer:
         Returns:
             List[Dict]: Scipy-compatible constraint definitions.
         """
+
+        def safe_current_constraint(vec_curr_dq):
+            self.model.machine.update_state(transform.omega, vec_curr_dq)
+            return current_constraint(vec_curr_dq, self.model.machine, transform)
+
+        def safe_voltage_constraint(vec_curr_dq):
+            self.model.machine.update_state(transform.omega, vec_curr_dq)
+            return voltage_constraint(vec_curr_dq, self.model.machine, transform)
+
         return [
             {
                 "type": "ineq",
-                "fun": current_constraint,
-                "args": (self.model.machine, transform),
+                "fun": safe_current_constraint,
             },
             {
                 "type": "ineq",
-                "fun": voltage_constraint,
-                "args": (self.model.machine, transform),
+                "fun": safe_voltage_constraint,
             },
         ]
 

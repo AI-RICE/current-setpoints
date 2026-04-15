@@ -227,6 +227,7 @@ def get_correction_grid(
     neural_model: torch.nn.Module,
     scaler: Any,
     device: torch.device,
+    machine: BaseMachine,
 ) -> Dict[str, Any]:
     """
     Computes the correction grid by predicting torque using the neural model
@@ -237,9 +238,7 @@ def get_correction_grid(
         neural_model: Trained PyTorch neural network for torque prediction.
         scaler: The scaler used to normalize inputs for the neural model.
         device: CPU or CUDA device.
-
-    Returns:
-        Dict: A copy of the baseline grid, appended with the 'grid_torq_neural' matrix.
+        machine: The machine instance to fetch dynamic B_tensors.
     """
     print("Computing Phase-Agnostic ML Correction Grid...")
 
@@ -248,7 +247,6 @@ def get_correction_grid(
     }
 
     dim, n_torq, n_omega = dict_grid_corr["curr_dq_grid"].shape
-
     grid_torq_neural = np.full((n_torq, n_omega), np.nan)
 
     omega_2d = np.tile(dict_grid_corr["vec_omega"], (n_torq, 1))
@@ -263,12 +261,18 @@ def get_correction_grid(
         curr_valid = curr_flat[:, valid_mask]
 
         X_in = np.vstack([omega_valid, curr_valid]).T
-
         X_scaled = scaler.transform(X_in)
         X_tensor = torch.from_numpy(X_scaled).float().to(device)
 
+        b_vecs = []
+        for i in range(len(omega_valid)):
+            machine.update_state(omega=omega_valid[i], vec_curr_dq=curr_valid[:, i])
+            b_vecs.append(machine.vec_b)
+
+        B_tensor = torch.from_numpy(np.array(b_vecs)).float().to(device).unsqueeze(-1)
+
         with torch.no_grad():
-            preds = neural_model(X_tensor).cpu().numpy().flatten()
+            preds = neural_model(X_tensor, B_tensor).cpu().numpy().flatten()
 
         torq_neural_flat = np.full(n_torq * n_omega, np.nan)
         torq_neural_flat[valid_mask] = preds

@@ -1,5 +1,6 @@
+from unittest.mock import MagicMock
+
 import numpy as np
-import pytest
 import torch
 import torch.nn as nn
 
@@ -15,6 +16,7 @@ from current_setpoints.optimization import (
 )
 
 
+# TODO novy soubor s testy pro transformace
 def test_calculate_grid_analytical_returns_correct_shapes():
     """
     Tests that calculate_grid processes a minimal 2x2 grid
@@ -142,13 +144,20 @@ def test_get_correction_grid_adds_neural_torque():
     dummy_scaler = DummyScaler()
     device = torch.device("cpu")
 
+    mock_flux_values = MagicMock()
+    mock_flux_values.get_flux.return_value = (np.zeros(dim), np.zeros(dim))
+
+    real_machine = IEEEMachine2(flux_values=mock_flux_values)
+
     corr_grid = get_correction_grid(
         dict_grid=mock_baseline_grid,
         neural_model=dummy_net,
         scaler=dummy_scaler,
         device=device,
+        machine=real_machine,
     )
 
+    # 4. Assertions
     assert "grid_torq_neural" in corr_grid, "Should append the new torque matrix"
     assert corr_grid["grid_torq_neural"].shape == (n_torq, n_omega)
 
@@ -156,7 +165,6 @@ def test_get_correction_grid_adds_neural_torque():
     assert not np.isnan(corr_grid["grid_torq_neural"][0, 0])
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_calculate_grid_recalculated_runs_successfully():
     """
     Tests that calculate_grid can run in 'recalculated' mode by feeding
@@ -189,6 +197,5 @@ def test_calculate_grid_recalculated_runs_successfully():
         dict_grid_corr=mock_corr_grid,
     )
 
-    # 3. ASSERT
     assert recalculated_grid is not None
     assert recalculated_grid["curr_dq_grid"].shape == (dim, n_torq, n_omega)
