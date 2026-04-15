@@ -2,12 +2,9 @@ site_name: current-setpoints
 site_description: A library for calculating optimal current setpoints for PMSM drives
 site_author: Tereza Matasova
 
-# The theme determines how your documentation looks. 'readthedocs' is standard, 
-# but many modern projects install and use 'material' (Material for MkDocs).
 theme:
   name: readthedocs
 
-# Navigation menu for your documentation site
 nav:
   - Home: index.md
   - Usage: usage.md

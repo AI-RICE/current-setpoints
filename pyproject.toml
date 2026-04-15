@@ -40,19 +40,18 @@ where = ["."]
 include = ["*"]
 exclude = ["tests*"]
 
-# --- RUFF CONFIGURATION ---
 [tool.ruff]
-# Match the python version required by your project
 target-version = "py38"
 line-length = 88
 
-# Exclude all Jupyter Notebooks globally
 extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
-# Enable standard pycodestyle (E, W), pyflakes (F), isort (I), bugbear (B), and pyupgrade (UP)
 select = ["E", "W", "F", "I", "B", "UP"]
-ignore = ["E501"] # Ignore line-length violations (let the formatter handle it)
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["current_setpoints"]
 
 [tool.ruff.format]
 quote-style = "double"
