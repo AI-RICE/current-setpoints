@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -7,7 +7,7 @@ from ..data import BaseMachine
 from ..model import MachineData
 
 
-def grid_to_data(grid: Dict[str, Any], k_skip: int) -> MachineData:
+def grid_to_data(grid: dict[str, Any], k_skip: int) -> MachineData:
     """
     Converts a grid dictionary into a structured MachineData object.
 
@@ -29,7 +29,7 @@ def grid_to_data(grid: Dict[str, Any], k_skip: int) -> MachineData:
     )
 
 
-def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> Dict[str, np.ndarray]:
+def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarray]:
     """
     Initializes empty 2D and 3D matrices for all physical parameters in the motor grid.
 
@@ -52,7 +52,7 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> Dict[str, np.ndarr
         "grid_volt_0_peak",
     ]
 
-    grid: Dict[str, np.ndarray] = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
+    grid: dict[str, np.ndarray] = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
 
     grid["vec_torq_max"] = np.full((1, n_omega), np.nan)
 
@@ -62,7 +62,7 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> Dict[str, np.ndarr
 
 
 def _fill_grid_point(
-    grid: Dict[str, Any],
+    grid: dict[str, Any],
     transform: Any,
     vec_curr_dq: np.ndarray,
     idx_torq: int,
@@ -106,10 +106,10 @@ def _fill_grid_point(
 def calculate_grid(
     optimizer: Any,
     transform: Any,
-    opts: Dict[str, Any],
+    opts: dict[str, Any],
     mode: str = "standard",
-    dict_grid_corr: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    dict_grid_corr: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Unified grid calculation engine for motor mapping.
 
@@ -135,7 +135,7 @@ def calculate_grid(
     machine = optimizer.model.machine
     dim = machine.n_phases - 1
 
-    grid: Dict[str, Any] = {}
+    grid: dict[str, Any] = {}
     grid["const_mech_speed"] = 30 / (np.pi * machine.n_ppairs)
 
     torq_max_global: float = 0.0
@@ -223,12 +223,12 @@ def calculate_grid(
 
 
 def get_correction_grid(
-    dict_grid: Dict[str, Any],
+    dict_grid: dict[str, Any],
     neural_model: torch.nn.Module,
     scaler: Any,
     device: torch.device,
     machine: BaseMachine,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Computes the correction grid by predicting torque using the neural model
     on the analytical baseline currents. Supports an arbitrary number of phases.

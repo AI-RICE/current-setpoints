@@ -1,4 +1,4 @@
-from typing import Callable, Dict, Tuple, Union
+from collections.abc import Callable
 
 import numpy as np
 
@@ -10,7 +10,7 @@ class FluxValues:
     """
 
     def __init__(self) -> None:
-        self._registry: Dict[str, Union[Callable, Tuple[np.ndarray, np.ndarray]]] = {}
+        self._registry: dict[str, Callable | tuple[np.ndarray, np.ndarray]] = {}
         ieee_flux_volt = np.array([0.0115, 0.0018, 0.0, 0.0])
         ieee_flux_torq = np.array(
             [1.12810358e-02, -6.28421072e-04, 1.55053034e-04, -4.81016476e-05]
@@ -28,14 +28,14 @@ class FluxValues:
 
         def dummy_map(
             omega: float, vec_curr_dq: np.ndarray
-        ) -> Tuple[np.ndarray, np.ndarray]:
+        ) -> tuple[np.ndarray, np.ndarray]:
             raise NotImplementedError("Dynamic map evaluation is not yet implemented.")
 
         self._registry[machine_name] = dummy_map
 
     def get_flux(
         self, machine_name: str, omega: float, vec_curr_dq: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Returns (flux_volt_vec, flux_torq_vec) for a given machine.
         Works transparently whether the underlying data is constant or mapped.

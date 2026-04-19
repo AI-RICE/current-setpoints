@@ -1,10 +1,9 @@
 import os
-from typing import Dict
 
 import pandas as pd
 
 
-def load_aggregated_csv_data(file_path: str, col_map: Dict[str, str]) -> pd.DataFrame:
+def load_aggregated_csv_data(file_path: str, col_map: dict[str, str]) -> pd.DataFrame:
     """
     Loads, validates, and renames motor data from a CSV file.
 

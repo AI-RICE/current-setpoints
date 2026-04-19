@@ -1,5 +1,4 @@
 import warnings
-from typing import List, Optional, Union
 
 import numpy as np
 
@@ -13,11 +12,11 @@ class MachineData:
 
     def __init__(
         self,
-        torq: Union[np.ndarray, List[float]],
-        omega: Union[np.ndarray, List[float]],
+        torq: np.ndarray | list[float],
+        omega: np.ndarray | list[float],
         segments: np.ndarray,
         curr_dq_grid: np.ndarray,
-        k_skip: Optional[int] = None,
+        k_skip: int | None = None,
     ) -> None:
         """
         Initializes MachineData with torque/speed vectors and current component matrices.

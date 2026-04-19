@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -48,8 +48,8 @@ class BaseTorqueModel(ABC):
         pass
 
     def get_candidates(
-        self, vec_curr_dq_guess: Optional[np.ndarray] = None
-    ) -> List[np.ndarray]:
+        self, vec_curr_dq_guess: np.ndarray | None = None
+    ) -> list[np.ndarray]:
         """
         Generates a list of initial guess vectors for the optimizer.
         These candidates help the solver avoid local minima by providing starts in
@@ -62,7 +62,7 @@ class BaseTorqueModel(ABC):
             List[np.ndarray]: List of N-element current vectors to be used as starting points.
         """
         dim = self.machine.n_phases - 1
-        candidates: List[np.ndarray] = []
+        candidates: list[np.ndarray] = []
 
         if vec_curr_dq_guess is not None:
             candidates.append(vec_curr_dq_guess)

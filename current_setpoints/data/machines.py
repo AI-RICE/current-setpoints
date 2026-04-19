@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List, Union
 
 import numpy as np
 
@@ -124,7 +123,7 @@ class GenericMachine(BaseMachine):
         self,
         n_phases: int,
         n_ppairs: int,
-        R_stat_vec: Union[np.ndarray, List[float]],
+        R_stat_vec: np.ndarray | list[float],
         L_stat: np.ndarray,
         machine_name: str,
         flux_values: FluxValues,

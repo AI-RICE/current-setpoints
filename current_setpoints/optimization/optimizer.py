@@ -1,4 +1,5 @@
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from scipy.optimize import minimize
@@ -13,7 +14,7 @@ class MotorOptimizer:
     for any n-phase machine.
     """
 
-    def __init__(self, model: Any, opts: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, model: Any, opts: dict[str, Any] | None = None) -> None:
         """
         Initializes the optimizer with a torque model and solver settings.
 
@@ -27,7 +28,7 @@ class MotorOptimizer:
             opts if opts is not None else {"disp": False, "ftol": 1e-8, "maxiter": 500}
         )
 
-    def _get_base_constraints(self, transform: Any) -> List[Dict[str, Any]]:
+    def _get_base_constraints(self, transform: Any) -> list[dict[str, Any]]:
         """
         Constructs the physical inequality constraints (Current and Voltage limits).
 
@@ -60,10 +61,10 @@ class MotorOptimizer:
     def _run_optimization(
         self,
         objective_fun: Callable[[np.ndarray], float],
-        constraints: List[Dict[str, Any]],
-        candidates: List[np.ndarray],
-        opts: Dict[str, Any],
-    ) -> Tuple[np.ndarray, float, bool]:
+        constraints: list[dict[str, Any]],
+        candidates: list[np.ndarray],
+        opts: dict[str, Any],
+    ) -> tuple[np.ndarray, float, bool]:
         """
         Internal multi-start solver engine. Executes SLSQP from multiple starting points
         to avoid local minima and find the global optimum.
@@ -101,9 +102,9 @@ class MotorOptimizer:
     def maximize_torque(
         self,
         transform: Any,
-        vec_curr_guess: Optional[np.ndarray] = None,
-        opts: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[np.ndarray, float, bool]:
+        vec_curr_guess: np.ndarray | None = None,
+        opts: dict[str, Any] | None = None,
+    ) -> tuple[np.ndarray, float, bool]:
         """
         Finds the current vector that produces the maximum possible torque
         under current and voltage limits.
@@ -135,9 +136,9 @@ class MotorOptimizer:
         self,
         torq_target: float,
         transform: Any,
-        vec_curr_guess: Optional[np.ndarray] = None,
-        opts: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[np.ndarray, bool]:
+        vec_curr_guess: np.ndarray | None = None,
+        opts: dict[str, Any] | None = None,
+    ) -> tuple[np.ndarray, bool]:
         """
         Finds the minimum current magnitude (Maximum Torque Per Ampere logic)
         required to produce a specific target torque.

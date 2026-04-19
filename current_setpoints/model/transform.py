@@ -1,4 +1,3 @@
-from typing import Tuple
 
 import numpy as np
 
@@ -120,7 +119,7 @@ class Transform:
 
     def get_volt_ph(
         self, vec_curr_dq: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Calculates phase voltages, including zero-sequence components if enabled.
 
@@ -161,7 +160,7 @@ class Transform:
 
     def get_max_vals(
         self, vec_curr_dq: np.ndarray
-    ) -> Tuple[float, float, np.ndarray, float, float, float, float, float]:
+    ) -> tuple[float, float, np.ndarray, float, float, float, float, float]:
         """
         Computes peak values, angles, and RMS metrics for current and voltage.
 
@@ -211,7 +210,7 @@ class Transform:
 
     def count_peaks(
         self, vec_curr_dq: np.ndarray, machine: BaseMachine, tol: float = 1e-4
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int]:
         """
         Determines the number of active peaks hitting physical limits for current and voltage.
 

@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -12,7 +11,7 @@ ANALYTICAL_BIAS_TERM: float = 0.0
 
 def get_analytical_tensors(
     machine: BaseMachine, device: torch.device
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     """
     Helper to convert machine model matrices from a machine object to PyTorch tensors.
     Note: B_tensor is no longer fetched here because it is dynamically updated.
@@ -129,7 +128,7 @@ def load_neural_model(
     input_size: int,
     machine: BaseMachine,
     device: torch.device,
-) -> Tuple[NeuralTorquePredictor, StandardScaler]:
+) -> tuple[NeuralTorquePredictor, StandardScaler]:
     """
     Loads saved scaler data and model weights, initializing the predictor.
 

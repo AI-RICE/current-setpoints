@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,7 +11,7 @@ class PlotConfig:
     """
 
     @classmethod
-    def get_colors(cls) -> Dict[int, str]:
+    def get_colors(cls) -> dict[int, str]:
         return {
             0: "#1f77b4",
             1: "#ff7f0e",
@@ -25,7 +25,7 @@ class PlotConfig:
         }
 
     @classmethod
-    def get_labels(cls) -> Dict[int, str]:
+    def get_labels(cls) -> dict[int, str]:
         return {
             0: r"MTPA$_{0}$",
             1: r"MTPA$_{1}$",
@@ -39,8 +39,8 @@ class PlotConfig:
 
     @classmethod
     def get_rc_params(
-        cls, custom_overrides: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        cls, custom_overrides: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         base_params = {
             "font.size": 20,
             "axes.labelsize": 22,
@@ -95,7 +95,7 @@ class PlotConfig:
         mask: np.ndarray,
         cbar_label: str,
         y_label: str = "Torque [Nm]",
-        cbar_kwargs: Optional[Dict] = None,
+        cbar_kwargs: dict | None = None,
     ) -> None:
         omega_2d, torq_2d = np.meshgrid(omega_rpm, vec_torq)
 

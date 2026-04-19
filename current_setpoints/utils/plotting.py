@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,8 +11,8 @@ from .plot_config import PlotConfig
 def plot_grid_segments(
     data_obj: Any,
     title: str = "Segments Overview",
-    machine: Optional[BaseMachine] = None,
-    override_torq_2d: Optional[np.ndarray] = None,
+    machine: BaseMachine | None = None,
+    override_torq_2d: np.ndarray | None = None,
 ) -> None:
     """
     Plots the motor operating regions.
@@ -65,7 +65,7 @@ def plot_grid_segments(
 
 
 def plot_global_performance(
-    df: Optional[pd.DataFrame], machine: BaseMachine, models: Optional[List[str]] = None
+    df: pd.DataFrame | None, machine: BaseMachine, models: list[str] | None = None
 ) -> None:
     """
     Generates a comprehensive performance comparison from a DataFrame.
@@ -170,7 +170,7 @@ def plot_global_performance(
         plt.show()
 
 
-def plot_residual_torque_error(dict_grid: Dict[str, Any], machine: BaseMachine) -> None:
+def plot_residual_torque_error(dict_grid: dict[str, Any], machine: BaseMachine) -> None:
     omega_rpm = dict_grid["vec_omega"] * dict_grid.get(
         "const_mech_speed", 30 / (np.pi * machine.n_ppairs)
     )
@@ -197,8 +197,8 @@ def plot_residual_torque_error(dict_grid: Dict[str, Any], machine: BaseMachine) 
 
 
 def plot_current_trajectories_split(
-    dict_grid_base: Dict[str, Any],
-    dict_grid_recalc: Dict[str, Any],
+    dict_grid_base: dict[str, Any],
+    dict_grid_recalc: dict[str, Any],
     machine: BaseMachine,
 ) -> None:
     colors_map = PlotConfig.get_colors()
@@ -264,8 +264,8 @@ def plot_current_trajectories_split(
 
 
 def plot_joule_losses_reduction(
-    dict_grid_base: Dict[str, Any],
-    dict_grid_recalc: Dict[str, Any],
+    dict_grid_base: dict[str, Any],
+    dict_grid_recalc: dict[str, Any],
     machine: BaseMachine,
 ) -> None:
     omega_rpm = dict_grid_recalc["vec_omega"] * dict_grid_recalc.get(
