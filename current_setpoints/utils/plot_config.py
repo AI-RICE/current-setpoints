@@ -74,30 +74,31 @@ class PlotConfig:
         ``PlotConfig.get_labels`` so segment regimes appear in canonical order.
 
         Args:
-            figure_or_ax: A Figure, an Axes, or an array of Axes.
+            figure_or_ax: A Figure, an Axes, or an ndarray of Axes.
             loc: Legend location, forwarded to matplotlib's ``legend``.
             **kwargs: Additional keyword arguments forwarded to ``legend``.
         """
-        by_label: dict[str, Any] = {}
-
+        legend_target: Figure | Axes
         axes_list: list[Axes]
-        target: Figure | Axes
 
         if isinstance(figure_or_ax, Figure):
-            axes_list = figure_or_ax.axes
-            target = figure_or_ax
+            axes_list = list(figure_or_ax.axes)
+            legend_target = figure_or_ax
         elif isinstance(figure_or_ax, Axes):
             axes_list = [figure_or_ax]
-            target = figure_or_ax
+            legend_target = figure_or_ax
         elif isinstance(figure_or_ax, np.ndarray):
-            axes_list = figure_or_ax.flatten().tolist()
+            axes_list = [ax for ax in figure_or_ax.flatten() if isinstance(ax, Axes)]
             if not axes_list:
                 return
-            target = axes_list[0]
+            legend_target = axes_list[0]
         else:
-            raise TypeError("Unsupported type passed to apply_deduplicated_legend")
+            raise TypeError(
+                f"figure_or_ax must be a Figure, Axes, or ndarray of Axes; "
+                f"got {type(figure_or_ax).__name__}."
+            )
 
-        # 2. Extract handles and labels safely
+        by_label: dict[str, Any] = {}
         for ax in axes_list:
             handles, labels = ax.get_legend_handles_labels()
             for h, lbl in zip(handles, labels, strict=True):
@@ -105,6 +106,7 @@ class PlotConfig:
                     by_label[lbl] = h
 
         labels_map = cls.get_labels()
+        # Reverse map for O(1) sort key lookup (was O(n) per call inside sorted()).
         label_to_idx = {v: k for k, v in labels_map.items()}
 
         sorted_labels = sorted(
@@ -112,7 +114,7 @@ class PlotConfig:
         )
         sorted_handles = [by_label[lbl] for lbl in sorted_labels]
 
-        target.legend(sorted_handles, sorted_labels, loc=loc, **kwargs)
+        legend_target.legend(sorted_handles, sorted_labels, loc=loc, **kwargs)
 
     @classmethod
     def plot_speed_torque_heatmap(

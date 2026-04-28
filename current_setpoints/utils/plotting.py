@@ -41,7 +41,6 @@ def plot_grid_segments(
 
         omega_2d, default_torq_2d = np.meshgrid(omega_rpm, vec_torq)
 
-        # Use the override array if provided, otherwise default to commanded torque
         torq_2d = override_torq_2d if override_torq_2d is not None else default_torq_2d
 
         modes_valid = data_obj.segments
@@ -51,8 +50,6 @@ def plot_grid_segments(
         torq_valid = torq_2d[valid_mask]
         modes_valid = modes_valid[valid_mask]
 
-        # Use the canonical unique-segments source from MachineData. Cast to int
-        # there means we can drop the per-iteration int(seg_val) casts below.
         for seg_val in data_obj.unique_segments:
             mask = modes_valid == seg_val
             color = colors_map.get(seg_val, "black")
@@ -189,32 +186,45 @@ def plot_global_performance(
 
 def plot_residual_torque_error(dict_grid: dict[str, Any], machine: BaseMachine) -> None:
     """
-    Plots the residual torque error (commanded minus neural-predicted)
-    over the (speed, torque) operating plane.
+    Plots the residual torque error (commanded minus neural-predicted) on the
+    correction grid. Each cell is positioned at its achieved (neural-predicted)
+    torque rather than at the commanded torque value.
     """
     omega_rpm = dict_grid["vec_omega"] * dict_grid.get(
         "const_mech_speed", 30 / (np.pi * machine.n_ppairs)
     )
     T_target = dict_grid["vec_torq"]
-
-    T_target_2d = np.tile(T_target[:, np.newaxis], (1, len(omega_rpm)))
     T_actual_2d = dict_grid["grid_torq_neural"]
+    T_target_2d = np.tile(T_target[:, np.newaxis], (1, len(omega_rpm)))
 
-    valid_mask = ~np.isnan(dict_grid["curr_dq_grid"][0])
-    T_diff = np.where(valid_mask, T_target_2d - T_actual_2d, np.nan)
+    valid_mask = ~np.isnan(dict_grid["curr_dq_grid"][0]) & ~np.isnan(T_actual_2d)
+    T_diff = T_target_2d - T_actual_2d
+
+    omega_2d, _ = np.meshgrid(omega_rpm, T_target)
 
     custom_rc = PlotConfig.get_rc_params(
         {"font.size": 24, "axes.labelsize": 26, "axes.titlesize": 26}
     )
     with plt.rc_context(custom_rc):
-        PlotConfig.plot_speed_torque_heatmap(
-            omega_rpm,
-            T_target,
-            T_diff,
-            valid_mask,
-            cbar_label="Residual Torque Error $T_{base} - T_{PAM}$ [Nm]",
-            y_label="Predicted Torque [Nm]",
+        fig, ax = plt.subplots(figsize=(14, 9))
+        sc = ax.scatter(
+            omega_2d[valid_mask],
+            T_actual_2d[valid_mask],
+            c=T_diff[valid_mask],
+            cmap="Reds",
+            s=40,
+            marker="s",
+            linewidths=0,
         )
+        cbar = fig.colorbar(sc, ax=ax)
+        cbar.set_label(
+            "Residual Torque Error $T_{base} - T_{PAM}$ [Nm]", size=24, labelpad=20
+        )
+        ax.set_xlabel("Speed [r/min]", labelpad=10)
+        ax.set_ylabel("Achieved Torque [Nm]", labelpad=10)
+        ax.grid(True, which="both", linestyle="-", alpha=0.4)
+        plt.tight_layout()
+        plt.show()
 
 
 def plot_current_trajectories_split(
@@ -296,17 +306,27 @@ def plot_joule_losses_reduction(
     machine: BaseMachine,
 ) -> None:
     """
-    Plots the Joule losses reduction (baseline minus recalculated) as a heatmap
-    over the (speed, torque) plane and prints the maximum savings achieved.
+    Plots the Joule losses reduction (baseline minus recalculated) as a
+    heatmap over the (speed, achieved-torque) plane. Each cell is positioned
+    at its neural-predicted (achieved) torque from ``dict_grid_recalc``,
+    matching the y-axis convention used by the other achieved-torque plots.
+    Prints the maximum savings achieved.
+
+    Args:
+        dict_grid_base: Baseline grid (analytical optimum).
+        dict_grid_recalc: Recalculated grid (neural-optimized currents);
+            also provides ``grid_torq_neural`` as the per-cell y-coordinate.
+        machine: Machine instance (used for the speed-axis conversion).
     """
     omega_rpm = dict_grid_recalc["vec_omega"] * dict_grid_recalc.get(
         "const_mech_speed", 30 / (np.pi * machine.n_ppairs)
     )
     vec_torq = dict_grid_recalc["vec_torq"]
+    T_actual_2d = dict_grid_recalc["grid_torq_neural"]
 
     mask_base = ~np.isnan(dict_grid_base["curr_dq_grid"][0])
     mask_recalc = ~np.isnan(dict_grid_recalc["curr_dq_grid"][0])
-    common_mask = mask_base & mask_recalc
+    common_mask = mask_base & mask_recalc & ~np.isnan(T_actual_2d)
 
     if not np.any(common_mask):
         print("No overlapping data points found.")
@@ -326,16 +346,28 @@ def plot_joule_losses_reduction(
         dict_grid_recalc["curr_dq_grid"] ** 2 * R_broad, axis=0
     )
 
-    P_diff = np.where(common_mask, P_loss_base - P_loss_recalc, np.nan)
+    P_diff = P_loss_base - P_loss_recalc
+    omega_2d, _ = np.meshgrid(omega_rpm, vec_torq)
 
     with plt.rc_context(PlotConfig.get_rc_params()):
-        PlotConfig.plot_speed_torque_heatmap(
-            omega_rpm,
-            vec_torq,
-            P_diff,
-            common_mask,
-            cbar_label="Joule Losses Reduction [Watts]",
-            cbar_kwargs={"rotation": 270, "labelpad": 30, "size": 20},
+        fig, ax = plt.subplots(figsize=(14, 9))
+        sc = ax.scatter(
+            omega_2d[common_mask],
+            T_actual_2d[common_mask],
+            c=P_diff[common_mask],
+            cmap="Reds",
+            s=40,
+            marker="s",
+            linewidths=0,
         )
+        cbar = fig.colorbar(sc, ax=ax)
+        cbar.set_label(
+            "Joule Losses Reduction [Watts]", rotation=270, labelpad=30, size=20
+        )
+        ax.set_xlabel("Speed [r/min]", labelpad=10)
+        ax.set_ylabel("Achieved Torque [Nm]", labelpad=10)
+        ax.grid(True, which="both", linestyle="-", alpha=0.4)
+        plt.tight_layout()
+        plt.show()
 
-    print(f"Analysis Complete. Max savings: {np.nanmax(P_diff):.2f} W")
+    print(f"Analysis Complete. Max savings: {np.nanmax(P_diff[common_mask]):.2f} W")
