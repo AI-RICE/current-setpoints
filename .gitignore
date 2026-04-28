@@ -1,16 +1,43 @@
-*.pth
-*.pkl
-*.npy
-*.csv
-*.mat
-
+# Bytecode
 __pycache__/
+*.py[cod]
+*$py.class
 
-/data/
+# Distribution / packaging
+*.egg-info/
+build/
+dist/
+*.egg
+
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
+# Editor / IDE
 .vscode/
-*.egg-info/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing / linting caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mkdocs build output
+/site/
+
+# Generated artifacts (not source)
+/data/
+*.pth
+*.pkl
+*.npy
+*.csv
+*.mat

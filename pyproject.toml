@@ -5,46 +5,57 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "current-setpoints"
 version = "0.1.0"
-description = "A library for calculating optimal current setpoints for PMSM drives using analytical and neural models"
+description = "A library for calculating optimal current setpoints in multiphase PMSM drives using analytical and neural torque models"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "Tereza Matasova", email = "matasovt@fel.zcu.cz" }
 ]
+keywords = ["pmsm", "motor-control", "neural-network", "optimization", "multiphase"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Topic :: Scientific/Engineering :: Drive control",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 dependencies = [
-    "numpy",
-    "pandas",
-    "scipy",
-    "torch",          
-    "scikit-learn",   
-    "matplotlib",    
-    "seaborn"
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "torch>=2.0",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "ruff"  # Replaced black and flake8 with ruff
+    "pytest>=7.0",
+    "ruff>=0.1",
 ]
+docs = [
+    "mkdocs>=1.5",
+]
+
+[project.urls]
+Repository = "https://github.com/AI-RICE/current-setpoints.git"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["*"]
-exclude = ["tests*"]
+include = ["current_setpoints*"]
+exclude = ["tests*", "notebooks*", "data*", "weights*", "docs*"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 88
-#TODO: temporary commented out for debugging
-#extend-exclude = ["*.ipynb"]
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP"]
@@ -56,3 +67,7 @@ known-first-party = ["current_setpoints"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

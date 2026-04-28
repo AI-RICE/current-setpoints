@@ -1,5 +1,5 @@
 site_name: current-setpoints
-site_description: A library for calculating optimal current setpoints for PMSM drives
+site_description: A library for calculating optimal current setpoints in multiphase PMSM drives
 site_author: Tereza Matasova
 
 theme:
@@ -7,5 +7,3 @@ theme:
 
 nav:
   - Home: index.md
-  - Usage: usage.md
-  - API Reference: api.md
