@@ -118,6 +118,7 @@ class MotorOptimizer:
             Tuple: (optimal_dq_currents, max_torque_value, success)
         """
         opts = opts if opts is not None else self.opts
+        self.model.set_omega(transform.omega)
         constraints = self._get_base_constraints(transform)
         candidates = self.model.get_candidates(vec_curr_guess)
 
@@ -153,6 +154,7 @@ class MotorOptimizer:
             Tuple: (optimal_dq_currents, success)
         """
         opts = opts if opts is not None else self.opts
+        self.model.set_omega(transform.omega)
         constraints = self._get_base_constraints(transform)
         candidates = self.model.get_candidates(vec_curr_guess)
 

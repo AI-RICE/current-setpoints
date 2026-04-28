@@ -252,7 +252,7 @@ def plot_current_trajectories_split(
             axes[h, 1].set_xlabel(f"$i_{{d{h_num}}}$ [A]")
 
         PlotConfig.apply_deduplicated_legend(
-            fig, bbox_to_anchor=(0.92, 0.5), markerscale=3
+            fig, loc="center right", bbox_to_anchor=(0.92, 0.5), markerscale=3
         )
 
         axes[0, 0].set_title("Baseline (Analytical)")

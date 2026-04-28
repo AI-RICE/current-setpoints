@@ -160,6 +160,7 @@ def calculate_grid(
         grid["vec_torq"] = dict_grid_corr["vec_torq"]
         grid["vec_omega"] = dict_grid_corr["vec_omega"]
         grid_torq_targets = dict_grid_corr["grid_torq_neural"]
+        grid["grid_torq_neural"] = grid_torq_targets
 
     grid.update(_init_grid_arrays(dim, n_torq, n_omega))
 
