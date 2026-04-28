@@ -39,16 +39,6 @@ class MachineData:
         if k_skip is not None and k_skip > 1:
             self.select_k(k_skip)
 
-        self.torq_grid: np.ndarray
-        self.omega_grid: np.ndarray
-        self.torq_grid, self.omega_grid = np.meshgrid(
-            self.torq, self.omega, indexing="ij"
-        )
-
-        self.unique_segments: np.ndarray = np.unique(
-            self.segments[~np.isnan(self.segments)]
-        ).astype(int)
-
     def _check_dimensions(self) -> None:
         """
         Ensures all input arrays are compatible with torq and omega dimensions.
@@ -83,11 +73,38 @@ class MachineData:
         Subsamples the torque/speed vectors and all associated matrices.
 
         Args:
-            k_skip: The step size for slicing the arrays.
+            k_skip: The step size for slicing the arrays. Must be >= 1.
         """
+        if not isinstance(k_skip, (int, np.integer)) or k_skip < 1:
+            raise ValueError(
+                f"k_skip must be a positive integer (>= 1), got {k_skip!r}."
+            )
+        if k_skip == 1:
+            return
+
         self.omega = self.omega[::k_skip]
         self.torq = self.torq[::k_skip]
-
         self.segments = self.segments[::k_skip, ::k_skip]
-
         self.curr_dq_grid = self.curr_dq_grid[:, ::k_skip, ::k_skip]
+
+        if self.torq.size == 0 or self.omega.size == 0:
+            raise ValueError(
+                f"Subsampling with k_skip={k_skip} produced an empty grid."
+            )
+
+    @property
+    def torq_grid(self) -> np.ndarray:
+        """Meshgrid of torque values, shape (n_torq, n_omega)."""
+        grid, _ = np.meshgrid(self.torq, self.omega, indexing="ij")
+        return grid
+
+    @property
+    def omega_grid(self) -> np.ndarray:
+        """Meshgrid of speed values, shape (n_torq, n_omega)."""
+        _, grid = np.meshgrid(self.torq, self.omega, indexing="ij")
+        return grid
+
+    @property
+    def unique_segments(self) -> np.ndarray:
+        """Sorted, integer-cast unique non-NaN segment labels present in the grid."""
+        return np.unique(self.segments[~np.isnan(self.segments)]).astype(int)

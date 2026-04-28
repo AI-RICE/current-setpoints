@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 from current_setpoints.data import FluxValues, IEEEMachine2
 from current_setpoints.model import Transform
@@ -14,9 +14,9 @@ from current_setpoints.optimization import (
     get_correction_grid,
     grid_to_data,
 )
+from current_setpoints.utils import NeuralTorquePredictor
 
 
-# TODO novy soubor s testy pro transformace
 def test_calculate_grid_analytical_returns_correct_shapes():
     """
     Tests that calculate_grid processes a minimal 2x2 grid
@@ -85,11 +85,14 @@ class DummyScaler:
         return X
 
 
-class DummyNet(nn.Module):
+class DummyNet(NeuralTorquePredictor):
     """A fake neural network that outputs a dummy torque."""
 
-    def forward(self, x, b=None):  # <--- Make 'b' optional to match get_correction_grid
-        return torch.sum(x, dim=1, keepdim=True)
+    def __init__(self):
+        super(nn.Module, self).__init__()
+
+    def forward(self, x_normed: torch.Tensor, B_tensor: torch.Tensor) -> torch.Tensor:
+        return torch.sum(x_normed, dim=1, keepdim=True)
 
 
 def test_calculate_grid_neural_runs_successfully():
@@ -157,7 +160,6 @@ def test_get_correction_grid_adds_neural_torque():
         machine=real_machine,
     )
 
-    # 4. Assertions
     assert "grid_torq_neural" in corr_grid, "Should append the new torque matrix"
     assert corr_grid["grid_torq_neural"].shape == (n_torq, n_omega)
 

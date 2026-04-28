@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 from typing import Any
 
 import numpy as np
 import torch
 
 from ..data import BaseMachine
-from ..model import MachineData
+from ..model import MachineData, Transform
+from .optimizer import MotorOptimizer
 
 
 def grid_to_data(grid: dict[str, Any], k_skip: int) -> MachineData:
@@ -13,7 +16,8 @@ def grid_to_data(grid: dict[str, Any], k_skip: int) -> MachineData:
 
     Args:
         grid: Dictionary containing optimization results and vectors.
-        k_skip: Number of initial samples to skip for training/processing.
+        k_skip: Step size for downsampling the grid; forwarded to
+            ``MachineData.select_k``. A value of 1 keeps every sample.
 
     Returns:
         MachineData: Encapsulated motor data for training or analysis.
@@ -63,7 +67,7 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarr
 
 def _fill_grid_point(
     grid: dict[str, Any],
-    transform: Any,
+    transform: Transform,
     vec_curr_dq: np.ndarray,
     idx_torq: int,
     idx_omega: int,
@@ -104,8 +108,8 @@ def _fill_grid_point(
 
 
 def calculate_grid(
-    optimizer: Any,
-    transform: Any,
+    optimizer: MotorOptimizer,
+    transform: Transform,
     opts: dict[str, Any],
     mode: str = "standard",
     dict_grid_corr: dict[str, Any] | None = None,
@@ -120,7 +124,11 @@ def calculate_grid(
     Args:
         optimizer: MotorOptimizer instance containing the torque model.
         transform: Transform instance handling speed-dependent matrices.
-        opts: Configuration dictionary (n_torq, n_omega, torq_min, omega_min).
+        opts: Configuration dictionary with keys:
+            ``n_torq`` (int), ``n_omega`` (int),
+            ``torq_min`` (float, Nm),
+            ``omega_min`` (float, mechanical RPM; ``machine.omega_max`` is
+            used as the upper bound and is also in mechanical RPM).
         mode: Calculation strategy choice.
         dict_grid_corr: Baseline result dictionary required for "recalculated" mode.
 
@@ -181,7 +189,7 @@ def calculate_grid(
         for idx_torq in range(n_torq):
             if mode == "standard":
                 torq_target = grid["vec_torq"][idx_torq]
-                vec_curr_dq_guess = vec_curr_dq_prev
+                vec_curr_dq_guess = vec_curr_dq_prev.copy()
 
                 if torq_target > torq_max_local or torq_target > torq_max_global:
                     break
@@ -268,7 +276,7 @@ def get_correction_grid(
         b_vecs = []
         for i in range(len(omega_valid)):
             machine.update_state(omega=omega_valid[i], vec_curr_dq=curr_valid[:, i])
-            b_vecs.append(machine.vec_b)
+            b_vecs.append(machine.vec_b.copy())
 
         B_tensor = torch.from_numpy(np.array(b_vecs)).float().to(device).unsqueeze(-1)
 

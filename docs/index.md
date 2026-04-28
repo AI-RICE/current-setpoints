@@ -87,8 +87,8 @@ from current_setpoints.utils import load_neural_model
 device = torch.device("cpu")
 
 neural_net, scaler = load_neural_model(
-    weights_path="weights/NTM_Cloned_Corrected.pth",
-    scaler_path="weights/NTM_Cloned_Corrected_Scaler.npy",
+    weights_path="weights/NTM_Weights.pth",
+    scaler_path="weights/NTM_Scaler.npy",
     hidden_size=12,
     input_size=5,
     machine=machine,
@@ -115,7 +115,7 @@ End-to-end examples live in `notebooks/`:
 
 - `main.ipynb` — full pipeline: baseline map, correction grid, recalculated
   grid, compensated map, plus diagnostic plots.
-- `nn_trainer.ipynb` — neural network training pipeline.
+- `model_trainer.ipynb` — neural network training pipeline.
 
 For full source code and additional documentation, see the
 [GitHub repository](https://github.com/AI-RICE/current-setpoints.git).

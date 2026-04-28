@@ -32,7 +32,8 @@ class BaseMachine(ABC):
             L_stat: Stator inductance matrix.
             curr_max: Maximum peak phase current [A].
             volt_max: Maximum peak phase voltage [V].
-            omega_max: Maximum electrical speed [rad/s].
+            omega_max: Maximum mechanical speed [RPM]. Consumed by grid.py
+                as ``omega_max / const_mech_speed`` to yield electrical rad/s.
         """
         self.n_phases: int = n_phases
         self.n_ppairs: int = n_ppairs
@@ -72,7 +73,7 @@ class BaseMachine(ABC):
         Args:
             curr_max: Maximum peak phase current [A].
             volt_max: Maximum peak phase voltage [V].
-            omega_max: Maximum electrical speed [rad/s].
+            omega_max: Maximum mechanical speed [RPM].
         """
         self.curr_max = curr_max
         self.volt_max = volt_max
@@ -104,6 +105,10 @@ class BaseMachine(ABC):
         """
         Internal helper to strictly verify vector dimensions.
         """
+        if vec.ndim == 0:
+            raise ValueError(
+                f"Vector {name} must be 1D or 2D, not a 0-D scalar."
+            )
         if vec.ndim > 1 and vec.shape[1] != 1:
             raise ValueError(f"Vector {name} must be a 1D or column vector.")
         if vec.shape[0] != self.n_phases - 1:
@@ -186,8 +191,9 @@ class IEEEMachine2(GenericMachine):
 
     def __init__(self, flux_values: FluxValues) -> None:
         """
-        Initializes the IEEEMachine2 with benchmark electrical parameters and connects
-        it to the centralized flux provider.
+        Initializes the IEEEMachine2 with benchmark electrical parameters and
+        connects it to the centralized flux provider. Flux constants for this
+        machine are registered by FluxValues itself (see parameters.py).
         """
         n_phases = 5
         n_ppairs = 8

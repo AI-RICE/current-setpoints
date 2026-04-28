@@ -2,6 +2,8 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
 
 class PlotConfig:
@@ -12,6 +14,7 @@ class PlotConfig:
 
     @classmethod
     def get_colors(cls) -> dict[int, str]:
+        """Returns the color palette mapping segment index to hex color."""
         return {
             0: "#1f77b4",
             1: "#ff7f0e",
@@ -26,6 +29,7 @@ class PlotConfig:
 
     @classmethod
     def get_labels(cls) -> dict[int, str]:
+        """Returns the label mapping for operating regime segment indices."""
         return {
             0: r"MTPA$_{0}$",
             1: r"MTPA$_{1}$",
@@ -41,6 +45,12 @@ class PlotConfig:
     def get_rc_params(
         cls, custom_overrides: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        """
+        Returns a default matplotlib rcParams dict, optionally merged with caller overrides.
+
+        Args:
+            custom_overrides: Optional rcParams entries that take precedence over defaults.
+        """
         base_params = {
             "font.size": 20,
             "axes.labelsize": 22,
@@ -56,34 +66,52 @@ class PlotConfig:
 
     @classmethod
     def apply_deduplicated_legend(
-        cls, figure_or_ax: Any, loc: str = "best", **kwargs
+        cls, figure_or_ax: Figure | Axes | np.ndarray, loc: str = "best", **kwargs: Any
     ) -> None:
-        by_label = {}
+        """
+        Builds a single legend on the figure (or single axes) with each label
+        appearing at most once, and orders entries to match
+        ``PlotConfig.get_labels`` so segment regimes appear in canonical order.
 
-        if hasattr(figure_or_ax, "get_axes") and callable(figure_or_ax.get_axes):
+        Args:
+            figure_or_ax: A Figure, an Axes, or an array of Axes.
+            loc: Legend location, forwarded to matplotlib's ``legend``.
+            **kwargs: Additional keyword arguments forwarded to ``legend``.
+        """
+        by_label: dict[str, Any] = {}
+
+        axes_list: list[Axes]
+        target: Figure | Axes
+
+        if isinstance(figure_or_ax, Figure):
             axes_list = figure_or_ax.axes
+            target = figure_or_ax
+        elif isinstance(figure_or_ax, Axes):
+            axes_list = [figure_or_ax]
+            target = figure_or_ax
+        elif isinstance(figure_or_ax, np.ndarray):
+            axes_list = figure_or_ax.flatten().tolist()
+            if not axes_list:
+                return
+            target = axes_list[0]
         else:
-            # Safely force single Axes or n-dimensional arrays of Axes into a flat 1D iterable
-            axes_list = np.atleast_1d(figure_or_ax).flatten()
+            raise TypeError("Unsupported type passed to apply_deduplicated_legend")
 
+        # 2. Extract handles and labels safely
         for ax in axes_list:
             handles, labels = ax.get_legend_handles_labels()
-            for h, lbl in zip(handles, labels):
+            for h, lbl in zip(handles, labels, strict=True):
                 if lbl not in by_label:
                     by_label[lbl] = h
 
         labels_map = cls.get_labels()
+        label_to_idx = {v: k for k, v in labels_map.items()}
 
-        def get_sort_key(lbl: str) -> int:
-            for k, v in labels_map.items():
-                if v == lbl:
-                    return k
-            return 999
-
-        sorted_labels = sorted(by_label.keys(), key=get_sort_key)
+        sorted_labels = sorted(
+            by_label.keys(), key=lambda lbl: label_to_idx.get(lbl, 999)
+        )
         sorted_handles = [by_label[lbl] for lbl in sorted_labels]
 
-        target = figure_or_ax if hasattr(figure_or_ax, "legend") else axes_list[0]
         target.legend(sorted_handles, sorted_labels, loc=loc, **kwargs)
 
     @classmethod
@@ -95,8 +123,21 @@ class PlotConfig:
         mask: np.ndarray,
         cbar_label: str,
         y_label: str = "Torque [Nm]",
-        cbar_kwargs: dict | None = None,
+        cbar_kwargs: dict[str, Any] | None = None,
     ) -> None:
+        """
+        Renders a scatter heatmap of a scalar field over the (speed, torque) plane,
+        masking entries where ``mask`` is False.
+
+        Args:
+            omega_rpm: Speed axis values [r/min].
+            vec_torq: Torque axis values [Nm].
+            z_grid: 2D field to colorize, shape (n_torq, n_omega).
+            mask: 2D boolean mask of points to plot, same shape as z_grid.
+            cbar_label: Colorbar label string.
+            y_label: Y-axis label.
+            cbar_kwargs: Optional kwargs forwarded to ``cbar.set_label``.
+        """
         omega_2d, torq_2d = np.meshgrid(omega_rpm, vec_torq)
 
         x_vals = omega_2d[mask]

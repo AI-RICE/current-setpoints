@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 from scipy.optimize import minimize
 
+from ..model import Transform
 from .constraints import current_constraint, voltage_constraint
+from .models import BaseTorqueModel
 
 
 class MotorOptimizer:
@@ -14,7 +18,9 @@ class MotorOptimizer:
     for any n-phase machine.
     """
 
-    def __init__(self, model: Any, opts: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, model: BaseTorqueModel, opts: dict[str, Any] | None = None
+    ) -> None:
         """
         Initializes the optimizer with a torque model and solver settings.
 
@@ -28,9 +34,18 @@ class MotorOptimizer:
             opts if opts is not None else {"disp": False, "ftol": 1e-8, "maxiter": 500}
         )
 
-    def _get_base_constraints(self, transform: Any) -> list[dict[str, Any]]:
+    def _get_base_constraints(self, transform: Transform) -> list[dict[str, Any]]:
         """
         Constructs the physical inequality constraints (Current and Voltage limits).
+
+        Note: each safe_*_constraint closure calls ``machine.update_state``
+        before the underlying constraint function. The downstream
+        ``current_constraint`` / ``voltage_constraint`` (and the methods they
+        invoke on ``transform``) also synchronize machine state internally.
+        These redundant calls are kept intentionally so that constraint
+        evaluation is robust regardless of whether the surrounding
+        optimization loop has refreshed state — removing them would couple
+        constraint correctness to caller behavior.
 
         Args:
             transform: The Transform instance providing current speed/voltage matrices.
@@ -39,11 +54,11 @@ class MotorOptimizer:
             List[Dict]: Scipy-compatible constraint definitions.
         """
 
-        def safe_current_constraint(vec_curr_dq):
+        def safe_current_constraint(vec_curr_dq: np.ndarray) -> float:
             self.model.machine.update_state(transform.omega, vec_curr_dq)
             return current_constraint(vec_curr_dq, self.model.machine, transform)
 
-        def safe_voltage_constraint(vec_curr_dq):
+        def safe_voltage_constraint(vec_curr_dq: np.ndarray) -> float:
             self.model.machine.update_state(transform.omega, vec_curr_dq)
             return voltage_constraint(vec_curr_dq, self.model.machine, transform)
 
@@ -101,7 +116,7 @@ class MotorOptimizer:
 
     def maximize_torque(
         self,
-        transform: Any,
+        transform: Transform,
         vec_curr_guess: np.ndarray | None = None,
         opts: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, float, bool]:
@@ -136,7 +151,7 @@ class MotorOptimizer:
     def minimize_current(
         self,
         torq_target: float,
-        transform: Any,
+        transform: Transform,
         vec_curr_guess: np.ndarray | None = None,
         opts: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, bool]:
@@ -166,7 +181,7 @@ class MotorOptimizer:
         constraints.append({"type": "eq", "fun": eq_cons})
 
         def objective(vec_curr_dq: np.ndarray) -> float:
-            return np.sum(vec_curr_dq**2)
+            return float(np.sum(vec_curr_dq**2))
 
         vec_curr_dq_best, _, success = self._run_optimization(
             objective, constraints, candidates, opts

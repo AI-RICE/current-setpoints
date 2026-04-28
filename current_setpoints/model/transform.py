@@ -1,4 +1,3 @@
-
 import numpy as np
 
 from ..data import BaseMachine
@@ -21,7 +20,9 @@ class Transform:
             machine: Object containing n_phases, R_stat, L_stat, flux_volt, and update_state.
             omega: Initial electrical speed in rad/s.
             add_volt_0: Boolean flag to enable zero-sequence (SVPWM) voltage injection.
-            n_theta: Angular resolution for phase mapping.
+            n_theta: Angular resolution for phase mapping. Internally rounded to a
+                multiple of (2 * n_phases) so that an integer number of samples
+                corresponds to a phase shift of 2*pi/n_phases.
         """
         self.machine: BaseMachine = machine
         self.n_phases: int = machine.n_phases
@@ -32,7 +33,15 @@ class Transform:
             raise ValueError("n_theta must be positive")
 
         n_theta = round(n_theta / (2 * machine.n_phases)) * 2 * machine.n_phases
+        if n_theta < 2 * machine.n_phases:
+            raise ValueError(
+                f"n_theta is too small after rounding to a multiple of "
+                f"2*n_phases ({2 * machine.n_phases}). Increase the requested "
+                f"n_theta to at least {2 * machine.n_phases}."
+            )
         self.vec_theta: np.ndarray = np.linspace(0, 2 * np.pi, n_theta + 1)
+
+        self._phase_shift_samples: int = n_theta // self.n_phases
 
         self.compute_matrices_init()
         self.compute_matrices(omega)
@@ -42,9 +51,7 @@ class Transform:
         Computes speed-independent matrices for the DQ-to-Phase transformation.
         Note: BEMF is no longer precomputed here because flux is dynamic.
         """
-        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat @ np.eye(
-            self.dim
-        )
+        self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat.copy()
         self.mat_curr_dq_to_volt_dq_omega: np.ndarray = (
             self.machine.mat_crossc @ self.machine.L_stat
         )
@@ -99,6 +106,48 @@ class Transform:
             raise ValueError(f"Current vector must be length {self.dim}")
         return self.mat_dq_to_ph @ vec_curr_dq
 
+    def _get_volt_dq_internal(self, vec_curr_dq: np.ndarray) -> np.ndarray:
+        """Computes DQ voltage. Caller is responsible for state freshness."""
+        vec_volt_bemf_dq = self.omega * (
+            self.machine.mat_crossc @ self.machine.flux_volt
+        )
+        return self.mat_curr_dq_to_volt_dq @ vec_curr_dq + vec_volt_bemf_dq
+
+    def _get_volt_ph_internal(
+        self, vec_curr_dq: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Computes phase voltage tuple. Caller is responsible for state freshness."""
+        if vec_curr_dq.ndim != 1 or len(vec_curr_dq) != self.dim:
+            raise ValueError(
+                f"Input current vector shape mismatch: {vec_curr_dq.shape}. Expected ({self.dim},)"
+            )
+
+        vec_volt_bemf_dq = self.omega * (
+            self.machine.mat_crossc @ self.machine.flux_volt
+        )
+        vec_volt_bemf_ph = self.mat_dq_to_ph @ vec_volt_bemf_dq
+        vec_volt_raw = self.mat_curr_dq_to_volt_ph @ vec_curr_dq + vec_volt_bemf_ph
+
+        if self.add_volt_0:
+            n_t = self.vec_theta.size - 1
+            step = self._phase_shift_samples
+            raw = vec_volt_raw[:-1]
+
+            time_idx = np.arange(n_t)
+            shift_idx = np.arange(self.n_phases) * step
+            indices = (time_idx[None, :] - shift_idx[:, None]) % n_t
+            mat_phases = raw[indices]  # (n_phases, n_t)
+
+            vec_volt_0_t = -0.5 * (mat_phases.min(axis=0) + mat_phases.max(axis=0))
+
+            vec_volt_ph = raw + vec_volt_0_t
+            vec_volt_ph = np.append(vec_volt_ph, vec_volt_ph[0])
+            vec_volt_0 = np.append(vec_volt_0_t, vec_volt_0_t[0])
+        else:
+            vec_volt_ph = vec_volt_raw
+            vec_volt_0 = np.zeros_like(vec_volt_raw)
+        return vec_volt_ph, vec_volt_0, vec_volt_raw
+
     def get_volt_dq(self, vec_curr_dq: np.ndarray) -> np.ndarray:
         """
         Calculates the DQ voltage vector based on current, speed, and dynamic flux.
@@ -110,12 +159,7 @@ class Transform:
             np.ndarray: DQ voltage vector.
         """
         self.machine.update_state(self.omega, vec_curr_dq)
-
-        vec_volt_bemf_dq = self.omega * (
-            self.machine.mat_crossc @ self.machine.flux_volt
-        )
-
-        return self.mat_curr_dq_to_volt_dq @ vec_curr_dq + vec_volt_bemf_dq
+        return self._get_volt_dq_internal(vec_curr_dq)
 
     def get_volt_ph(
         self, vec_curr_dq: np.ndarray
@@ -123,40 +167,56 @@ class Transform:
         """
         Calculates phase voltages, including zero-sequence components if enabled.
 
+        When ``add_volt_0`` is True, applies min-max zero-sequence injection
+        (commonly known as SVPWM) to the phase-A voltage time-series. The
+        injected common-mode signal is computed across all n_phases at each
+        time sample (using the symmetry that phase x at time k equals phase A
+        sampled at time k - x * n_theta/n_phases) so that the resulting
+        vec_volt_ph genuinely has reduced peak magnitude vs the raw waveform.
+
         Args:
             vec_curr_dq: DQ current vector.
 
         Returns:
             Tuple: (final_phase_voltage, zero_sequence_voltage, raw_phase_voltage).
+            All three arrays share the same length (n_theta + 1, last sample is
+            a periodic wrap of the first).
         """
-        if vec_curr_dq.ndim != 1 or len(vec_curr_dq) != self.dim:
-            raise ValueError(
-                f"Input current vector shape mismatch: {vec_curr_dq.shape}. Expected ({self.dim},)"
-            )
-
         self.machine.update_state(self.omega, vec_curr_dq)
+        return self._get_volt_ph_internal(vec_curr_dq)
 
-        vec_volt_bemf_dq = self.omega * (
-            self.machine.mat_crossc @ self.machine.flux_volt
-        )
-        vec_volt_bemf_ph = self.mat_dq_to_ph @ vec_volt_bemf_dq
+    @staticmethod
+    def _harmonic_alignment_diff(ang_fundamental: float, ang_h: float, h: int) -> float:
+        """
+        Returns the circular distance, in [0, pi], between (h * ang_fundamental + pi)
+        and ang_h. The condition `h*phi_1 + pi == phi_h (mod 2*pi)` corresponds to
+        flat-top alignment between the fundamental and the h-th harmonic, in which
+        the h-th harmonic subtracts maximally at the fundamental's peak.
+        """
+        delta = (h * ang_fundamental + np.pi - ang_h) % (2 * np.pi)
+        return float(min(delta, 2 * np.pi - delta))
 
-        vec_volt_raw = self.mat_curr_dq_to_volt_ph @ vec_curr_dq + vec_volt_bemf_ph
+    def _alignment_diff_all_harmonics(self, vec_dq: np.ndarray) -> float:
+        """
+        Worst-case (max) alignment deviation across all odd harmonics above the
+        fundamental present in the DQ vector. Generalises the original 5-phase
+        1st-vs-3rd alignment check to any number of phases:
 
-        if self.add_volt_0:
-            mat_volt_res = vec_volt_raw[:-1].reshape(-1, self.n_phases)
-            vec_volt_0 = -0.5 * (
-                np.min(mat_volt_res, axis=1) + np.max(mat_volt_res, axis=1)
-            )
-            vec_volt_ph = mat_volt_res
-            vec_volt_ph = vec_volt_ph.flatten()
-            vec_volt_ph = np.append(vec_volt_ph, vec_volt_ph[0])
-            vec_volt_0 = np.repeat(vec_volt_0, self.n_phases)
-            vec_volt_0 = np.append(vec_volt_0, vec_volt_0[0])
-        else:
-            vec_volt_ph = vec_volt_raw
-            vec_volt_0 = np.zeros_like(vec_volt_raw)
-        return vec_volt_ph, vec_volt_0, vec_volt_raw
+            5-phase  (dim=4): max over {h=3}
+            7-phase  (dim=6): max over {h=3, 5}
+            9-phase  (dim=8): max over {h=3, 5, 7}
+
+        Returns 0.0 for machines without harmonics above the fundamental.
+        """
+        if self.dim < 4:
+            return 0.0
+        ang_1 = np.arctan2(vec_dq[1], vec_dq[0])
+        diffs = []
+        for i in range(1, self.dim // 2):
+            h = 2 * i + 1  # 3, 5, 7, ...
+            ang_h = np.arctan2(vec_dq[2 * i + 1], vec_dq[2 * i])
+            diffs.append(self._harmonic_alignment_diff(ang_1, ang_h, h))
+        return max(diffs)
 
     def get_max_vals(
         self, vec_curr_dq: np.ndarray
@@ -171,31 +231,19 @@ class Transform:
             Tuple: (curr_peak, curr_ang_diff, vec_volt_dq, volt_peak, volt_ang_diff,
                     volt_raw_peak, volt_0_rms, volt_0_peak).
         """
-        vec_volt_ph, vec_volt_0, vec_volt_raw = self.get_volt_ph(vec_curr_dq)
+        self.machine.update_state(self.omega, vec_curr_dq)
+
+        vec_volt_ph, vec_volt_0, vec_volt_raw = self._get_volt_ph_internal(vec_curr_dq)
+        vec_volt_dq = self._get_volt_dq_internal(vec_curr_dq)
+
         curr_peak = np.max(np.abs(self.get_curr_ph(vec_curr_dq)))
         volt_peak = np.max(np.abs(vec_volt_ph))
         volt_raw_peak = np.max(np.abs(vec_volt_raw))
         volt_0_rms = np.sqrt(np.mean(vec_volt_0**2))
         volt_0_peak = np.max(np.abs(vec_volt_0))
-        vec_volt_dq = self.get_volt_dq(vec_curr_dq)
 
-        if self.dim >= 4:
-            curr_ang_1 = np.arctan2(vec_curr_dq[1], vec_curr_dq[0])
-            curr_ang_3 = np.arctan2(vec_curr_dq[3], vec_curr_dq[2])
-            curr_ang_diff = np.abs(
-                np.mod(curr_ang_1 * 3 + np.pi, 2 * np.pi)
-                - np.mod(curr_ang_3, 2 * np.pi)
-            )
-
-            volt_ang_1 = np.arctan2(vec_volt_dq[1], vec_volt_dq[0])
-            volt_ang_3 = np.arctan2(vec_volt_dq[3], vec_volt_dq[2])
-            volt_ang_diff = np.abs(
-                np.mod(volt_ang_1 * 3 + np.pi, 2 * np.pi)
-                - np.mod(volt_ang_3, 2 * np.pi)
-            )
-        else:
-            curr_ang_diff = 0.0
-            volt_ang_diff = 0.0
+        curr_ang_diff = self._alignment_diff_all_harmonics(vec_curr_dq)
+        volt_ang_diff = self._alignment_diff_all_harmonics(vec_volt_dq)
 
         return (
             curr_peak,

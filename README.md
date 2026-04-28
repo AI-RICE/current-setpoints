@@ -117,8 +117,8 @@ from current_setpoints.utils import load_neural_model
 device = torch.device("cpu")
 
 neural_net, scaler = load_neural_model(
-    weights_path="weights/NTM_Cloned_Corrected.pth",
-    scaler_path="weights/NTM_Cloned_Corrected_Scaler.npy",
+    weights_path="weights/NTM_Weights.pth",
+    scaler_path="weights/NTM_Scaler.npy",
     hidden_size=12,
     input_size=5,            # 1 (omega) + 4 (currents) for 5-phase
     machine=machine,
@@ -145,7 +145,7 @@ under the loss-aware model.
 ## Training your own neural correction
 
 Training requires a CSV of measured operating points with columns for speed,
-DQ-frame currents, and measured torque. The included `nn_trainer.ipynb`
+DQ-frame currents, and measured torque. The included `model_trainer.ipynb`
 notebook is a worked example that:
 
 1. Loads the CSV and computes the dynamic flux vector at each operating point.
@@ -165,7 +165,7 @@ End-to-end examples live in `notebooks/`:
 
 - `main.ipynb` — full pipeline: baseline map, correction grid, recalculated
   grid, compensated map, plus the diagnostic plots.
-- `nn_trainer.ipynb` — neural network training pipeline.
+- `model_trainer.ipynb` — neural network training pipeline.
 
 ## Project structure
 

@@ -27,19 +27,20 @@ def load_aggregated_csv_data(file_path: str, col_map: dict[str, str]) -> pd.Data
         raise FileNotFoundError(f"Aggregated CSV file not found at: {file_path}")
 
     data: pd.DataFrame = pd.read_csv(file_path)
-    csv_names = col_map.keys()
 
-    missing_cols = [col for col in csv_names if col not in data.columns]
+    missing_cols = [col for col in col_map.keys() if col not in data.columns]
     if missing_cols:
         raise ValueError(f"Missing required columns in CSV: {missing_cols}")
 
-    data.rename(columns=col_map, inplace=True)
+    data = data.rename(columns=col_map)
 
     required_cols = list(col_map.values())
 
     if data[required_cols].isnull().values.any():
-        print("Warning: NaNs found in mapped columns. Dropping invalid rows.")
-        data.dropna(subset=required_cols, inplace=True)
+        n_before = len(data)
+        data = data.dropna(subset=required_cols)
+        n_dropped = n_before - len(data)
+        print(f"Warning: dropped {n_dropped} rows with NaNs in mapped columns.")
 
     print(f"Loaded {len(data)} valid data points from CSV.")
     return data

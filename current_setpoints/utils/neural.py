@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,7 +22,7 @@ def get_analytical_tensors(
     Returns:
         torch.Tensor: A_tensor if machine is provided, else None.
     """
-    if machine:
+    if machine is not None:
         A_tensor = torch.from_numpy(machine.mat_A).float().to(device)
         return A_tensor
     return None
@@ -33,7 +32,7 @@ def torq_analytical(
     x_phys_currents: torch.Tensor, A_tensor: torch.Tensor, B_tensor: torch.Tensor
 ) -> torch.Tensor:
     """
-    Computes the analytical component of torque using the quadratic form T = i^T A i + 2b^T i.
+    Computes the analytical component of torque using the quadratic form T = i^T A i + 2 b^T i.
 
     Args:
         x_phys_currents: Batch of physical current vectors. Shape: [batch, features]
@@ -157,7 +156,6 @@ def load_neural_model(
     return model, scaler
 
 
-# Inference wrapper
 def predict_torque_neural(
     vec_curr_dq: np.ndarray,
     omega: float,
