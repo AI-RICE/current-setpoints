@@ -8,47 +8,6 @@ from ..data import BaseMachine
 ANALYTICAL_BIAS_TERM: float = 0.0
 
 
-def get_analytical_tensors(
-    machine: BaseMachine, device: torch.device
-) -> torch.Tensor | None:
-    """
-    Helper to convert machine model matrices from a machine object to PyTorch tensors.
-    Note: B_tensor is no longer fetched here because it is dynamically updated.
-
-    Args:
-        machine: Machine object containing 'mat_A' numpy matrix.
-        device: The target torch device (CPU/CUDA).
-
-    Returns:
-        torch.Tensor: A_tensor if machine is provided, else None.
-    """
-    if machine is not None:
-        A_tensor = torch.from_numpy(machine.mat_A).float().to(device)
-        return A_tensor
-    return None
-
-
-def torq_analytical(
-    x_phys_currents: torch.Tensor, A_tensor: torch.Tensor, B_tensor: torch.Tensor
-) -> torch.Tensor:
-    """
-    Computes the analytical component of torque using the quadratic form T = i^T A i + 2 b^T i.
-
-    Args:
-        x_phys_currents: Batch of physical current vectors. Shape: [batch, features]
-        A_tensor: Quadratic machine parameter tensor. Shape: [features, features]
-        B_tensor: Linear machine parameter tensor (dynamically updated). Shape: [batch, features, 1]
-
-    Returns:
-        torch.Tensor: Calculated analytical torque component. Shape: [batch, 1]
-    """
-    torq_linear = 2 * torch.einsum("bi, bi -> b", x_phys_currents, B_tensor.squeeze(-1))
-
-    torq_quadratic = torch.einsum(
-        "bi, ij, bj -> b", x_phys_currents, A_tensor, x_phys_currents
-    )
-    return (torq_quadratic + torq_linear + ANALYTICAL_BIAS_TERM).unsqueeze(1)
-
 
 class NeuralTorquePredictor(nn.Module):
     """
@@ -89,15 +48,11 @@ class NeuralTorquePredictor(nn.Module):
             "x_std", torch.from_numpy(scaler_X.scale_).float().to(device)
         )
 
-        A_tensor = get_analytical_tensors(machine, device)
-        if A_tensor is not None:
-            self.register_buffer("A_TENSOR", A_tensor)
-
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.gelu = nn.GELU()
         self.fc2 = nn.Linear(hidden_size, 1)
 
-    def forward(self, x_normed: torch.Tensor, B_tensor: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_normed: torch.Tensor) -> torch.Tensor:
         """
         Forward pass: denormalizes inputs, calculates analytical torque, and adds neural residual.
 
@@ -108,16 +63,12 @@ class NeuralTorquePredictor(nn.Module):
         Returns:
             torch.Tensor: Total predicted torque.
         """
-        x_phys = x_normed * self.x_std + self.x_mean
-        x_phys_currents = x_phys[:, 1:]
-
-        torq_analytical_out = torq_analytical(x_phys_currents, self.A_TENSOR, B_tensor)
 
         torq_neural_residual = self.fc1(x_normed)
         torq_neural_residual = self.gelu(torq_neural_residual)
         torq_neural_residual = self.fc2(torq_neural_residual)
 
-        return torq_analytical_out + torq_neural_residual
+        return torq_neural_residual
 
 
 def load_neural_model(
@@ -147,9 +98,7 @@ def load_neural_model(
     scaler.mean_ = scaler_data["mean"]
     scaler.scale_ = scaler_data["scale"]
 
-    model = NeuralTorquePredictor(input_size, hidden_size, scaler, machine, device).to(
-        device
-    )
+    model = NeuralTorquePredictor(input_size, hidden_size, scaler, machine, device).to(device)
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
 
@@ -157,12 +106,11 @@ def load_neural_model(
 
 
 def predict_torque_neural(
-    vec_curr_dq: np.ndarray,
+    curr_dq: np.ndarray,
     omega: float,
     neural_model: NeuralTorquePredictor,
     scaler: StandardScaler,
     device: torch.device,
-    machine: BaseMachine,
 ) -> float:
     """
     Evaluates the neural network for a single vector.
@@ -179,20 +127,13 @@ def predict_torque_neural(
     Returns:
         float: Predicted electromagnetic torque.
     """
-    if neural_model is None or scaler is None:
-        raise ValueError("Neural model/scaler not provided to prediction function.")
 
-    machine.update_state(omega=omega, vec_curr_dq=vec_curr_dq)
-
-    X_input = np.hstack(([omega], vec_curr_dq))
+    # TODO: prepsat do torche
+    X_input = np.hstack(([omega], curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 
-    B_tensor = (
-        torch.from_numpy(machine.vec_b).float().to(device).unsqueeze(0).unsqueeze(-1)
-    )
-
     with torch.no_grad():
-        torq_predicted_tensor = neural_model(X_tensor, B_tensor)
+        torq_predicted_tensor = neural_model(X_tensor)
 
     return torq_predicted_tensor.cpu().numpy().item()

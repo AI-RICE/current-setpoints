@@ -54,7 +54,7 @@ class MotorOptimizer:
             List[Dict]: Scipy-compatible constraint definitions.
         """
 
-        def safe_current_constraint(vec_curr_dq: np.ndarray) -> float:
+        def safe_current_constraint(omega, vec_curr_dq: np.ndarray, volt_max) -> float:
             self.model.machine.update_state(transform.omega, vec_curr_dq)
             return current_constraint(vec_curr_dq, self.model.machine, transform)
 

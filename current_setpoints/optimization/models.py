@@ -91,7 +91,7 @@ class ModelAnalytical(BaseTorqueModel):
 
     def __init__(self, machine: BaseMachine, flux: Flux) -> None:
         # TODO: fix
-        self.A = 0
+        self.A = np.zeros((4,4))
         self.n_ppairs = machine.n_ppairs
         self.flux = flux
         self.mat_crossc = machine.mat_crossc
@@ -109,7 +109,7 @@ class ModelAnalytical(BaseTorqueModel):
         return float(curr_dq @ self.A @ curr_dq + 2 * b @ curr_dq)
 
 
-class ModelNeural(BaseTorqueModel):
+class ModelNeural(ModelAnalytical):
     """
     Neural-network-based torque model.
     Used for NTM-compensated calculations or complex saturation models where
@@ -119,6 +119,7 @@ class ModelNeural(BaseTorqueModel):
     def __init__(
         self,
         machine: BaseMachine,
+        flux: Flux,
         neural_model: NeuralTorquePredictor,
         scaler: Any,
         device: torch.device,
@@ -134,20 +135,23 @@ class ModelNeural(BaseTorqueModel):
                 a clean abstract base class.
             device: Torch computation device (e.g., torch.device('cpu') or 'cuda').
         """
-        super().__init__(machine.curr_max, machine.n_phases)
+        super().__init__(machine, flux)
         self.neural_model = neural_model
         self.scaler = scaler
         self.device = device
 
-    def calculate_torque(self, curr_dq: np.ndarray) -> float:
+    def calculate_torque(self, omega: float, curr_dq: np.ndarray) -> float:
         """
         Computes torque by passing current and speed through the neural network.
         """
-        return predict_torque_neural(
+
+        torque_analytical = super().calculate_torque(omega, curr_dq)
+        torque_residual = predict_torque_neural(
             curr_dq=curr_dq,
-            omega=self.omega,
+            omega=omega,
             neural_model=self.neural_model,
             scaler=self.scaler,
-            device=self.device,
-            machine=self.machine,
+            device=self.device
         )
+
+        return torque_analytical + torque_residual
