@@ -5,7 +5,5 @@ This module provides the base and concrete implementations for different
 motor machine topologies, including generic and IEEE-standardized models.
 """
 
-from .machines import BaseMachine, GenericMachine, IEEEMachine2
-from .parameters import FluxValues
-
-__all__ = ["BaseMachine", "GenericMachine", "IEEEMachine2", "FluxValues"]
+from .flux import ConstantFlux, Flux, Flux_IEEEMachine2
+from .machines import BaseMachine, IEEEMachine2

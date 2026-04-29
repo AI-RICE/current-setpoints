@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..data import BaseMachine
+from ..data import BaseMachine, Flux
 from ..utils import NeuralTorquePredictor, predict_torque_neural
 
 
@@ -15,33 +15,24 @@ class BaseTorqueModel(ABC):
     for any n-phase machine.
     """
 
-    def __init__(self, machine: BaseMachine) -> None:
+    def __init__(self, curr_max: float, n_phases: int) -> None:
         """
         Initializes the torque model with machine parameters.
 
         Args:
             machine: Object containing motor constants and dynamic state logic.
         """
-        self.machine = machine
-        self.omega: float = 0.0
-
-    def set_omega(self, omega: float) -> None:
-        """
-        Syncs the model with the current electrical speed of the optimization loop.
-
-        Args:
-            omega: Electrical speed in rad/s.
-        """
-        self.omega = omega
+        self.curr_max = curr_max
+        self.n_phases = n_phases
 
     @abstractmethod
-    def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
+    def calculate_torque(self, omega: float, curr_dq: np.ndarray) -> float:
         """
         Calculates torque for a given current vector.
         Must be implemented by subclasses.
 
         Args:
-            vec_curr_dq: N-element current array (e.g., length 4 for 5-phase, 8 for 9-phase).
+            curr_dq: N-element current array (e.g., length 4 for 5-phase, 8 for 9-phase).
 
         Returns:
             float: Calculated electromagnetic torque in Nm.
@@ -49,7 +40,7 @@ class BaseTorqueModel(ABC):
         pass
 
     def get_candidates(
-        self, vec_curr_dq_guess: np.ndarray | None = None
+        self, curr_dq_guess: np.ndarray | None = None
     ) -> list[np.ndarray]:
         """
         Generates a list of initial guess vectors for the optimizer.
@@ -64,28 +55,28 @@ class BaseTorqueModel(ABC):
         7-phase or 9-phase machines.
 
         Args:
-            vec_curr_dq_guess: Optional user-provided warm-start vector.
+            curr_dq_guess: Optional user-provided warm-start vector.
 
         Returns:
             List[np.ndarray]: List of N-element current vectors to be used as starting points.
         """
-        dim = self.machine.n_phases - 1
+        dim = self.n_phases - 1
         candidates: list[np.ndarray] = []
 
-        if vec_curr_dq_guess is not None:
-            candidates.append(vec_curr_dq_guess.copy())
+        if curr_dq_guess is not None:
+            candidates.append(curr_dq_guess.copy())
         else:
             default_guess = np.zeros(dim)
             default_guess[0] = 1.0
             candidates.append(default_guess)
 
         g_mtpa = np.zeros(dim)
-        g_mtpa[1] = self.machine.curr_max * 0.95
+        g_mtpa[1] = self.curr_max * 0.95
         candidates.append(g_mtpa)
 
         g_fw = np.zeros(dim)
-        g_fw[0] = -self.machine.curr_max * 0.9
-        g_fw[1] = self.machine.curr_max * 0.1
+        g_fw[0] = -self.curr_max * 0.9
+        g_fw[1] = self.curr_max * 0.1
         candidates.append(g_fw)
 
         return candidates
@@ -98,20 +89,24 @@ class ModelAnalytical(BaseTorqueModel):
     Supports dynamic flux maps by updating the machine state before calculation.
     """
 
-    def __init__(self, machine: BaseMachine) -> None:
-        super().__init__(machine)
+    def __init__(self, machine: BaseMachine, flux: Flux) -> None:
+        # TODO: fix
+        self.A = 0
+        self.n_ppairs = machine.n_ppairs
+        self.flux = flux
+        self.mat_crossc = machine.mat_crossc
+        super().__init__(machine.curr_max, machine.n_phases)
 
-    def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
+    def calculate_torque(self, omega: float, curr_dq: np.ndarray) -> float:
         """
         Computes torque using the machine's analytical quadratic form.
         Dynamically updates the machine's flux state before evaluation.
         """
-        self.machine.update_state(self.omega, vec_curr_dq)
 
-        return float(
-            vec_curr_dq @ self.machine.mat_A @ vec_curr_dq
-            + 2 * self.machine.vec_b @ vec_curr_dq
-        )
+        _, flux_torq = self.flux.get_flux(omega, curr_dq)
+        b = self.n_phases * self.n_ppairs / 4 * (self.mat_crossc @ flux_torq)
+
+        return float(curr_dq @ self.A @ curr_dq + 2 * b @ curr_dq)
 
 
 class ModelNeural(BaseTorqueModel):
@@ -139,17 +134,17 @@ class ModelNeural(BaseTorqueModel):
                 a clean abstract base class.
             device: Torch computation device (e.g., torch.device('cpu') or 'cuda').
         """
-        super().__init__(machine)
+        super().__init__(machine.curr_max, machine.n_phases)
         self.neural_model = neural_model
         self.scaler = scaler
         self.device = device
 
-    def calculate_torque(self, vec_curr_dq: np.ndarray) -> float:
+    def calculate_torque(self, curr_dq: np.ndarray) -> float:
         """
         Computes torque by passing current and speed through the neural network.
         """
         return predict_torque_neural(
-            vec_curr_dq=vec_curr_dq,
+            curr_dq=curr_dq,
             omega=self.omega,
             neural_model=self.neural_model,
             scaler=self.scaler,
