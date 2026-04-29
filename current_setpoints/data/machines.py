@@ -106,9 +106,7 @@ class BaseMachine(ABC):
         Internal helper to strictly verify vector dimensions.
         """
         if vec.ndim == 0:
-            raise ValueError(
-                f"Vector {name} must be 1D or 2D, not a 0-D scalar."
-            )
+            raise ValueError(f"Vector {name} must be 1D or 2D, not a 0-D scalar.")
         if vec.ndim > 1 and vec.shape[1] != 1:
             raise ValueError(f"Vector {name} must be a 1D or column vector.")
         if vec.shape[0] != self.n_phases - 1:
