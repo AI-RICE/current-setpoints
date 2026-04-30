@@ -8,7 +8,6 @@ from .neural import (
     NeuralTorquePredictor,
     load_neural_model,
     predict_torque_neural,
-    torq_analytical,
 )
 from .nn_utils import evaluate_model, prepare_fold_dataloaders, train_model
 from .plot_config import PlotConfig
@@ -19,7 +18,6 @@ __all__ = [
     "NeuralTorquePredictor",
     "load_neural_model",
     "predict_torque_neural",
-    "torq_analytical",
     "train_model",
     "evaluate_model",
     "prepare_fold_dataloaders",

@@ -91,7 +91,10 @@ class ModelAnalytical(BaseTorqueModel):
 
     def __init__(self, machine: BaseMachine, flux: Flux) -> None:
         # TODO: fix
-        self.A = np.zeros((4,4))
+        self.A = (machine.n_phases * machine.n_ppairs / 4.0) * (
+            machine.mat_crossc @ machine.L_stat + machine.L_stat @ machine.mat_crossc.T
+        )
+        self.machine = machine  
         self.n_ppairs = machine.n_ppairs
         self.flux = flux
         self.mat_crossc = machine.mat_crossc

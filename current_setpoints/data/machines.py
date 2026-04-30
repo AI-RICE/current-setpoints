@@ -48,22 +48,6 @@ class BaseMachine:
             self.mat_crossc[2 * i, 2 * i + 1] = -h
             self.mat_crossc[2 * i + 1, 2 * i] = h
 
-    # def qwe(self):
-    #     self.mat_A: np.ndarray = np.zeros((dim, dim))
-    #     self.vec_b: np.ndarray = np.zeros(dim)
-    #     self.flux_volt: np.ndarray = np.zeros(dim)
-    #     self.flux_torq: np.ndarray = np.zeros(dim)
-
-
-
-    # @abstractmethod
-    # def update_state(self, omega: float, vec_curr_dq: np.ndarray) -> None:
-    #     """
-    #     Abstract method. Forces any child class to implement their own
-    #     logic for updating internal flux vectors and dependent states.
-    #     """
-    #     pass
-
     def set_max_pars(self, curr_max: float, volt_max: float, omega_max: float) -> None:
         """
         Sets the global physical limits for the machine.
@@ -82,10 +66,8 @@ class BaseMachine:
         Validates that all internal matrices and vectors match the expected
         dimensions based on the number of phases.
         """
-        # self._check_matrix(self.mat_A, "mat_A")
         self._check_matrix(self.L_stat, "L_stat")
         self._check_matrix(self.R_stat, "R_stat")
-        # self._check_vector(self.vec_b, "vec_b")
 
     def _check_matrix(self, mat: np.ndarray, name: str) -> None:
         """
@@ -98,20 +80,21 @@ class BaseMachine:
                 f"Matrix {name} must be sized to n_phases-1 ({self.n_phases - 1}x{self.n_phases - 1}). "
                 f"Got {mat.shape[0]}x{mat.shape[1]}."
             )
-
-    def _check_vector(self, vec: np.ndarray, name: str) -> None:
-        """
-        Internal helper to strictly verify vector dimensions.
-        """
-        if vec.ndim == 0:
-            raise ValueError(f"Vector {name} must be 1D or 2D, not a 0-D scalar.")
-        if vec.ndim > 1 and vec.shape[1] != 1:
-            raise ValueError(f"Vector {name} must be a 1D or column vector.")
-        if vec.shape[0] != self.n_phases - 1:
-            raise ValueError(
-                f"Vector {name} must have length n_phases-1 ({self.n_phases - 1}). "
-                f"Got length {vec.shape[0]}."
-            )
+        
+# TODO: move to transform?
+#    def _check_vector(self, vec: np.ndarray, name: str) -> None:
+#        """
+#        Internal helper to strictly verify vector dimensions.
+#        """
+#        if vec.ndim == 0:
+#            raise ValueError(f"Vector {name} must be 1D or 2D, not a 0-D scalar.")
+#        if vec.ndim > 1 and vec.shape[1] != 1:
+#            raise ValueError(f"Vector {name} must be a 1D or column vector.")
+#        if vec.shape[0] != self.n_phases - 1:
+#            raise ValueError(
+#                f"Vector {name} must have length n_phases-1 ({self.n_phases - 1}). "
+#                f"Got length {vec.shape[0]}."
+#            )
 
 class IEEEMachine2(BaseMachine):
     """

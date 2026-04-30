@@ -1,6 +1,5 @@
 import numpy as np
 
-from ..data import BaseMachine
 from ..model import Transform
 
 
@@ -26,7 +25,7 @@ def current_constraint(
 
 
 def voltage_constraint(
-    curr_dq: np.ndarray, machine: BaseMachine, transform: Transform
+    omega, curr_dq: np.ndarray, volt_max: float, transform: Transform
 ) -> float:
     """
     Ensures the peak phase voltage (including zero-sequence injection if enabled)
@@ -40,7 +39,7 @@ def voltage_constraint(
     Returns:
         float: The margin between voltage limit and peak phase voltage.
     """
-    vec_volt_ph, _, _ = transform.get_volt_ph(curr_dq)
+    vec_volt_ph, _, _ = transform.get_volt_ph(omega, curr_dq)
     volt_peak = np.max(np.abs(vec_volt_ph))
 
-    return machine.volt_max - volt_peak
+    return volt_max - volt_peak

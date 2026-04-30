@@ -27,6 +27,7 @@ class Transform:
         self.flux = flux
         self.n_phases: int = machine.n_phases
         self.dim: int = self.n_phases - 1
+        self.omega: float | None = None
         self.add_volt_0: bool = add_volt_0
 
         if n_theta <= 0:
@@ -71,7 +72,7 @@ class Transform:
             omega: Electrical speed in rad/s.
         """
 
-        if omega != self.omega:
+        if self.omega is None or omega != self.omega:
             self.omega = omega
             self.mat_curr_dq_to_volt_dq = self.mat_curr_dq_to_volt_dq_fixed + self.omega * self.mat_curr_dq_to_volt_dq_omega
             self.mat_curr_dq_to_volt_ph = self.mat_dq_to_ph @ self.mat_curr_dq_to_volt_dq

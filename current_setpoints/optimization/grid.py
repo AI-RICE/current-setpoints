@@ -7,6 +7,7 @@ import torch
 
 from ..data import BaseMachine
 from ..model import MachineData, Transform
+from .models import ModelNeural
 from .optimizer import MotorOptimizer
 
 
@@ -36,14 +37,6 @@ def grid_to_data(grid: dict[str, Any], k_skip: int) -> MachineData:
 def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarray]:
     """
     Initializes empty 2D and 3D matrices for all physical parameters in the motor grid.
-
-    Args:
-        dim: Number of DQ current components.
-        n_torq: Number of torque steps.
-        n_omega: Number of speed steps.
-
-    Returns:
-        Dict: Dictionary of initialized NaN arrays.
     """
     keys = [
         "grid_curr_peak",
@@ -59,7 +52,6 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarr
     grid: dict[str, np.ndarray] = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
 
     grid["vec_torq_max"] = np.full((1, n_omega), np.nan)
-
     grid["curr_dq_grid"] = np.full((dim, n_torq, n_omega), np.nan)
 
     return grid
@@ -68,21 +60,22 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarr
 def _fill_grid_point(
     grid: dict[str, Any],
     transform: Transform,
+    omega: float,
     vec_curr_dq: np.ndarray,
     idx_torq: int,
     idx_omega: int,
-    machine: BaseMachine,
 ) -> None:
     """
-    Calculates physical metrics for a specific DQ current vector and stores them in the grid.
+    Calculates physical metrics for a specific DQ current vector and stores
+    them in the grid.
 
     Args:
         grid: The results dictionary to update.
         transform: The Transform instance used for voltage/peak calculations.
+        omega: Electrical speed [rad/s] at this operating point.
         vec_curr_dq: DQ current vector for this operating point.
         idx_torq: Current torque index.
         idx_omega: Current speed index.
-        machine: The Machine object for physical limits and peak counting.
     """
     (
         curr_peak,
@@ -93,9 +86,9 @@ def _fill_grid_point(
         volt_raw_peak,
         volt_0_rms,
         volt_0_peak,
-    ) = transform.get_max_vals(vec_curr_dq)
+    ) = transform.get_max_vals(omega, vec_curr_dq)
 
-    n_curr_peaks, n_volt_peaks = transform.count_peaks(vec_curr_dq, machine)
+    n_curr_peaks, n_volt_peaks = transform.count_peaks(omega, vec_curr_dq)
 
     grid["curr_dq_grid"][:, idx_torq, idx_omega] = vec_curr_dq
 
@@ -103,6 +96,9 @@ def _fill_grid_point(
     grid["grid_volt_peak"][idx_torq, idx_omega] = volt_peak
     grid["grid_curr_ang_diff"][idx_torq, idx_omega] = curr_ang_diff
     grid["grid_volt_ang_diff"][idx_torq, idx_omega] = volt_ang_diff
+    grid["grid_volt_raw_peak"][idx_torq, idx_omega] = volt_raw_peak
+    grid["grid_volt_0_rms"][idx_torq, idx_omega] = volt_0_rms
+    grid["grid_volt_0_peak"][idx_torq, idx_omega] = volt_0_peak
 
     grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt_peaks + n_curr_peaks
 
@@ -135,7 +131,7 @@ def calculate_grid(
     Returns:
         Dict: Completed motor grid dictionary.
     """
-    if mode not in ["standard", "recalculated"]:
+    if mode not in ("standard", "recalculated"):
         raise ValueError("Mode must be either 'standard' or 'recalculated'")
 
     print(f"Starting {mode.capitalize()} Grid Calculation...")
@@ -150,8 +146,7 @@ def calculate_grid(
     grid_torq_targets: Any = None
 
     if mode == "standard":
-        transform.set_omega(0)
-        _, torq_max_global, _ = optimizer.maximize_torque(transform=transform)
+        _, torq_max_global, _ = optimizer.maximize_torque(omega=0.0, transform=transform)
 
         n_torq, n_omega = opts["n_torq"], opts["n_omega"]
         grid["vec_torq"] = np.linspace(opts["torq_min"], torq_max_global, n_torq)
@@ -175,12 +170,13 @@ def calculate_grid(
     for idx_omega in range(n_omega):
         omega_target = grid["vec_omega"][idx_omega]
         print(
-            f"Calculating: Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)"
+            f"Calculating: Omega step {idx_omega + 1}/{n_omega} "
+            f"({omega_target * grid['const_mech_speed']:.1f} RPM)"
         )
 
-        transform.set_omega(omega_target)
-
-        _, torq_max_local, _ = optimizer.maximize_torque(transform=transform)
+        _, torq_max_local, _ = optimizer.maximize_torque(
+            omega=omega_target, transform=transform
+        )
         grid["vec_torq_max"][0, idx_omega] = torq_max_local
 
         vec_curr_dq_prev = np.zeros(dim)
@@ -211,6 +207,7 @@ def calculate_grid(
 
             vec_curr_dq_opt, success = optimizer.minimize_current(
                 torq_target=torq_target,
+                omega=omega_target,
                 transform=transform,
                 vec_curr_guess=vec_curr_dq_guess,
             )
@@ -219,12 +216,14 @@ def calculate_grid(
                 if success:
                     vec_curr_dq_prev = vec_curr_dq_opt
                     _fill_grid_point(
-                        grid, transform, vec_curr_dq_opt, idx_torq, idx_omega, machine
+                        grid, transform, omega_target, vec_curr_dq_opt,
+                        idx_torq, idx_omega,
                     )
             else:
                 vec_curr_dq_final = vec_curr_dq_opt if success else vec_curr_dq_guess
                 _fill_grid_point(
-                    grid, transform, vec_curr_dq_final, idx_torq, idx_omega, machine
+                    grid, transform, omega_target, vec_curr_dq_final,
+                    idx_torq, idx_omega,
                 )
 
     print(f"{mode.capitalize()} Grid Calculation Complete.")
@@ -233,23 +232,28 @@ def calculate_grid(
 
 def get_correction_grid(
     dict_grid: dict[str, Any],
-    neural_model: torch.nn.Module,
-    scaler: Any,
-    device: torch.device,
-    machine: BaseMachine,
+    model: ModelNeural,
 ) -> dict[str, Any]:
     """
-    Computes the correction grid by predicting torque using the neural model
-    on the analytical baseline currents. Supports an arbitrary number of phases.
+    Computes the correction grid by predicting torque using the neural torque
+    model on the analytical baseline currents.
+
+    The new ``ModelNeural`` already returns (analytical + neural-residual) from
+    its ``calculate_torque`` method, so this function simply walks every valid
+    grid cell and asks the model for the total predicted torque. The neural
+    residual itself is also computed batched for speed.
 
     Args:
         dict_grid: Dictionary containing the baseline analytical grid.
-        neural_model: Trained PyTorch neural network for torque prediction.
-        scaler: The scaler used to normalize inputs for the neural model.
-        device: CPU or CUDA device.
-        machine: The machine instance to fetch dynamic B_tensors.
+        model: A ``ModelNeural`` instance combining analytical + residual logic.
+            It exposes ``neural_model``, ``scaler``, ``device``, plus
+            ``calculate_torque(omega, curr_dq)`` for the analytical part.
+
+    Returns:
+        Dict: A copy of ``dict_grid`` with an added ``grid_torq_neural`` field
+        containing the model's torque prediction at every valid cell.
     """
-    print("Computing Phase-Agnostic ML Correction Grid...")
+    print("Computing ML Correction Grid...")
 
     dict_grid_corr = {
         k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()
@@ -268,23 +272,29 @@ def get_correction_grid(
     if np.any(valid_mask):
         omega_valid = omega_flat[valid_mask]
         curr_valid = curr_flat[:, valid_mask]
+        n_valid = omega_valid.size
 
+        # Batched neural residual evaluation.
         X_in = np.vstack([omega_valid, curr_valid]).T
-        X_scaled = scaler.transform(X_in)
-        X_tensor = torch.from_numpy(X_scaled).float().to(device)
-
-        b_vecs = []
-        for i in range(len(omega_valid)):
-            machine.update_state(omega=omega_valid[i], vec_curr_dq=curr_valid[:, i])
-            b_vecs.append(machine.vec_b.copy())
-
-        B_tensor = torch.from_numpy(np.array(b_vecs)).float().to(device).unsqueeze(-1)
+        X_scaled = model.scaler.transform(X_in)
+        X_tensor = torch.from_numpy(X_scaled).float().to(model.device)
 
         with torch.no_grad():
-            preds = neural_model(X_tensor, B_tensor).cpu().numpy().flatten()
+            residuals = model.neural_model(X_tensor).cpu().numpy().flatten()
+
+        # Per-cell analytical torque (cheap matrix ops; loop is fine).
+        analyticals = np.empty(n_valid, dtype=np.float64)
+        for i in range(n_valid):
+            # Skip the neural residual; we only want the analytical part here.
+            # ModelNeural inherits ModelAnalytical, so super().calculate_torque
+            # is available, but the cleanest call is via the parent class.
+            from .models import ModelAnalytical
+            analyticals[i] = ModelAnalytical.calculate_torque(
+                model, float(omega_valid[i]), curr_valid[:, i]
+            )
 
         torq_neural_flat = np.full(n_torq * n_omega, np.nan)
-        torq_neural_flat[valid_mask] = preds
+        torq_neural_flat[valid_mask] = analyticals + residuals
 
         grid_torq_neural = torq_neural_flat.reshape(n_torq, n_omega)
 

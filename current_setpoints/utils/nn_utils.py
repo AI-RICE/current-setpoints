@@ -23,12 +23,11 @@ def train_model(
 ) -> tuple[float, int]:
     """
     Handles the PyTorch training and validation loop with early stopping.
-    Receives dynamic B_tensors directly from the dataloader batches.
 
     Args:
-        model: PyTorch model implementing the (X, B) -> torque interface.
-        train_loader: DataLoader yielding (inputs, targets, b_tensors) tuples for training.
-        val_loader: DataLoader yielding (inputs, targets, b_tensors) tuples for validation.
+        model: PyTorch model implementing the ``inputs -> torque`` interface.
+        train_loader: DataLoader yielding ``(inputs, targets)`` tuples for training.
+        val_loader: DataLoader yielding ``(inputs, targets)`` tuples for validation.
         criterion: Loss function (typically nn.MSELoss).
         optimizer: PyTorch optimizer (e.g., Adam).
         num_epochs: Maximum number of training epochs.
@@ -49,14 +48,12 @@ def train_model(
         model.train()
         total_train_loss = 0.0
 
-        for inputs, targets, b_tensors in train_loader:
+        for inputs, targets in train_loader:
             inputs = inputs.to(device)
             targets = targets.to(device)
 
-            b_tensors = b_tensors.to(device).unsqueeze(-1)
-
             optimizer.zero_grad()
-            outputs = model(inputs, b_tensors)
+            outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
@@ -65,12 +62,11 @@ def train_model(
         model.eval()
         val_loss_sum = 0.0
         with torch.no_grad():
-            for inputs, targets, b_tensors in val_loader:
+            for inputs, targets in val_loader:
                 inputs = inputs.to(device)
                 targets = targets.to(device)
-                b_tensors = b_tensors.to(device).unsqueeze(-1)
 
-                outputs = model(inputs, b_tensors)
+                outputs = model(inputs)
                 val_loss_sum += criterion(outputs, targets).item() * inputs.size(0)
 
         avg_val_loss = val_loss_sum / len(cast(Sized, val_loader.dataset))
@@ -102,11 +98,11 @@ def evaluate_model(
     Note: this function assumes ``criterion`` is mean-reduced MSE (the default
     for ``nn.MSELoss``), as the accumulator un-does the per-batch mean by
     multiplying by batch size, then divides by total dataset size and takes
-    the square root. Passing any other loss yields a meaningless number.
+    the square root.
 
     Args:
         model: Trained PyTorch model.
-        test_loader: DataLoader yielding (inputs, targets, b_tensors) tuples.
+        test_loader: DataLoader yielding ``(inputs, targets)`` tuples.
         criterion: Loss function — must be mean-reduced MSE for the return
             value to be a true RMSE.
         device: Torch computation device.
@@ -118,12 +114,11 @@ def evaluate_model(
     test_loss_sum = 0.0
 
     with torch.no_grad():
-        for inputs, targets, b_tensors in test_loader:
+        for inputs, targets in test_loader:
             inputs = inputs.to(device)
             targets = targets.to(device)
-            b_tensors = b_tensors.to(device).unsqueeze(-1)
 
-            outputs = model(inputs, b_tensors)
+            outputs = model(inputs)
             test_loss_sum += criterion(outputs, targets).item() * inputs.size(0)
 
     return np.sqrt(test_loss_sum / len(cast(Sized, test_loader.dataset)))
@@ -134,15 +129,13 @@ def prepare_fold_dataloaders(
     X_val_np: np.ndarray,
     y_train_np: np.ndarray,
     y_val_np: np.ndarray,
-    B_train_np: np.ndarray,
-    B_val_np: np.ndarray,
 ) -> tuple[DataLoader, DataLoader, StandardScaler]:
     """
     Builds DataLoaders for a single train/validation split (e.g., one CV fold).
 
     Fits the Scikit-Learn scaler strictly on the training portion to avoid
     information leak from the validation set, transforms both portions, and
-    bundles inputs/targets/B-vectors into PyTorch DataLoaders.
+    bundles inputs/targets into PyTorch DataLoaders.
 
     Note: despite the "fold" in the name, this function does NOT itself
     perform a k-fold split — the caller (e.g., a notebook iterating over
@@ -153,8 +146,6 @@ def prepare_fold_dataloaders(
         X_val_np: Validation-fold input features.
         y_train_np: Training-fold targets.
         y_val_np: Validation-fold targets.
-        B_train_np: Training-fold B vectors (per-row analytical linear term).
-        B_val_np: Validation-fold B vectors.
 
     Returns:
         Tuple[DataLoader, DataLoader, StandardScaler]:
@@ -167,12 +158,10 @@ def prepare_fold_dataloaders(
     train_dataset = TensorDataset(
         torch.from_numpy(X_train_norm).float(),
         torch.from_numpy(y_train_np).float(),
-        torch.from_numpy(B_train_np).float(),
     )
     val_dataset = TensorDataset(
         torch.from_numpy(X_val_norm).float(),
         torch.from_numpy(y_val_np).float(),
-        torch.from_numpy(B_val_np).float(),
     )
 
     batch_size = min(64, len(X_train_norm) // 4)

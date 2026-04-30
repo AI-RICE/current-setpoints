@@ -3,40 +3,33 @@ import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
 
-from ..data import BaseMachine
-
-ANALYTICAL_BIAS_TERM: float = 0.0
-
-
 
 class NeuralTorquePredictor(nn.Module):
     """
-    Neural torque model (NTM) for torque prediction.
-    Combines an analytical quadratic motor model with a neural residual.
-    Supports dynamic flux maps by accepting B_tensor at the forward pass
-    for any n-phase machine.
+    Neural torque residual model.
+
+    Outputs only the residual that should be ADDED to the analytical torque
+    (the analytical part lives in ``ModelAnalytical`` / ``ModelNeural``).
+    Inputs are the normalized stack [omega, i_d1, i_q1, i_d3, i_q3, ...].
     """
 
     x_mean: torch.Tensor
     x_std: torch.Tensor
-    A_TENSOR: torch.Tensor
 
     def __init__(
         self,
         input_size: int,
         hidden_size: int,
         scaler_X: StandardScaler,
-        machine: BaseMachine,
         device: torch.device,
     ) -> None:
         """
-        Initializes the predictor, registering normalization parameters and static tensors.
+        Initializes the predictor and registers normalization parameters as buffers.
 
         Args:
             input_size: Number of input features (1 for omega + N for currents).
             hidden_size: Number of neurons in the hidden layer.
             scaler_X: Fitted Scikit-Learn StandardScaler for input normalization.
-            machine: Machine object for analytical grounding.
             device: Computation device.
         """
         super().__init__()
@@ -54,21 +47,25 @@ class NeuralTorquePredictor(nn.Module):
 
     def forward(self, x_normed: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass: denormalizes inputs, calculates analytical torque, and adds neural residual.
+        Forward pass producing the neural torque residual.
 
         Args:
             x_normed: Normalized input tensor [omega, i_d1, i_q1, ...].
-            B_tensor: Dynamic linear machine parameter tensor for the current operating point.
 
         Returns:
-            torch.Tensor: Total predicted torque.
+            torch.Tensor: Predicted neural torque residual.
         """
+        h = self.fc1(x_normed)
+        h = self.gelu(h)
+        return self.fc2(h)
 
-        torq_neural_residual = self.fc1(x_normed)
-        torq_neural_residual = self.gelu(torq_neural_residual)
-        torq_neural_residual = self.fc2(torq_neural_residual)
 
-        return torq_neural_residual
+# Buffers that older weight files contained but the current module no longer
+# defines. Loading them is harmless because they are not parameters and are
+# recomputed from the analytical model at inference time; we only allow these
+# specific keys to be missing from the new module so unrelated state-dict
+# mismatches still surface loudly.
+_LEGACY_BUFFER_KEYS: frozenset[str] = frozenset({"A_TENSOR"})
 
 
 def load_neural_model(
@@ -76,32 +73,56 @@ def load_neural_model(
     scaler_path: str,
     hidden_size: int,
     input_size: int,
-    machine: BaseMachine,
     device: torch.device,
 ) -> tuple[NeuralTorquePredictor, StandardScaler]:
     """
     Loads saved scaler data and model weights, initializing the predictor.
 
+    The function tolerates state dictionaries from earlier versions of this
+    module that contained an ``A_TENSOR`` buffer. The MLP parameters
+    (``fc1.*``, ``fc2.*``) and normalization buffers (``x_mean``, ``x_std``)
+    must all be present; any other unexpected or missing key is treated as a
+    real incompatibility and raises.
+
     Args:
         weights_path: Path to the .pth state dictionary.
-        scaler_path: Path to the .npy/.npz scaler data.
+        scaler_path: Path to the .npy scaler data.
         hidden_size: Hidden layer dimension used during training.
         input_size: Number of input features.
-        machine: Machine object containing motor parameters.
         device: Target device.
 
     Returns:
-        Tuple: (initialized_model, scaler_object)
+        Tuple: (initialized_model, scaler_object).
+
+    Raises:
+        RuntimeError: If the state dictionary is missing parameters required
+            by the new module, or contains unexpected keys other than the
+            legacy buffers in ``_LEGACY_BUFFER_KEYS``.
     """
     scaler_data = np.load(scaler_path, allow_pickle=True).item()
     scaler = StandardScaler()
     scaler.mean_ = scaler_data["mean"]
     scaler.scale_ = scaler_data["scale"]
 
-    model = NeuralTorquePredictor(input_size, hidden_size, scaler, machine, device).to(device)
-    model.load_state_dict(torch.load(weights_path, map_location=device))
-    model.eval()
+    model = NeuralTorquePredictor(input_size, hidden_size, scaler, device).to(device)
 
+    state_dict = torch.load(weights_path, map_location=device)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
+    if missing:
+        raise RuntimeError(
+            f"State dict is missing parameters required by NeuralTorquePredictor: "
+            f"{sorted(missing)}"
+        )
+
+    unexpected_real = set(unexpected) - _LEGACY_BUFFER_KEYS
+    if unexpected_real:
+        raise RuntimeError(
+            f"State dict contains unexpected keys beyond the known legacy buffers "
+            f"{sorted(_LEGACY_BUFFER_KEYS)}: {sorted(unexpected_real)}"
+        )
+
+    model.eval()
     return model, scaler
 
 
@@ -113,27 +134,27 @@ def predict_torque_neural(
     device: torch.device,
 ) -> float:
     """
-    Evaluates the neural network for a single vector.
-    Acts as a bridge between SciPy (NumPy) and PyTorch.
+    Evaluates the neural residual network for a single (omega, curr_dq) pair.
+
+    Acts as a NumPy <-> PyTorch bridge for use inside SciPy-driven optimization.
+    The returned value is just the residual; callers must add the analytical
+    torque themselves (which ``ModelNeural.calculate_torque`` does).
 
     Args:
-        vec_curr_dq: NumPy array of currents (N-dimensional).
-        omega: Electrical speed (scalar).
+        curr_dq: NumPy array of currents (N-dimensional).
+        omega: Electrical speed [rad/s] (scalar).
         neural_model: Initialized NeuralTorquePredictor.
         scaler: Fitted StandardScaler.
         device: Device for calculation.
-        machine: Machine object (updated dynamically) to fetch accurate vec_b.
 
     Returns:
-        float: Predicted electromagnetic torque.
+        float: Predicted neural torque residual.
     """
-
-    # TODO: prepsat do torche
     X_input = np.hstack(([omega], curr_dq))
     X_input_norm = scaler.transform(X_input.reshape(1, -1))
     X_tensor = torch.from_numpy(X_input_norm).float().to(device)
 
     with torch.no_grad():
-        torq_predicted_tensor = neural_model(X_tensor)
+        torq_residual_tensor = neural_model(X_tensor)
 
-    return torq_predicted_tensor.cpu().numpy().item()
+    return torq_residual_tensor.cpu().numpy().item()
