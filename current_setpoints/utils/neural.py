@@ -42,7 +42,7 @@ class NeuralTorquePredictor(nn.Module):
         )
 
         self.fc1 = nn.Linear(input_size, hidden_size)
-        self.gelu = nn.GELU()
+        self.act = nn.SiLU()
         self.fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, x_normed: torch.Tensor) -> torch.Tensor:
@@ -56,7 +56,7 @@ class NeuralTorquePredictor(nn.Module):
             torch.Tensor: Predicted neural torque residual.
         """
         h = self.fc1(x_normed)
-        h = self.gelu(h)
+        h = self.act(h)
         return self.fc2(h)
 
 
