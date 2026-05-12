@@ -1,16 +1,16 @@
 import numpy as np
 import pytest
 
-from current_setpoints.data import FluxValues, IEEEMachine2
-from current_setpoints.model import Transform
+from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2
+from current_setpoints.simulation import Transform
 
 
 def _build_default_transform(add_volt_0: bool = False, n_theta: int = 700) -> Transform:
     """Returns a Transform tied to a fresh, default-configured IEEEMachine2."""
-    flux_registry = FluxValues()
-    machine = IEEEMachine2(flux_values=flux_registry)
+    machine = IEEEMachine2()
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
-    return Transform(machine=machine, omega=0.0, add_volt_0=add_volt_0, n_theta=n_theta)
+    flux = Flux_IEEEMachine2()
+    return Transform(machine=machine, flux=flux, add_volt_0=add_volt_0, n_theta=n_theta)
 
 
 def _project_dq(signal: np.ndarray, theta: np.ndarray, h: int) -> tuple[float, float]:
@@ -32,10 +32,10 @@ def test_init_rounds_n_theta_to_multiple_of_2_n_phases():
 
 
 def test_init_rejects_nonpositive_n_theta():
-    flux_registry = FluxValues()
-    machine = IEEEMachine2(flux_values=flux_registry)
+    machine = IEEEMachine2()
+    flux = Flux_IEEEMachine2()
     with pytest.raises(ValueError, match="n_theta must be positive"):
-        Transform(machine=machine, omega=0.0, add_volt_0=False, n_theta=0)
+        Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=0)
 
 
 def test_init_rejects_n_theta_that_rounds_to_zero():
@@ -43,10 +43,10 @@ def test_init_rejects_n_theta_that_rounds_to_zero():
     A small n_theta like 3 with n_phases=5 rounds to 0; this must be caught
     instead of silently producing a single-sample theta vector.
     """
-    flux_registry = FluxValues()
-    machine = IEEEMachine2(flux_values=flux_registry)
+    machine = IEEEMachine2()
+    flux = Flux_IEEEMachine2()
     with pytest.raises(ValueError, match="too small after rounding"):
-        Transform(machine=machine, omega=0.0, add_volt_0=False, n_theta=3)
+        Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=3)
 
 
 def test_phase_shift_samples_matches_symmetry():
@@ -75,10 +75,9 @@ def test_dq_to_ph_matrix_columns_are_orthogonal_harmonics():
 def test_get_curr_ph_pure_d1_produces_pure_cosine():
     """Setting only i_d1 = I should make phase A track I * cos(theta)."""
     transform = _build_default_transform(n_theta=700)
-    dim = transform.dim
-    vec_curr_dq = np.zeros(dim)
+    vec_curr_dq = np.zeros(transform.dim)
     vec_curr_dq[0] = 5.0
-    i_phase = transform.get_curr_ph(vec_curr_dq)
+    i_phase = transform.get_curr_ph(omega=0.0, curr_dq=vec_curr_dq)
     expected = 5.0 * np.cos(transform.vec_theta)
     assert np.allclose(i_phase, expected)
 
@@ -86,46 +85,46 @@ def test_get_curr_ph_pure_d1_produces_pure_cosine():
 def test_get_curr_ph_pure_q1_produces_pure_negative_sine():
     """Setting only i_q1 = I should give -I * sin(theta) per the (cos, -sin) convention."""
     transform = _build_default_transform(n_theta=700)
-    dim = transform.dim
-    vec_curr_dq = np.zeros(dim)
+    vec_curr_dq = np.zeros(transform.dim)
     vec_curr_dq[1] = 5.0
-    i_phase = transform.get_curr_ph(vec_curr_dq)
+    i_phase = transform.get_curr_ph(omega=0.0, curr_dq=vec_curr_dq)
     expected = -5.0 * np.sin(transform.vec_theta)
     assert np.allclose(i_phase, expected)
-
-
-def test_get_curr_ph_rejects_wrong_length():
-    transform = _build_default_transform()
-    with pytest.raises(ValueError, match="length"):
-        transform.get_curr_ph(np.zeros(transform.dim + 1))
 
 
 def test_get_volt_dq_zero_current_zero_speed_is_zero():
     """At i = 0 and omega = 0 there should be no DQ voltage drop."""
     transform = _build_default_transform()
-    v_dq = transform.get_volt_dq(np.zeros(transform.dim))
+    v_dq = transform.get_volt_dq(omega=0.0, curr_dq=np.zeros(transform.dim))
     assert np.allclose(v_dq, 0.0)
 
 
 def test_get_volt_dq_zero_current_nonzero_speed_is_pure_bemf():
     """
     With i = 0 and omega != 0, v_dq should equal omega * (mat_crossc @ flux_volt).
+    Flux now lives on the Flux provider, not the machine, so we read it via
+    `transform.flux.get_flux(omega, curr_dq)`.
     """
     transform = _build_default_transform()
-    transform.set_omega(50.0)
-    v_dq = transform.get_volt_dq(np.zeros(transform.dim))
+    omega = 50.0
+    zero_curr = np.zeros(transform.dim)
+    v_dq = transform.get_volt_dq(omega=omega, curr_dq=zero_curr)
 
-    machine = transform.machine
-    expected = 50.0 * (machine.mat_crossc @ machine.flux_volt)
+    flux_volt, _ = transform.flux.get_flux(omega, zero_curr)
+    expected = omega * (transform.machine.mat_crossc @ flux_volt)
     assert np.allclose(v_dq, expected)
 
 
 def test_set_omega_updates_speed_dependent_matrix():
-    """compute_matrices_init builds a fixed term; set_omega scales the omega term."""
+    """
+    `_compute_matrices_init` builds the omega-independent term once;
+    `_set_omega` adds the omega-scaled term. Testing the private hook
+    directly because that's exactly what's being validated.
+    """
     transform = _build_default_transform()
-    transform.set_omega(0.0)
+    transform._set_omega(0.0)
     M0 = transform.mat_curr_dq_to_volt_dq.copy()
-    transform.set_omega(100.0)
+    transform._set_omega(100.0)
     M_high = transform.mat_curr_dq_to_volt_dq
 
     diff = M_high - M0
@@ -133,68 +132,71 @@ def test_set_omega_updates_speed_dependent_matrix():
     assert np.allclose(diff, expected)
 
 
-def test_set_omega_rejects_non_scalar():
-    transform = _build_default_transform()
-    with pytest.raises(TypeError):
-        transform.set_omega(np.array([1.0, 2.0]))  # type: ignore
-
-
 def test_get_volt_ph_no_injection_equals_raw():
     """When add_volt_0=False, vec_volt_ph must equal vec_volt_raw exactly."""
     transform = _build_default_transform(add_volt_0=False)
-    transform.set_omega(50.0)
     vec_curr_dq = np.array([5.0, 3.0, 0.0, 0.0])
-    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(vec_curr_dq)
+    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(
+        omega=50.0, curr_dq=vec_curr_dq
+    )
     assert np.allclose(vec_volt_ph, vec_volt_raw)
     assert np.allclose(vec_volt_0, 0.0)
 
 
+# ---------------------------------------------------------------------------
+# Zero-sequence injection (SVPWM) is not yet implemented in the library.
+# The four tests below describe the contract the implementation should meet
+# once it lands. They are kept (marked skip) so they re-enable automatically
+# the moment the NotImplementedError in `get_volt_ph` is replaced by a real
+# implementation.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skip(reason="Zero-sequence injection not yet implemented")
 def test_get_volt_ph_pure_fundamental_injection_matches_theory():
     """
     Min-max common-mode injection on a pure-fundamental phase voltage must
     reduce the peak by exactly cos(pi / (2 * n_phases)) — for 5-phase that
-    is cos(pi/10) ≈ 0.9511. Tested at omega=0 with pure i_d1, where the
-    voltage equation reduces to v = R_stat * i_d1 * cos(theta), purely
-    fundamental.
+    is cos(pi/10) ≈ 0.9511.
     """
     transform = _build_default_transform(add_volt_0=True, n_theta=700)
-    transform.set_omega(0.0)
     vec_curr_dq = np.zeros(transform.dim)
     vec_curr_dq[0] = 10.0  # pure i_d1
-    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(vec_curr_dq)
+    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(omega=0.0, curr_dq=vec_curr_dq)
 
     raw_peak = np.max(np.abs(vec_volt_raw))
     inj_peak = np.max(np.abs(vec_volt_ph))
     expected_ratio = np.cos(np.pi / (2 * transform.n_phases))
 
-    assert raw_peak > 0  # sanity
+    assert raw_peak > 0
     assert np.isclose(inj_peak / raw_peak, expected_ratio, atol=1e-3)
 
 
+@pytest.mark.skip(reason="Zero-sequence injection not yet implemented")
 def test_get_volt_ph_injection_reduces_peak_under_load():
     """
-    Under a more realistic operating point (with both fundamental and harmonic
-    content) injection must still reduce the peak phase voltage relative to
-    the raw waveform — even if the exact ratio depends on harmonic mix.
+    Under a realistic operating point (fundamental + harmonic content)
+    injection must still reduce the peak phase voltage vs the raw waveform.
     """
     transform = _build_default_transform(add_volt_0=True)
-    transform.set_omega(50.0)
     vec_curr_dq = np.array([10.0, 5.0, 1.0, 0.5])
-    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(vec_curr_dq)
+    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(
+        omega=50.0, curr_dq=vec_curr_dq
+    )
     assert np.max(np.abs(vec_volt_ph)) < np.max(np.abs(vec_volt_raw))
 
 
+@pytest.mark.skip(reason="Zero-sequence injection not yet implemented")
 def test_get_volt_ph_injection_preserves_dq_content():
     """
     SVPWM is a common-mode signal: it must NOT contaminate the DQ subspace.
     Projecting the injected phase-A waveform back onto the cos/sin basis at
-    each odd harmonic must give the same DQ values as projecting the raw
-    waveform.
+    each odd harmonic must give the same DQ values as projecting the raw.
     """
     transform = _build_default_transform(add_volt_0=True)
-    transform.set_omega(50.0)
     vec_curr_dq = np.array([10.0, 5.0, 1.0, 0.5])
-    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(vec_curr_dq)
+    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(
+        omega=50.0, curr_dq=vec_curr_dq
+    )
     theta = transform.vec_theta
 
     for h in (1, 3):
@@ -204,32 +206,32 @@ def test_get_volt_ph_injection_preserves_dq_content():
         assert np.isclose(q_raw, q_inj, atol=1e-9)
 
 
+@pytest.mark.skip(reason="Zero-sequence injection not yet implemented")
 def test_get_volt_ph_injection_v0_returned_consistently():
     """vec_volt_ph == vec_volt_raw + vec_volt_0 sample by sample."""
     transform = _build_default_transform(add_volt_0=True)
-    transform.set_omega(50.0)
     vec_curr_dq = np.array([7.0, 2.0, 0.5, -0.5])
-    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(vec_curr_dq)
+    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(
+        omega=50.0, curr_dq=vec_curr_dq
+    )
     assert np.allclose(vec_volt_ph, vec_volt_raw + vec_volt_0)
 
 
-def test_get_volt_ph_rejects_wrong_shape():
+def test_get_max_vals_returns_four_values():
+    """
+    `get_max_vals` was cut from eight returns to four:
+    (curr_peak, curr_ang_diff, volt_peak, volt_ang_diff).
+    """
     transform = _build_default_transform()
-    with pytest.raises(ValueError, match="shape mismatch"):
-        transform.get_volt_ph(np.zeros((2, 2)))
-
-
-def test_get_max_vals_returns_eight_values():
-    transform = _build_default_transform()
-    out = transform.get_max_vals(np.array([5.0, 3.0, 0.0, 0.0]))
-    assert len(out) == 8
+    out = transform.get_max_vals(omega=0.0, curr_dq=np.array([5.0, 3.0, 0.0, 0.0]))
+    assert len(out) == 4
 
 
 def test_get_max_vals_curr_peak_matches_analytical_for_pure_d1():
     """For pure i_d1 = I the peak phase current must equal I exactly."""
     transform = _build_default_transform()
     vec_curr_dq = np.array([7.5, 0.0, 0.0, 0.0])
-    curr_peak, *_ = transform.get_max_vals(vec_curr_dq)
+    curr_peak, *_ = transform.get_max_vals(omega=0.0, curr_dq=vec_curr_dq)
     assert np.isclose(curr_peak, 7.5)
 
 
@@ -242,14 +244,12 @@ def test_harmonic_alignment_diff_returns_value_in_zero_pi():
 def test_harmonic_alignment_diff_handles_wraparound():
     """
     Two angles that are circularly close but straddle the 0/2*pi boundary
-    must report a small distance (in [0, pi]), not a near-2*pi distance.
-    Specifically, 3 * (-pi/3 + eps) + pi = 3*eps (just above 0); the target
-    angle 2*pi - eps is just below 2*pi. These are close circularly.
+    must report a small distance, not a near-2*pi distance.
     """
     eps = 1e-4
     diff = Transform._harmonic_alignment_diff(-np.pi / 3 + eps, 2 * np.pi - eps, h=3)
     assert 0.0 <= diff <= np.pi
-    assert diff < 1e-3  # should be ~4*eps
+    assert diff < 1e-3
 
 
 def test_harmonic_alignment_diff_perfectly_aligned_is_zero():

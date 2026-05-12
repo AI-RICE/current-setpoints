@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 from scipy.optimize import minimize
 
-from ..model import Transform
+from ..simulation import Transform
 from .constraints import current_constraint, voltage_constraint
 from .models import BaseTorqueModel
 
@@ -16,6 +16,13 @@ class MotorOptimizer:
     Unified solver class for motor control optimization problems.
     Provides methods to find maximum torque or minimum current operating points
     for any n-phase machine.
+
+    Note: in the new stateless API, ``omega`` is passed explicitly to every
+    public method; neither the torque model nor the machine carries any
+    operating-point state. The transform internally caches matrices for the
+    last omega it saw (see ``Transform._set_omega``), so within a single
+    SLSQP run that holds omega fixed, repeated constraint/objective
+    evaluations short-circuit the matrix recomputation.
     """
 
     def __init__(
@@ -34,43 +41,33 @@ class MotorOptimizer:
             opts if opts is not None else {"disp": False, "ftol": 1e-8, "maxiter": 500}
         )
 
-    def _get_base_constraints(self, transform: Transform) -> list[dict[str, Any]]:
+    def _get_base_constraints(
+        self, omega: float, transform: Transform
+    ) -> list[dict[str, Any]]:
         """
-        Constructs the physical inequality constraints (Current and Voltage limits).
-
-        Note: each safe_*_constraint closure calls ``machine.update_state``
-        before the underlying constraint function. The downstream
-        ``current_constraint`` / ``voltage_constraint`` (and the methods they
-        invoke on ``transform``) also synchronize machine state internally.
-        These redundant calls are kept intentionally so that constraint
-        evaluation is robust regardless of whether the surrounding
-        optimization loop has refreshed state — removing them would couple
-        constraint correctness to caller behavior.
+        Constructs the physical inequality constraints (current and voltage limits)
+        as closures bound to the current operating speed.
 
         Args:
-            transform: The Transform instance providing current speed/voltage matrices.
+            omega: Electrical speed [rad/s] for which constraints will be evaluated.
+            transform: The Transform instance providing the speed-dependent matrices.
 
         Returns:
-            List[Dict]: Scipy-compatible constraint definitions.
+            List[Dict]: SciPy-compatible constraint definitions.
         """
+        machine = transform.machine
+        curr_max = machine.curr_max
+        volt_max = machine.volt_max
 
-        def safe_current_constraint(vec_curr_dq: np.ndarray) -> float:
-            self.model.machine.update_state(transform.omega, vec_curr_dq)
-            return current_constraint(vec_curr_dq, self.model.machine, transform)
+        def current_cons(vec_curr_dq: np.ndarray) -> float:
+            return current_constraint(omega, vec_curr_dq, curr_max, transform)
 
-        def safe_voltage_constraint(vec_curr_dq: np.ndarray) -> float:
-            self.model.machine.update_state(transform.omega, vec_curr_dq)
-            return voltage_constraint(vec_curr_dq, self.model.machine, transform)
+        def voltage_cons(vec_curr_dq: np.ndarray) -> float:
+            return voltage_constraint(omega, vec_curr_dq, volt_max, transform)
 
         return [
-            {
-                "type": "ineq",
-                "fun": safe_current_constraint,
-            },
-            {
-                "type": "ineq",
-                "fun": safe_voltage_constraint,
-            },
+            {"type": "ineq", "fun": current_cons},
+            {"type": "ineq", "fun": voltage_cons},
         ]
 
     def _run_optimization(
@@ -81,17 +78,11 @@ class MotorOptimizer:
         opts: dict[str, Any],
     ) -> tuple[np.ndarray, float, bool]:
         """
-        Internal multi-start solver engine. Executes SLSQP from multiple starting points
-        to avoid local minima and find the global optimum.
-
-        Args:
-            objective_fun: The scalar function to minimize.
-            constraints: List of scipy constraints.
-            candidates: List of starting N-dimensional DQ vectors.
-            opts: Solver options for minimize().
+        Internal multi-start solver engine. Executes SLSQP from multiple
+        starting points to avoid local minima.
 
         Returns:
-            Tuple: (optimal_vector, best_cost_value, success_flag)
+            Tuple: (optimal_vector, best_cost_value, success_flag).
         """
         best_res = None
         best_val = float("inf")
@@ -116,31 +107,30 @@ class MotorOptimizer:
 
     def maximize_torque(
         self,
+        omega: float,
         transform: Transform,
         vec_curr_guess: np.ndarray | None = None,
         opts: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, float, bool]:
         """
         Finds the current vector that produces the maximum possible torque
-        under current and voltage limits.
+        under current and voltage limits at the given speed.
 
         Args:
-            transform: The Transform instance for the current operating speed.
-            vec_curr_guess: Optional external guess to add to multi-start candidates.
-            opts: Method-specific solver options (overrides class defaults).
+            omega: Electrical speed [rad/s].
+            transform: The Transform instance providing speed-dependent matrices.
+            vec_curr_guess: Optional warm-start added to the multi-start candidates.
+            opts: Solver options (overrides class defaults).
 
         Returns:
-            Tuple: (optimal_dq_currents, max_torque_value, success)
+            Tuple: (optimal_dq_currents, max_torque_value, success).
         """
         opts = opts if opts is not None else self.opts
-        self.model.set_omega(transform.omega)
-        constraints = self._get_base_constraints(transform)
+        constraints = self._get_base_constraints(omega, transform)
         candidates = self.model.get_candidates(vec_curr_guess)
 
         def objective(vec_curr_dq: np.ndarray) -> float:
-            self.model.machine.update_state(transform.omega, vec_curr_dq)
-
-            return -self.model.calculate_torque(vec_curr_dq)
+            return -self.model.calculate_torque(omega, vec_curr_dq)
 
         vec_curr_dq_best, best_val, success = self._run_optimization(
             objective, constraints, candidates, opts
@@ -151,32 +141,31 @@ class MotorOptimizer:
     def minimize_current(
         self,
         torq_target: float,
+        omega: float,
         transform: Transform,
         vec_curr_guess: np.ndarray | None = None,
         opts: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, bool]:
         """
-        Finds the minimum current magnitude (Maximum Torque Per Ampere logic)
-        required to produce a specific target torque.
+        Finds the minimum-current vector (MTPA logic) that produces a specific
+        target torque at the given speed.
 
         Args:
-            torq_target: The required torque in Nm.
-            transform: The Transform instance for the current operating speed.
-            vec_curr_guess: Optional external guess (usually from previous grid step).
-            opts: Method-specific solver options.
+            torq_target: The required torque [Nm].
+            omega: Electrical speed [rad/s].
+            transform: The Transform instance providing speed-dependent matrices.
+            vec_curr_guess: Optional warm-start (typically previous grid step).
+            opts: Solver options.
 
         Returns:
-            Tuple: (optimal_dq_currents, success)
+            Tuple: (optimal_dq_currents, success).
         """
         opts = opts if opts is not None else self.opts
-        self.model.set_omega(transform.omega)
-        constraints = self._get_base_constraints(transform)
+        constraints = self._get_base_constraints(omega, transform)
         candidates = self.model.get_candidates(vec_curr_guess)
 
         def eq_cons(vec_curr_dq: np.ndarray) -> float:
-            self.model.machine.update_state(transform.omega, vec_curr_dq)
-
-            return self.model.calculate_torque(vec_curr_dq) - torq_target
+            return self.model.calculate_torque(omega, vec_curr_dq) - torq_target
 
         constraints.append({"type": "eq", "fun": eq_cons})
 

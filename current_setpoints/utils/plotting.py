@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 
-from ..data import BaseMachine
-from ..model import MachineData
+from ..parameters import BaseMachine
+from ..simulation import MachineData
 from .plot_config import PlotConfig
 
 

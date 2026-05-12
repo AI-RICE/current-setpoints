@@ -22,12 +22,20 @@ class MachineData:
         Initializes MachineData with torque/speed vectors and current component matrices.
 
         Args:
-            torq: Torque vector or list.
-            omega: Speed vector or list.
-            segments: 2D Matrix representing active constraint segments.
-            curr_dq_grid: 3D array of DQ currents with shape (dim, n_torq, n_omega),
-                          where dim is the number of DQ components (e.g., 4 for 5-phase, 8 for 9-phase).
-            k_skip: Optional factor to downsample the grid (e.g., take every k-th point).
+            torq: Torque axis values [Nm].
+            omega: Speed axis values [mechanical RPM]. Typically produced by
+                ``grid_to_data`` which converts the internal electrical-rad/s
+                representation via ``const_mech_speed``.
+            segments: 2D matrix of operating-regime labels, shape
+                (n_torq, n_omega). Encoded as ``3 * n_volt_peaks + n_curr_peaks``
+                (integer values 0-8). Unfilled cells are ``NaN``, so the
+                array dtype is float.
+            curr_dq_grid: 3D array of DQ currents, shape (dim, n_torq, n_omega),
+                ordered ``[d_1, q_1, d_3, q_3, ...]`` along axis 0, where
+                ``dim = n_phases - 1`` (e.g., 4 for 5-phase, 8 for 9-phase).
+                Unfilled cells are ``NaN``.
+            k_skip: Optional factor to downsample the grid (e.g., take every
+                k-th point along both axes). ``None`` or ``1`` keeps every sample.
         """
         self.torq: np.ndarray = np.array(torq).flatten()
         self.omega: np.ndarray = np.array(omega).flatten()
@@ -44,10 +52,17 @@ class MachineData:
         Ensures all input arrays are compatible with torq and omega dimensions.
 
         Raises:
-            ValueError: If any grid shape does not match (n_torq, n_omega).
+            ValueError: If torq/omega are empty or if any grid shape does not
+                match (n_torq, n_omega).
         """
         n_torq = len(self.torq)
         n_omega = len(self.omega)
+
+        if n_torq == 0 or n_omega == 0:
+            raise ValueError(
+                f"torq and omega must both be non-empty; got len(torq)={n_torq}, "
+                f"len(omega)={n_omega}."
+            )
 
         expected_shape = (n_torq, n_omega)
 
@@ -70,7 +85,8 @@ class MachineData:
 
     def select_k(self, k_skip: int) -> None:
         """
-        Subsamples the torque/speed vectors and all associated matrices.
+        Subsamples the torque/speed vectors and all associated matrices by
+        taking every ``k_skip``-th element along both grid axes.
 
         Args:
             k_skip: The step size for slicing the arrays. Must be >= 1.
@@ -86,11 +102,6 @@ class MachineData:
         self.torq = self.torq[::k_skip]
         self.segments = self.segments[::k_skip, ::k_skip]
         self.curr_dq_grid = self.curr_dq_grid[:, ::k_skip, ::k_skip]
-
-        if self.torq.size == 0 or self.omega.size == 0:
-            raise ValueError(
-                f"Subsampling with k_skip={k_skip} produced an empty grid."
-            )
 
     @property
     def torq_grid(self) -> np.ndarray:
