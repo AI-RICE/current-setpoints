@@ -1,13 +1,14 @@
 import numpy as np
 
-from ..data import BaseMachine, Flux
+from ..parameters import BaseMachine, Flux
 
 
 class Transform:
     """
     Handles reference frame transformations (DQ to Phase) and voltage/current
-    calculations for multiphase machines, including zero-sequence injection.
-    Supports dynamic flux map updates.
+    calculations for multiphase machines. Zero-sequence injection is planned
+    but not yet implemented (see ``get_volt_ph``). Supports dynamic flux
+    map updates.
     """
 
     def __init__(
@@ -17,8 +18,12 @@ class Transform:
         Initializes the transform instance with machine parameters and resolution.
 
         Args:
-            machine: Object containing n_phases, R_stat, L_stat, flux_volt, and update_state.
-            add_volt_0: Boolean flag to enable zero-sequence (SVPWM) voltage injection.
+            machine: ``BaseMachine`` instance providing ``n_phases``,
+                ``R_stat``, ``L_stat``, and ``mat_crossc``.
+            flux: ``Flux`` provider returning ``(flux_volt, flux_torq)``
+                vectors for a given operating point.
+            add_volt_0: Boolean flag to enable zero-sequence (SVPWM) voltage
+                injection. Currently raises ``NotImplementedError`` when True.
             n_theta: Angular resolution for phase mapping. Internally rounded to a
                 multiple of (2 * n_phases) so that an integer number of samples
                 corresponds to a phase shift of 2*pi/n_phases.
@@ -74,14 +79,20 @@ class Transform:
 
         if self.omega is None or omega != self.omega:
             self.omega = omega
-            self.mat_curr_dq_to_volt_dq = self.mat_curr_dq_to_volt_dq_fixed + self.omega * self.mat_curr_dq_to_volt_dq_omega
-            self.mat_curr_dq_to_volt_ph = self.mat_dq_to_ph @ self.mat_curr_dq_to_volt_dq
+            self.mat_curr_dq_to_volt_dq = (
+                self.mat_curr_dq_to_volt_dq_fixed
+                + self.omega * self.mat_curr_dq_to_volt_dq_omega
+            )
+            self.mat_curr_dq_to_volt_ph = (
+                self.mat_dq_to_ph @ self.mat_curr_dq_to_volt_dq
+            )
 
     def get_curr_ph(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         """
         Transforms DQ currents into phase current time-series.
 
         Args:
+            omega: Electrical speed [rad/s].
             curr_dq: DQ current vector.
 
         Returns:
@@ -96,6 +107,7 @@ class Transform:
         Calculates the DQ voltage vector based on current, speed, and dynamic flux.
 
         Args:
+            omega: Electrical speed [rad/s].
             curr_dq: DQ current vector.
 
         Returns:
@@ -107,24 +119,30 @@ class Transform:
         vec_volt_bemf_dq = self.omega * self.machine.mat_crossc @ flux_volt
         return self.mat_curr_dq_to_volt_dq @ curr_dq + vec_volt_bemf_dq
 
-    def get_volt_ph(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_volt_ph(
+        self, omega: float, curr_dq: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Calculates phase voltages, including zero-sequence components if enabled.
+        Calculates phase voltages. Zero-sequence injection via ``add_volt_0``
+        is not yet implemented and raises ``NotImplementedError`` when enabled.
 
-        When ``add_volt_0`` is True, applies min-max zero-sequence injection
-        (commonly known as SVPWM) to the phase-A voltage time-series. The
-        injected common-mode signal is computed across all n_phases at each
-        time sample (using the symmetry that phase x at time k equals phase A
-        sampled at time k - x * n_theta/n_phases) so that the resulting
+        When implemented, ``add_volt_0=True`` will apply min-max zero-sequence
+        injection (commonly known as SVPWM) to the phase-A voltage time-series.
+        The injected common-mode signal will be computed across all n_phases at
+        each time sample (using the symmetry that phase x at time k equals
+        phase A sampled at time k - x * n_theta/n_phases) so that the resulting
         vec_volt_ph genuinely has reduced peak magnitude vs the raw waveform.
 
         Args:
+            omega: Electrical speed [rad/s].
             curr_dq: DQ current vector.
 
         Returns:
             Tuple: (final_phase_voltage, zero_sequence_voltage, raw_phase_voltage).
             All three arrays share the same length (n_theta + 1, last sample is
-            a periodic wrap of the first).
+            a periodic wrap of the first). With injection currently disabled,
+            final_phase_voltage equals raw_phase_voltage and zero_sequence_voltage
+            is the zero array.
         """
 
         self._set_omega(omega)
@@ -134,22 +152,7 @@ class Transform:
         volt_raw = self.mat_curr_dq_to_volt_ph @ curr_dq + volt_bemf_ph
 
         if self.add_volt_0:
-            # TODO: not finished
-            raise NotImplementedError("Check")
-            n_t = self.vec_theta.size - 1
-            step = self._phase_shift_samples
-            raw = volt_raw[:-1]
-
-            time_idx = np.arange(n_t)
-            shift_idx = np.arange(self.n_phases) * step
-            indices = (time_idx[None, :] - shift_idx[:, None]) % n_t
-            mat_phases = raw[indices]  # (n_phases, n_t)
-
-            vec_volt_0_t = -0.5 * (mat_phases.min(axis=0) + mat_phases.max(axis=0))
-
-            volt_ph = raw + vec_volt_0_t
-            volt_ph = np.append(volt_ph, volt_ph[0])
-            volt_0 = np.append(vec_volt_0_t, vec_volt_0_t[0])
+            raise NotImplementedError("Zero-sequence injection not yet implemented")
         else:
             volt_ph = volt_raw
             volt_0 = np.zeros_like(volt_raw)
@@ -190,42 +193,29 @@ class Transform:
 
     def get_max_vals(
         self, omega: float, curr_dq: np.ndarray
-    ) -> tuple[float, float, np.ndarray, float, float, float, float, float]:
+    ) -> tuple[float, float, float, float]:
         """
-        Computes peak values, angles, and RMS metrics for current and voltage.
+        Computes peak phase current/voltage and the worst-case harmonic
+        alignment angle for each.
 
         Args:
+            omega: Electrical speed [rad/s].
             curr_dq: DQ current vector.
 
         Returns:
-            Tuple: (curr_peak, curr_ang_diff, vec_volt_dq, volt_peak, volt_ang_diff,
-                    volt_raw_peak, volt_0_rms, volt_0_peak).
+            Tuple: (curr_peak, curr_ang_diff, volt_peak, volt_ang_diff).
         """
-
-        # TODO: prepsat vystupni prommene
-        volt_ph, volt_0, volt_raw = self.get_volt_ph(omega, curr_dq)
-        volt_dq = self.get_volt_dq(omega, curr_dq)
+        volt_ph, _, _ = self.get_volt_ph(omega, curr_dq)
         curr_ph = self.get_curr_ph(omega, curr_dq)
+        volt_dq = self.get_volt_dq(omega, curr_dq)
 
         curr_peak = np.max(np.abs(curr_ph))
         volt_peak = np.max(np.abs(volt_ph))
-        volt_raw_peak = np.max(np.abs(volt_raw))
-        volt_0_rms = np.sqrt(np.mean(volt_0**2))
-        volt_0_peak = np.max(np.abs(volt_0))
 
         curr_ang_diff = self._alignment_diff_all_harmonics(curr_dq)
         volt_ang_diff = self._alignment_diff_all_harmonics(volt_dq)
 
-        return (
-            curr_peak,
-            curr_ang_diff,
-            volt_dq,
-            volt_peak,
-            volt_ang_diff,
-            volt_raw_peak,
-            volt_0_rms,
-            volt_0_peak,
-        )
+        return curr_peak, curr_ang_diff, volt_peak, volt_ang_diff
 
     def count_peaks(
         self, omega: float, curr_dq: np.ndarray, tol: float = 1e-4
@@ -234,16 +224,22 @@ class Transform:
         Determines the number of active peaks hitting physical limits for current and voltage.
 
         Args:
+            omega: Electrical speed [rad/s].
             curr_dq: DQ current vector.
-            machine: Machine object containing curr_max and volt_max.
             tol: Numerical tolerance for comparing peaks to limits.
 
         Returns:
             Tuple[int, int]: Number of current peaks (0, 1, or 2), number of voltage peaks.
         """
-        curr_peak, curr_ang_diff, _, volt_peak, volt_ang_diff, _, _, _ = self.get_max_vals(omega, curr_dq)
-        n_curr_peaks = self._count_peaks_helper(curr_peak, self.machine.curr_max, curr_ang_diff, tol)
-        n_volt_peaks = self._count_peaks_helper(volt_peak, self.machine.volt_max, volt_ang_diff, tol)
+        curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = self.get_max_vals(
+            omega, curr_dq
+        )
+        n_curr_peaks = self._count_peaks_helper(
+            curr_peak, self.machine.curr_max, curr_ang_diff, tol
+        )
+        n_volt_peaks = self._count_peaks_helper(
+            volt_peak, self.machine.volt_max, volt_ang_diff, tol
+        )
         return n_curr_peaks, n_volt_peaks
 
     def _count_peaks_helper(

@@ -1,18 +1,20 @@
 import numpy as np
 
-from ..model import Transform
+from ..simulation import Transform
 
 
 def current_constraint(
-    omega, curr_dq: np.ndarray, curr_max: float, transform: Transform
+    omega: float, curr_dq: np.ndarray, curr_max: float, transform: Transform
 ) -> float:
     """
     Ensures the peak physical phase current does not exceed the machine's maximum rating.
     In Scipy's SLSQP, a positive return value means the constraint is satisfied (val >= 0).
 
     Args:
-        curr_dq: N-element current vector (e.g., length 4 for 5-phase, 8 for 9-phase).
-        machine: The Machine object containing 'curr_max'.
+        omega: Electrical speed [rad/s].
+        curr_dq: N-element DQ current vector, length ``n_phases - 1``
+            (e.g., 4 for 5-phase, 8 for 9-phase).
+        curr_max: Maximum allowable peak phase current [A].
         transform: The Transform instance providing the DQ-to-Phase mapping.
 
     Returns:
@@ -25,16 +27,20 @@ def current_constraint(
 
 
 def voltage_constraint(
-    omega, curr_dq: np.ndarray, volt_max: float, transform: Transform
+    omega: float, curr_dq: np.ndarray, volt_max: float, transform: Transform
 ) -> float:
     """
-    Ensures the peak phase voltage (including zero-sequence injection if enabled)
-    does not exceed the available DC-link/inverter voltage limit.
+    Ensures the peak phase voltage does not exceed the available DC-link /
+    inverter voltage limit. When zero-sequence injection (SVPWM) is
+    implemented, the peak is taken over the post-injection waveform; with
+    injection currently disabled, this is the raw phase voltage.
 
     Args:
-        curr_dq: N-element current vector (e.g., length 4 for 5-phase, 8 for 9-phase).
-        machine: The Machine object containing 'volt_max'.
-        transform: The Transform instance providing voltage matrices and SVPWM logic.
+        omega: Electrical speed [rad/s].
+        curr_dq: N-element DQ current vector, length ``n_phases - 1``
+            (e.g., 4 for 5-phase, 8 for 9-phase).
+        volt_max: Maximum allowable peak phase voltage [V].
+        transform: The Transform instance providing the DQ-to-Phase mapping.
 
     Returns:
         float: The margin between voltage limit and peak phase voltage.

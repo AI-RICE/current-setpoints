@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 from scipy.optimize import minimize
 
-from ..model import Transform
+from ..simulation import Transform
 from .constraints import current_constraint, voltage_constraint
 from .models import BaseTorqueModel
 
@@ -55,7 +55,7 @@ class MotorOptimizer:
         Returns:
             List[Dict]: SciPy-compatible constraint definitions.
         """
-        machine = self.model.machine
+        machine = transform.machine
         curr_max = machine.curr_max
         volt_max = machine.volt_max
 

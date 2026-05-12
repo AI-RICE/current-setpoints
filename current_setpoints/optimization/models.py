@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..data import BaseMachine, Flux
+from ..parameters import BaseMachine, Flux
 from ..utils import NeuralTorquePredictor, predict_torque_neural
 
 
@@ -90,7 +90,6 @@ class ModelAnalytical(BaseTorqueModel):
     """
 
     def __init__(self, machine: BaseMachine, flux: Flux) -> None:
-        # TODO: fix
         self.A = (machine.n_phases * machine.n_ppairs / 4.0) * (
             machine.mat_crossc @ machine.L_stat + machine.L_stat @ machine.mat_crossc.T
         )

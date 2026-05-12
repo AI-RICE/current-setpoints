@@ -67,10 +67,6 @@ where = ["."]
 include = ["current_setpoints*"]
 exclude = ["tests*", "notebooks*", "data*", "weights*", "docs*"]
 
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

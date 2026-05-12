@@ -8,6 +8,4 @@ This package provides a comprehensive suite of tools for:
 - Common math and coordinate transformation utilities (.utils)
 """
 
-from . import data, model, optimization, utils
-
-__all__ = ["data", "model", "optimization", "utils"]
+from . import optimization, parameters, simulation, utils

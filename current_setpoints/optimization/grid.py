@@ -5,9 +5,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..data import BaseMachine
-from ..model import MachineData, Transform
-from .models import ModelNeural
+from ..simulation import MachineData, Transform
+from .models import ModelAnalytical, ModelNeural
 from .optimizer import MotorOptimizer
 
 
@@ -44,9 +43,6 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarr
         "grid_curr_ang_diff",
         "grid_volt_ang_diff",
         "grid_segments",
-        "grid_volt_raw_peak",
-        "grid_volt_0_rms",
-        "grid_volt_0_peak",
     ]
 
     grid: dict[str, np.ndarray] = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
@@ -77,16 +73,9 @@ def _fill_grid_point(
         idx_torq: Current torque index.
         idx_omega: Current speed index.
     """
-    (
-        curr_peak,
-        curr_ang_diff,
-        _,
-        volt_peak,
-        volt_ang_diff,
-        volt_raw_peak,
-        volt_0_rms,
-        volt_0_peak,
-    ) = transform.get_max_vals(omega, vec_curr_dq)
+    curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = transform.get_max_vals(
+        omega, vec_curr_dq
+    )
 
     n_curr_peaks, n_volt_peaks = transform.count_peaks(omega, vec_curr_dq)
 
@@ -96,9 +85,6 @@ def _fill_grid_point(
     grid["grid_volt_peak"][idx_torq, idx_omega] = volt_peak
     grid["grid_curr_ang_diff"][idx_torq, idx_omega] = curr_ang_diff
     grid["grid_volt_ang_diff"][idx_torq, idx_omega] = volt_ang_diff
-    grid["grid_volt_raw_peak"][idx_torq, idx_omega] = volt_raw_peak
-    grid["grid_volt_0_rms"][idx_torq, idx_omega] = volt_0_rms
-    grid["grid_volt_0_peak"][idx_torq, idx_omega] = volt_0_peak
 
     grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt_peaks + n_curr_peaks
 
@@ -136,7 +122,7 @@ def calculate_grid(
 
     print(f"Starting {mode.capitalize()} Grid Calculation...")
 
-    machine = optimizer.model.machine
+    machine = transform.machine
     dim = machine.n_phases - 1
 
     grid: dict[str, Any] = {}
@@ -146,7 +132,9 @@ def calculate_grid(
     grid_torq_targets: Any = None
 
     if mode == "standard":
-        _, torq_max_global, _ = optimizer.maximize_torque(omega=0.0, transform=transform)
+        _, torq_max_global, _ = optimizer.maximize_torque(
+            omega=0.0, transform=transform
+        )
 
         n_torq, n_omega = opts["n_torq"], opts["n_omega"]
         grid["vec_torq"] = np.linspace(opts["torq_min"], torq_max_global, n_torq)
@@ -216,14 +204,22 @@ def calculate_grid(
                 if success:
                     vec_curr_dq_prev = vec_curr_dq_opt
                     _fill_grid_point(
-                        grid, transform, omega_target, vec_curr_dq_opt,
-                        idx_torq, idx_omega,
+                        grid,
+                        transform,
+                        omega_target,
+                        vec_curr_dq_opt,
+                        idx_torq,
+                        idx_omega,
                     )
             else:
                 vec_curr_dq_final = vec_curr_dq_opt if success else vec_curr_dq_guess
                 _fill_grid_point(
-                    grid, transform, omega_target, vec_curr_dq_final,
-                    idx_torq, idx_omega,
+                    grid,
+                    transform,
+                    omega_target,
+                    vec_curr_dq_final,
+                    idx_torq,
+                    idx_omega,
                 )
 
     print(f"{mode.capitalize()} Grid Calculation Complete.")
@@ -274,7 +270,6 @@ def get_correction_grid(
         curr_valid = curr_flat[:, valid_mask]
         n_valid = omega_valid.size
 
-        # Batched neural residual evaluation.
         X_in = np.vstack([omega_valid, curr_valid]).T
         X_scaled = model.scaler.transform(X_in)
         X_tensor = torch.from_numpy(X_scaled).float().to(model.device)
@@ -282,13 +277,8 @@ def get_correction_grid(
         with torch.no_grad():
             residuals = model.neural_model(X_tensor).cpu().numpy().flatten()
 
-        # Per-cell analytical torque (cheap matrix ops; loop is fine).
         analyticals = np.empty(n_valid, dtype=np.float64)
         for i in range(n_valid):
-            # Skip the neural residual; we only want the analytical part here.
-            # ModelNeural inherits ModelAnalytical, so super().calculate_torque
-            # is available, but the cleanest call is via the parent class.
-            from .models import ModelAnalytical
             analyticals[i] = ModelAnalytical.calculate_torque(
                 model, float(omega_valid[i]), curr_valid[:, i]
             )

@@ -60,14 +60,6 @@ class NeuralTorquePredictor(nn.Module):
         return self.fc2(h)
 
 
-# Buffers that older weight files contained but the current module no longer
-# defines. Loading them is harmless because they are not parameters and are
-# recomputed from the analytical model at inference time; we only allow these
-# specific keys to be missing from the new module so unrelated state-dict
-# mismatches still surface loudly.
-_LEGACY_BUFFER_KEYS: frozenset[str] = frozenset({"A_TENSOR"})
-
-
 def load_neural_model(
     weights_path: str,
     scaler_path: str,
@@ -78,11 +70,9 @@ def load_neural_model(
     """
     Loads saved scaler data and model weights, initializing the predictor.
 
-    The function tolerates state dictionaries from earlier versions of this
-    module that contained an ``A_TENSOR`` buffer. The MLP parameters
-    (``fc1.*``, ``fc2.*``) and normalization buffers (``x_mean``, ``x_std``)
-    must all be present; any other unexpected or missing key is treated as a
-    real incompatibility and raises.
+    The state dictionary must match the current module exactly: the MLP
+    parameters (``fc1.*``, ``fc2.*``) and normalization buffers
+    (``x_mean``, ``x_std``). Any missing or unexpected key raises.
 
     Args:
         weights_path: Path to the .pth state dictionary.
@@ -95,9 +85,7 @@ def load_neural_model(
         Tuple: (initialized_model, scaler_object).
 
     Raises:
-        RuntimeError: If the state dictionary is missing parameters required
-            by the new module, or contains unexpected keys other than the
-            legacy buffers in ``_LEGACY_BUFFER_KEYS``.
+        RuntimeError: If the state dictionary does not match the module.
     """
     scaler_data = np.load(scaler_path, allow_pickle=True).item()
     scaler = StandardScaler()
@@ -107,20 +95,7 @@ def load_neural_model(
     model = NeuralTorquePredictor(input_size, hidden_size, scaler, device).to(device)
 
     state_dict = torch.load(weights_path, map_location=device)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-
-    if missing:
-        raise RuntimeError(
-            f"State dict is missing parameters required by NeuralTorquePredictor: "
-            f"{sorted(missing)}"
-        )
-
-    unexpected_real = set(unexpected) - _LEGACY_BUFFER_KEYS
-    if unexpected_real:
-        raise RuntimeError(
-            f"State dict contains unexpected keys beyond the known legacy buffers "
-            f"{sorted(_LEGACY_BUFFER_KEYS)}: {sorted(unexpected_real)}"
-        )
+    model.load_state_dict(state_dict)
 
     model.eval()
     return model, scaler

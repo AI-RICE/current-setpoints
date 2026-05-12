@@ -9,5 +9,3 @@ logic required for electromagnetic motor analysis, including:
 
 from .data import MachineData
 from .transform import Transform
-
-__all__ = ["MachineData", "Transform"]
