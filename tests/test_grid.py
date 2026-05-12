@@ -34,9 +34,7 @@ def test_calculate_grid_analytical_returns_correct_shapes():
 
     tiny_grid_opts = {"n_torq": 2, "n_omega": 2, "torq_min": 0.0, "omega_min": 0.0}
 
-    grid_result = calculate_grid(
-        optimizer=optimizer, transform=transform, opts=tiny_grid_opts, mode="standard"
-    )
+    grid_result = calculate_grid(optimizer=optimizer, transform=transform, opts=tiny_grid_opts, mode="standard")
 
     assert isinstance(grid_result, dict), "Result should be a dictionary"
 
@@ -119,9 +117,7 @@ def test_calculate_grid_neural_runs_successfully():
 
     tiny_grid_opts = {"n_torq": 2, "n_omega": 2, "torq_min": 7.5, "omega_min": 0.0}
 
-    neural_grid = calculate_grid(
-        optimizer=optimizer, transform=transform, opts=tiny_grid_opts, mode="standard"
-    )
+    neural_grid = calculate_grid(optimizer=optimizer, transform=transform, opts=tiny_grid_opts, mode="standard")
 
     assert isinstance(neural_grid, dict)
     assert "curr_dq_grid" in neural_grid

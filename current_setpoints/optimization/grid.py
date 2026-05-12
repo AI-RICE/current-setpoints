@@ -73,9 +73,7 @@ def _fill_grid_point(
         idx_torq: Current torque index.
         idx_omega: Current speed index.
     """
-    curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = transform.get_max_vals(
-        omega, vec_curr_dq
-    )
+    curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = transform.get_max_vals(omega, vec_curr_dq)
 
     n_curr_peaks, n_volt_peaks = transform.count_peaks(omega, vec_curr_dq)
 
@@ -132,9 +130,7 @@ def calculate_grid(
     grid_torq_targets: Any = None
 
     if mode == "standard":
-        _, torq_max_global, _ = optimizer.maximize_torque(
-            omega=0.0, transform=transform
-        )
+        _, torq_max_global, _ = optimizer.maximize_torque(omega=0.0, transform=transform)
 
         n_torq, n_omega = opts["n_torq"], opts["n_omega"]
         grid["vec_torq"] = np.linspace(opts["torq_min"], torq_max_global, n_torq)
@@ -157,14 +153,9 @@ def calculate_grid(
 
     for idx_omega in range(n_omega):
         omega_target = grid["vec_omega"][idx_omega]
-        print(
-            f"Calculating: Omega step {idx_omega + 1}/{n_omega} "
-            f"({omega_target * grid['const_mech_speed']:.1f} RPM)"
-        )
+        print(f"Calculating: Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)")
 
-        _, torq_max_local, _ = optimizer.maximize_torque(
-            omega=omega_target, transform=transform
-        )
+        _, torq_max_local, _ = optimizer.maximize_torque(omega=omega_target, transform=transform)
         grid["vec_torq_max"][0, idx_omega] = torq_max_local
 
         vec_curr_dq_prev = np.zeros(dim)
@@ -182,15 +173,9 @@ def calculate_grid(
                 assert dict_grid_corr is not None
                 torq_target = grid_torq_targets[idx_torq, idx_omega]
 
-                vec_curr_dq_guess = dict_grid_corr["curr_dq_grid"][
-                    :, idx_torq, idx_omega
-                ]
+                vec_curr_dq_guess = dict_grid_corr["curr_dq_grid"][:, idx_torq, idx_omega]
 
-                if (
-                    np.isnan(torq_target)
-                    or np.any(np.isnan(vec_curr_dq_guess))
-                    or torq_target > torq_max_local
-                ):
+                if np.isnan(torq_target) or np.any(np.isnan(vec_curr_dq_guess)) or torq_target > torq_max_local:
                     continue
 
             vec_curr_dq_opt, success = optimizer.minimize_current(
@@ -251,9 +236,7 @@ def get_correction_grid(
     """
     print("Computing ML Correction Grid...")
 
-    dict_grid_corr = {
-        k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()
-    }
+    dict_grid_corr = {k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()}
 
     dim, n_torq, n_omega = dict_grid_corr["curr_dq_grid"].shape
     grid_torq_neural = np.full((n_torq, n_omega), np.nan)
@@ -279,9 +262,7 @@ def get_correction_grid(
 
         analyticals = np.empty(n_valid, dtype=np.float64)
         for i in range(n_valid):
-            analyticals[i] = ModelAnalytical.calculate_torque(
-                model, float(omega_valid[i]), curr_valid[:, i]
-            )
+            analyticals[i] = ModelAnalytical.calculate_torque(model, float(omega_valid[i]), curr_valid[:, i])
 
         torq_neural_flat = np.full(n_torq * n_omega, np.nan)
         torq_neural_flat[valid_mask] = analyticals + residuals

@@ -39,9 +39,7 @@ class BaseTorqueModel(ABC):
         """
         pass
 
-    def get_candidates(
-        self, curr_dq_guess: np.ndarray | None = None
-    ) -> list[np.ndarray]:
+    def get_candidates(self, curr_dq_guess: np.ndarray | None = None) -> list[np.ndarray]:
         """
         Generates a list of initial guess vectors for the optimizer.
         These candidates help the solver avoid local minima by providing starts in
@@ -93,7 +91,7 @@ class ModelAnalytical(BaseTorqueModel):
         self.A = (machine.n_phases * machine.n_ppairs / 4.0) * (
             machine.mat_crossc @ machine.L_stat + machine.L_stat @ machine.mat_crossc.T
         )
-        self.machine = machine  
+        self.machine = machine
         self.n_ppairs = machine.n_ppairs
         self.flux = flux
         self.mat_crossc = machine.mat_crossc
@@ -149,11 +147,7 @@ class ModelNeural(ModelAnalytical):
 
         torque_analytical = super().calculate_torque(omega, curr_dq)
         torque_residual = predict_torque_neural(
-            curr_dq=curr_dq,
-            omega=omega,
-            neural_model=self.neural_model,
-            scaler=self.scaler,
-            device=self.device
+            curr_dq=curr_dq, omega=omega, neural_model=self.neural_model, scaler=self.scaler, device=self.device
         )
 
         return torque_analytical + torque_residual

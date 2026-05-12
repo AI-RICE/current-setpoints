@@ -42,9 +42,7 @@ class PlotConfig:
         }
 
     @classmethod
-    def get_rc_params(
-        cls, custom_overrides: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    def get_rc_params(cls, custom_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Returns a default matplotlib rcParams dict, optionally merged with caller overrides.
 
@@ -94,8 +92,7 @@ class PlotConfig:
             legend_target = axes_list[0]
         else:
             raise TypeError(
-                f"figure_or_ax must be a Figure, Axes, or ndarray of Axes; "
-                f"got {type(figure_or_ax).__name__}."
+                f"figure_or_ax must be a Figure, Axes, or ndarray of Axes; got {type(figure_or_ax).__name__}."
             )
 
         by_label: dict[str, Any] = {}
@@ -109,9 +106,7 @@ class PlotConfig:
         # Reverse map for O(1) sort key lookup (was O(n) per call inside sorted()).
         label_to_idx = {v: k for k, v in labels_map.items()}
 
-        sorted_labels = sorted(
-            by_label.keys(), key=lambda lbl: label_to_idx.get(lbl, 999)
-        )
+        sorted_labels = sorted(by_label.keys(), key=lambda lbl: label_to_idx.get(lbl, 999))
         sorted_handles = [by_label[lbl] for lbl in sorted_labels]
 
         legend_target.legend(sorted_handles, sorted_labels, loc=loc, **kwargs)
@@ -147,9 +142,7 @@ class PlotConfig:
         c_vals = z_grid[mask]
 
         fig, ax = plt.subplots(figsize=(14, 9))
-        sc = ax.scatter(
-            x_vals, y_vals, c=c_vals, cmap="Reds", s=40, marker="s", linewidths=0
-        )
+        sc = ax.scatter(x_vals, y_vals, c=c_vals, cmap="Reds", s=40, marker="s", linewidths=0)
 
         cbar = fig.colorbar(sc, ax=ax)
         if cbar_kwargs:

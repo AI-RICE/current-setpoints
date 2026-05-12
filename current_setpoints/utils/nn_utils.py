@@ -165,9 +165,7 @@ def prepare_fold_dataloaders(
     )
 
     batch_size = min(64, len(X_train_norm) // 4)
-    train_loader = DataLoader(
-        dataset=train_dataset, batch_size=batch_size, shuffle=True
-    )
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, scaler_X

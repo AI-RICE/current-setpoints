@@ -11,9 +11,7 @@ class Transform:
     map updates.
     """
 
-    def __init__(
-        self, machine: BaseMachine, flux: Flux, add_volt_0: bool, n_theta: int = 700
-    ) -> None:
+    def __init__(self, machine: BaseMachine, flux: Flux, add_volt_0: bool, n_theta: int = 700) -> None:
         """
         Initializes the transform instance with machine parameters and resolution.
 
@@ -57,9 +55,7 @@ class Transform:
         Note: BEMF is no longer precomputed here because flux is dynamic.
         """
         self.mat_curr_dq_to_volt_dq_fixed: np.ndarray = self.machine.R_stat.copy()
-        self.mat_curr_dq_to_volt_dq_omega: np.ndarray = (
-            self.machine.mat_crossc @ self.machine.L_stat
-        )
+        self.mat_curr_dq_to_volt_dq_omega: np.ndarray = self.machine.mat_crossc @ self.machine.L_stat
 
         cols = []
         for i in range(self.dim // 2):
@@ -80,12 +76,9 @@ class Transform:
         if self.omega is None or omega != self.omega:
             self.omega = omega
             self.mat_curr_dq_to_volt_dq = (
-                self.mat_curr_dq_to_volt_dq_fixed
-                + self.omega * self.mat_curr_dq_to_volt_dq_omega
+                self.mat_curr_dq_to_volt_dq_fixed + self.omega * self.mat_curr_dq_to_volt_dq_omega
             )
-            self.mat_curr_dq_to_volt_ph = (
-                self.mat_dq_to_ph @ self.mat_curr_dq_to_volt_dq
-            )
+            self.mat_curr_dq_to_volt_ph = self.mat_dq_to_ph @ self.mat_curr_dq_to_volt_dq
 
     def get_curr_ph(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         """
@@ -119,9 +112,7 @@ class Transform:
         vec_volt_bemf_dq = self.omega * self.machine.mat_crossc @ flux_volt
         return self.mat_curr_dq_to_volt_dq @ curr_dq + vec_volt_bemf_dq
 
-    def get_volt_ph(
-        self, omega: float, curr_dq: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_volt_ph(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Calculates phase voltages. Zero-sequence injection via ``add_volt_0``
         is not yet implemented and raises ``NotImplementedError`` when enabled.
@@ -191,9 +182,7 @@ class Transform:
             diffs.append(self._harmonic_alignment_diff(ang_1, ang_h, h))
         return max(diffs)
 
-    def get_max_vals(
-        self, omega: float, curr_dq: np.ndarray
-    ) -> tuple[float, float, float, float]:
+    def get_max_vals(self, omega: float, curr_dq: np.ndarray) -> tuple[float, float, float, float]:
         """
         Computes peak phase current/voltage and the worst-case harmonic
         alignment angle for each.
@@ -217,9 +206,7 @@ class Transform:
 
         return curr_peak, curr_ang_diff, volt_peak, volt_ang_diff
 
-    def count_peaks(
-        self, omega: float, curr_dq: np.ndarray, tol: float = 1e-4
-    ) -> tuple[int, int]:
+    def count_peaks(self, omega: float, curr_dq: np.ndarray, tol: float = 1e-4) -> tuple[int, int]:
         """
         Determines the number of active peaks hitting physical limits for current and voltage.
 
@@ -231,20 +218,12 @@ class Transform:
         Returns:
             Tuple[int, int]: Number of current peaks (0, 1, or 2), number of voltage peaks.
         """
-        curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = self.get_max_vals(
-            omega, curr_dq
-        )
-        n_curr_peaks = self._count_peaks_helper(
-            curr_peak, self.machine.curr_max, curr_ang_diff, tol
-        )
-        n_volt_peaks = self._count_peaks_helper(
-            volt_peak, self.machine.volt_max, volt_ang_diff, tol
-        )
+        curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = self.get_max_vals(omega, curr_dq)
+        n_curr_peaks = self._count_peaks_helper(curr_peak, self.machine.curr_max, curr_ang_diff, tol)
+        n_volt_peaks = self._count_peaks_helper(volt_peak, self.machine.volt_max, volt_ang_diff, tol)
         return n_curr_peaks, n_volt_peaks
 
-    def _count_peaks_helper(
-        self, value: float, val_max: float, angle_diff: float, tol: float
-    ) -> int:
+    def _count_peaks_helper(self, value: float, val_max: float, angle_diff: float, tol: float) -> int:
         """
         Internal logic to determine if 0, 1, or 2 peaks are present based on limit proximity.
 

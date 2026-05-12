@@ -11,9 +11,7 @@ class Flux(ABC):
     """
 
     @abstractmethod
-    def get_flux(
-        self, omega: float, curr_dq: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def get_flux(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Returns ``(flux_volt, flux_torq)`` for the given operating point.
 
@@ -31,9 +29,7 @@ class ConstantFlux(Flux):
         self.ieee_flux_volt: np.ndarray = ieee_flux_volt
         self.ieee_flux_torq: np.ndarray = ieee_flux_torq
 
-    def get_flux(
-        self, omega: float, curr_dq: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def get_flux(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return self.ieee_flux_volt, self.ieee_flux_torq
 
 

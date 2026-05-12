@@ -87,11 +87,13 @@ class IEEEMachine2(BaseMachine):
         self.n_ppairs: int = 8
 
         self.R_stat: np.ndarray = np.diag([0.0191, 0.0514, 0.0805, 0.0801])
-        self.L_stat: np.ndarray = 1e-3 * np.array([
+        self.L_stat: np.ndarray = 1e-3 * np.array(
+            [
                 [0.0920, -0.0286, -0.0141, 0.0010],
                 [-0.0133, 0.1090, -0.0008, -0.0092],
                 [-0.0088, 0.0037, 0.0725, -0.0466],
                 [-0.0041, -0.0053, 0.0475, 0.0722],
-            ])
+            ]
+        )
 
         super().__init__()

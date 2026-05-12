@@ -136,9 +136,7 @@ def test_get_volt_ph_no_injection_equals_raw():
     """When add_volt_0=False, vec_volt_ph must equal vec_volt_raw exactly."""
     transform = _build_default_transform(add_volt_0=False)
     vec_curr_dq = np.array([5.0, 3.0, 0.0, 0.0])
-    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(
-        omega=50.0, curr_dq=vec_curr_dq
-    )
+    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(omega=50.0, curr_dq=vec_curr_dq)
     assert np.allclose(vec_volt_ph, vec_volt_raw)
     assert np.allclose(vec_volt_0, 0.0)
 
@@ -150,6 +148,7 @@ def test_get_volt_ph_no_injection_equals_raw():
 # the moment the NotImplementedError in `get_volt_ph` is replaced by a real
 # implementation.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skip(reason="Zero-sequence injection not yet implemented")
 def test_get_volt_ph_pure_fundamental_injection_matches_theory():
@@ -179,9 +178,7 @@ def test_get_volt_ph_injection_reduces_peak_under_load():
     """
     transform = _build_default_transform(add_volt_0=True)
     vec_curr_dq = np.array([10.0, 5.0, 1.0, 0.5])
-    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(
-        omega=50.0, curr_dq=vec_curr_dq
-    )
+    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(omega=50.0, curr_dq=vec_curr_dq)
     assert np.max(np.abs(vec_volt_ph)) < np.max(np.abs(vec_volt_raw))
 
 
@@ -194,9 +191,7 @@ def test_get_volt_ph_injection_preserves_dq_content():
     """
     transform = _build_default_transform(add_volt_0=True)
     vec_curr_dq = np.array([10.0, 5.0, 1.0, 0.5])
-    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(
-        omega=50.0, curr_dq=vec_curr_dq
-    )
+    vec_volt_ph, _, vec_volt_raw = transform.get_volt_ph(omega=50.0, curr_dq=vec_curr_dq)
     theta = transform.vec_theta
 
     for h in (1, 3):
@@ -211,9 +206,7 @@ def test_get_volt_ph_injection_v0_returned_consistently():
     """vec_volt_ph == vec_volt_raw + vec_volt_0 sample by sample."""
     transform = _build_default_transform(add_volt_0=True)
     vec_curr_dq = np.array([7.0, 2.0, 0.5, -0.5])
-    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(
-        omega=50.0, curr_dq=vec_curr_dq
-    )
+    vec_volt_ph, vec_volt_0, vec_volt_raw = transform.get_volt_ph(omega=50.0, curr_dq=vec_curr_dq)
     assert np.allclose(vec_volt_ph, vec_volt_raw + vec_volt_0)
 
 
@@ -284,15 +277,11 @@ def test_count_peaks_helper_zero_when_below_limit():
 
 def test_count_peaks_helper_one_when_at_limit_no_alignment():
     transform = _build_default_transform()
-    n = transform._count_peaks_helper(
-        value=10.0, val_max=10.0, angle_diff=1.0, tol=1e-4
-    )
+    n = transform._count_peaks_helper(value=10.0, val_max=10.0, angle_diff=1.0, tol=1e-4)
     assert n == 1
 
 
 def test_count_peaks_helper_two_when_at_limit_and_aligned():
     transform = _build_default_transform()
-    n = transform._count_peaks_helper(
-        value=10.0, val_max=10.0, angle_diff=0.0, tol=1e-4
-    )
+    n = transform._count_peaks_helper(value=10.0, val_max=10.0, angle_diff=0.0, tol=1e-4)
     assert n == 2

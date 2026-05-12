@@ -25,9 +25,7 @@ class MotorOptimizer:
     evaluations short-circuit the matrix recomputation.
     """
 
-    def __init__(
-        self, model: BaseTorqueModel, opts: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, model: BaseTorqueModel, opts: dict[str, Any] | None = None) -> None:
         """
         Initializes the optimizer with a torque model and solver settings.
 
@@ -37,13 +35,9 @@ class MotorOptimizer:
                   Defaults to {"disp": False, "ftol": 1e-8, "maxiter": 500}.
         """
         self.model = model
-        self.opts = (
-            opts if opts is not None else {"disp": False, "ftol": 1e-8, "maxiter": 500}
-        )
+        self.opts = opts if opts is not None else {"disp": False, "ftol": 1e-8, "maxiter": 500}
 
-    def _get_base_constraints(
-        self, omega: float, transform: Transform
-    ) -> list[dict[str, Any]]:
+    def _get_base_constraints(self, omega: float, transform: Transform) -> list[dict[str, Any]]:
         """
         Constructs the physical inequality constraints (current and voltage limits)
         as closures bound to the current operating speed.
@@ -132,9 +126,7 @@ class MotorOptimizer:
         def objective(vec_curr_dq: np.ndarray) -> float:
             return -self.model.calculate_torque(omega, vec_curr_dq)
 
-        vec_curr_dq_best, best_val, success = self._run_optimization(
-            objective, constraints, candidates, opts
-        )
+        vec_curr_dq_best, best_val, success = self._run_optimization(objective, constraints, candidates, opts)
 
         return vec_curr_dq_best, -best_val, success
 
@@ -172,8 +164,6 @@ class MotorOptimizer:
         def objective(vec_curr_dq: np.ndarray) -> float:
             return float(np.sum(vec_curr_dq**2))
 
-        vec_curr_dq_best, _, success = self._run_optimization(
-            objective, constraints, candidates, opts
-        )
+        vec_curr_dq_best, _, success = self._run_optimization(objective, constraints, candidates, opts)
 
         return vec_curr_dq_best, success

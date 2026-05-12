@@ -3,9 +3,7 @@ import numpy as np
 from ..simulation import Transform
 
 
-def current_constraint(
-    omega: float, curr_dq: np.ndarray, curr_max: float, transform: Transform
-) -> float:
+def current_constraint(omega: float, curr_dq: np.ndarray, curr_max: float, transform: Transform) -> float:
     """
     Ensures the peak physical phase current does not exceed the machine's maximum rating.
     In Scipy's SLSQP, a positive return value means the constraint is satisfied (val >= 0).
@@ -26,9 +24,7 @@ def current_constraint(
     return curr_max - curr_peak
 
 
-def voltage_constraint(
-    omega: float, curr_dq: np.ndarray, volt_max: float, transform: Transform
-) -> float:
+def voltage_constraint(omega: float, curr_dq: np.ndarray, volt_max: float, transform: Transform) -> float:
     """
     Ensures the peak phase voltage does not exceed the available DC-link /
     inverter voltage limit. When zero-sequence injection (SVPWM) is

@@ -59,22 +59,15 @@ class MachineData:
         n_omega = len(self.omega)
 
         if n_torq == 0 or n_omega == 0:
-            raise ValueError(
-                f"torq and omega must both be non-empty; got len(torq)={n_torq}, "
-                f"len(omega)={n_omega}."
-            )
+            raise ValueError(f"torq and omega must both be non-empty; got len(torq)={n_torq}, len(omega)={n_omega}.")
 
         expected_shape = (n_torq, n_omega)
 
         if self.segments.shape != expected_shape:
-            raise ValueError(
-                f"Segments shape {self.segments.shape} != expected {expected_shape}"
-            )
+            raise ValueError(f"Segments shape {self.segments.shape} != expected {expected_shape}")
 
         if self.curr_dq_grid.ndim != 3 or self.curr_dq_grid.shape[1:] != expected_shape:
-            raise ValueError(
-                f"curr_dq_grid shape {self.curr_dq_grid.shape} must be (dim, {n_torq}, {n_omega})."
-            )
+            raise ValueError(f"curr_dq_grid shape {self.curr_dq_grid.shape} must be (dim, {n_torq}, {n_omega}).")
 
         if np.any(self.omega < 0):
             warnings.warn(
@@ -92,9 +85,7 @@ class MachineData:
             k_skip: The step size for slicing the arrays. Must be >= 1.
         """
         if not isinstance(k_skip, (int, np.integer)) or k_skip < 1:
-            raise ValueError(
-                f"k_skip must be a positive integer (>= 1), got {k_skip!r}."
-            )
+            raise ValueError(f"k_skip must be a positive integer (>= 1), got {k_skip!r}.")
         if k_skip == 1:
             return
 

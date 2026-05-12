@@ -100,9 +100,7 @@ def plot_global_performance(
         return
 
     if models is None:
-        models = [
-            col.replace("Error_", "") for col in df.columns if col.startswith("Error_")
-        ]
+        models = [col.replace("Error_", "") for col in df.columns if col.startswith("Error_")]
 
     if not models:
         print("No model error columns found.")
@@ -111,17 +109,11 @@ def plot_global_performance(
     if test_mask is not None:
         test_mask = np.asarray(test_mask, dtype=bool)
         if test_mask.shape != (len(df),):
-            raise ValueError(
-                f"test_mask shape {test_mask.shape} does not match DataFrame length ({len(df)})."
-            )
+            raise ValueError(f"test_mask shape {test_mask.shape} does not match DataFrame length ({len(df)}).")
 
     n_models = len(models)
 
-    with plt.rc_context(
-        PlotConfig.get_rc_params(
-            {"axes.labelsize": 16, "xtick.labelsize": 14, "ytick.labelsize": 14}
-        )
-    ):
+    with plt.rc_context(PlotConfig.get_rc_params({"axes.labelsize": 16, "xtick.labelsize": 14, "ytick.labelsize": 14})):
         fig, axes = plt.subplots(1, n_models, figsize=(7 * n_models, 5), sharey=True)
         if n_models == 1:
             axes = [axes]
@@ -130,11 +122,7 @@ def plot_global_performance(
 
         for i, model in enumerate(models):
             error_col, pred_col = f"Error_{model}", f"torq_{model}"
-            if (
-                pred_col not in df.columns
-                and model == "Analytical"
-                and "torq_model" in df.columns
-            ):
+            if pred_col not in df.columns and model == "Analytical" and "torq_model" in df.columns:
                 pred_col = "torq_model"
 
             if pred_col not in df.columns:
@@ -144,9 +132,7 @@ def plot_global_performance(
 
             if test_mask is None:
                 rmse = np.sqrt(np.mean(df[error_col] ** 2))
-                axes[i].scatter(
-                    df["torq_meas"], df[pred_col], alpha=0.5, s=10, color=color
-                )
+                axes[i].scatter(df["torq_meas"], df[pred_col], alpha=0.5, s=10, color=color)
                 axes[i].set_title(f"{model} (RMSE={rmse:.3f})", fontsize=18)
             else:
                 rmse_test = np.sqrt(np.mean(df.loc[test_mask, error_col] ** 2))
@@ -190,9 +176,7 @@ def plot_residual_torque_error(dict_grid: dict[str, Any], machine: BaseMachine) 
     correction grid. Each cell is positioned at its achieved (neural-predicted)
     torque rather than at the commanded torque value.
     """
-    omega_rpm = dict_grid["vec_omega"] * dict_grid.get(
-        "const_mech_speed", 30 / (np.pi * machine.n_ppairs)
-    )
+    omega_rpm = dict_grid["vec_omega"] * dict_grid.get("const_mech_speed", 30 / (np.pi * machine.n_ppairs))
     T_target = dict_grid["vec_torq"]
     T_actual_2d = dict_grid["grid_torq_neural"]
     T_target_2d = np.tile(T_target[:, np.newaxis], (1, len(omega_rpm)))
@@ -202,9 +186,7 @@ def plot_residual_torque_error(dict_grid: dict[str, Any], machine: BaseMachine) 
 
     omega_2d, _ = np.meshgrid(omega_rpm, T_target)
 
-    custom_rc = PlotConfig.get_rc_params(
-        {"font.size": 24, "axes.labelsize": 26, "axes.titlesize": 26}
-    )
+    custom_rc = PlotConfig.get_rc_params({"font.size": 24, "axes.labelsize": 26, "axes.titlesize": 26})
     with plt.rc_context(custom_rc):
         fig, ax = plt.subplots(figsize=(14, 9))
         sc = ax.scatter(
@@ -217,9 +199,7 @@ def plot_residual_torque_error(dict_grid: dict[str, Any], machine: BaseMachine) 
             linewidths=0,
         )
         cbar = fig.colorbar(sc, ax=ax)
-        cbar.set_label(
-            "Residual Torque Error $T_{base} - T_{PAM}$ [Nm]", size=24, labelpad=20
-        )
+        cbar.set_label("Residual Torque Error $T_{base} - T_{PAM}$ [Nm]", size=24, labelpad=20)
         ax.set_xlabel("Speed [r/min]", labelpad=10)
         ax.set_ylabel("Achieved Torque [Nm]", labelpad=10)
         ax.grid(True, which="both", linestyle="-", alpha=0.4)
@@ -246,9 +226,7 @@ def plot_current_trajectories_split(
         if n_harmonics == 1:
             axes = np.expand_dims(axes, axis=0)
 
-        def plot_grid_onto_ax(
-            ax: Axes, dict_grid: dict[str, Any], d_idx: int, q_idx: int
-        ) -> None:
+        def plot_grid_onto_ax(ax: Axes, dict_grid: dict[str, Any], d_idx: int, q_idx: int) -> None:
             d_grid, q_grid = (
                 dict_grid["curr_dq_grid"][d_idx],
                 dict_grid["curr_dq_grid"][q_idx],
@@ -288,9 +266,7 @@ def plot_current_trajectories_split(
             axes[h, 0].set_xlabel(f"$i_{{d{h_num}}}$ [A]")
             axes[h, 1].set_xlabel(f"$i_{{d{h_num}}}$ [A]")
 
-        PlotConfig.apply_deduplicated_legend(
-            fig, loc="center right", bbox_to_anchor=(0.92, 0.5), markerscale=3
-        )
+        PlotConfig.apply_deduplicated_legend(fig, loc="center right", bbox_to_anchor=(0.92, 0.5), markerscale=3)
 
         axes[0, 0].set_title("Baseline (Analytical)")
         axes[0, 1].set_title("Recalculated (Neural Optimized)")
@@ -334,17 +310,11 @@ def plot_joule_losses_reduction(
 
     R_diag = np.diag(machine.R_stat)
 
-    broadcast_shape = [slice(None)] + [np.newaxis] * (
-        dict_grid_base["curr_dq_grid"].ndim - 1
-    )
+    broadcast_shape = [slice(None)] + [np.newaxis] * (dict_grid_base["curr_dq_grid"].ndim - 1)
     R_broad = R_diag[tuple(broadcast_shape)]
 
-    P_loss_base = machine.k_phase * np.sum(
-        dict_grid_base["curr_dq_grid"] ** 2 * R_broad, axis=0
-    )
-    P_loss_recalc = machine.k_phase * np.sum(
-        dict_grid_recalc["curr_dq_grid"] ** 2 * R_broad, axis=0
-    )
+    P_loss_base = machine.k_phase * np.sum(dict_grid_base["curr_dq_grid"] ** 2 * R_broad, axis=0)
+    P_loss_recalc = machine.k_phase * np.sum(dict_grid_recalc["curr_dq_grid"] ** 2 * R_broad, axis=0)
 
     P_diff = P_loss_base - P_loss_recalc
     omega_2d, _ = np.meshgrid(omega_rpm, vec_torq)
@@ -361,9 +331,7 @@ def plot_joule_losses_reduction(
             linewidths=0,
         )
         cbar = fig.colorbar(sc, ax=ax)
-        cbar.set_label(
-            "Joule Losses Reduction [Watts]", rotation=270, labelpad=30, size=20
-        )
+        cbar.set_label("Joule Losses Reduction [Watts]", rotation=270, labelpad=30, size=20)
         ax.set_xlabel("Speed [r/min]", labelpad=10)
         ax.set_ylabel("Achieved Torque [Nm]", labelpad=10)
         ax.grid(True, which="both", linestyle="-", alpha=0.4)
