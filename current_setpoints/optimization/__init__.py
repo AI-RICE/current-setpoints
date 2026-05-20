@@ -9,4 +9,5 @@ from .constraints import current_constraint, voltage_constraint
 from .grid import calculate_grid, get_correction_grid, grid_to_data
 from .models import BaseTorqueModel, ModelAnalytical, ModelNeural
 from .im_model import ModelIMAnalytical
+from .im_grid import calculate_grid_im
 from .optimizer import MotorOptimizer
