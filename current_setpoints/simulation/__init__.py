@@ -9,3 +9,4 @@ logic required for electromagnetic motor analysis, including:
 
 from .data import MachineData
 from .transform import Transform
+from .im_transform import IMTransform
