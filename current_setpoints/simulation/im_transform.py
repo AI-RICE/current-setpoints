@@ -126,44 +126,85 @@ class IMTransform:
         return volt_raw, np.zeros_like(volt_raw), volt_raw
 
     # ------------------------------------------------------------------
-    # Diagnostics: peak detection and regime classification, copied
-    # verbatim from PMSM Transform so the active-set logic works
-    # unchanged.
+    # Active-set regime classification.
+    #
+    # The PMSM Transform classifies Type I vs Type II by computing a
+    # dq-angle alignment heuristic. That heuristic is unreliable for the
+    # IM case for two reasons:
+    #   1. dimensional mismatch -- the alignment angle (radians) is
+    #      compared to a current/voltage tolerance (amperes/volts);
+    #   2. undefined dq angle when i_3 = 0 (arctan2(0,0) returns 0, so
+    #      pure-fundamental cells are classified by an irrelevant value).
+    # Instead, we classify directly by counting positive (and negative)
+    # local maxima of the actual phase waveform that reach the limit
+    # within a relative tolerance. This matches the active-set
+    # definition in App. A.6 of the IM-TTE paper draft.
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _harmonic_alignment_diff(ang_fundamental: float, ang_h: float, h: int) -> float:
-        delta = (h * ang_fundamental + np.pi - ang_h) % (2 * np.pi)
-        return float(min(delta, 2 * np.pi - delta))
-
-    def _alignment_diff_all_harmonics(self, vec_dq: np.ndarray) -> float:
-        if self.dim < 4:
-            return 0.0
-        ang_1 = np.arctan2(vec_dq[1], vec_dq[0])
-        diffs = []
-        for i in range(1, self.dim // 2):
-            h = 2 * i + 1
-            ang_h = np.arctan2(vec_dq[2 * i + 1], vec_dq[2 * i])
-            diffs.append(self._harmonic_alignment_diff(ang_1, ang_h, h))
-        return max(diffs)
-
     def get_max_vals(self, omega: float, curr_dq: np.ndarray) -> tuple[float, float, float, float]:
+        """
+        Returns ``(curr_peak, curr_ang_diff, volt_peak, volt_ang_diff)``
+        with the alignment fields kept for backward API parity. Only
+        the peak values are used by ``count_peaks``.
+        """
         volt_ph, _, _ = self.get_volt_ph(omega, curr_dq)
         curr_ph = self.get_curr_ph(omega, curr_dq)
-        volt_dq = self.get_volt_dq(omega, curr_dq)
         curr_peak = float(np.max(np.abs(curr_ph)))
         volt_peak = float(np.max(np.abs(volt_ph)))
-        curr_ang_diff = self._alignment_diff_all_harmonics(curr_dq)
-        volt_ang_diff = self._alignment_diff_all_harmonics(volt_dq)
-        return curr_peak, curr_ang_diff, volt_peak, volt_ang_diff
+        return curr_peak, 0.0, volt_peak, 0.0
 
-    def count_peaks(self, omega: float, curr_dq: np.ndarray, tol: float = 1e-4) -> tuple[int, int]:
-        curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = self.get_max_vals(omega, curr_dq)
-        n_curr_peaks = self._count_peaks_helper(curr_peak, self.machine.curr_max, curr_ang_diff, tol)
-        n_volt_peaks = self._count_peaks_helper(volt_peak, self.machine.volt_max, volt_ang_diff, tol)
-        return n_curr_peaks, n_volt_peaks
+    def count_peaks(self, omega: float, curr_dq: np.ndarray, rel_tol: float = 1e-3) -> tuple[int, int]:
+        """
+        Strict active-set classification by direct local-maxima
+        counting on the waveform.
 
-    def _count_peaks_helper(self, value: float, val_max: float, angle_diff: float, tol: float) -> int:
-        if np.abs(value - val_max) < tol:
-            return 2 if angle_diff < tol * val_max else 1
-        return 0
+        Returns ``(n_curr, n_volt)`` each in ``{0, 1, 2}``:
+          * 0 if no local maximum of the (per-phase) waveform reaches
+            the limit within ``rel_tol`` relative tolerance;
+          * 1 if exactly one local extremum per polarity reaches the
+            limit (Type I shape);
+          * 2 if two or more local extrema of the same polarity reach
+            the limit (Type II shape).
+
+        Across phases, the maximum count is returned. ``rel_tol`` is a
+        relative tolerance on the peak magnitude; the previous absolute
+        ``tol`` argument is replaced because SLSQP-converged solutions
+        often hit the limit with a small constraint-satisfaction
+        residual that is naturally relative, not absolute.
+        """
+        curr_ph = self.get_curr_ph(omega, curr_dq)
+        volt_ph, _, _ = self.get_volt_ph(omega, curr_dq)
+        n_curr = self._count_waveform_peaks_at_limit(curr_ph, self.machine.curr_max, rel_tol)
+        n_volt = self._count_waveform_peaks_at_limit(volt_ph, self.machine.volt_max, rel_tol)
+        return n_curr, n_volt
+
+    @staticmethod
+    def _count_waveform_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float) -> int:
+        """
+        For a (n_phases, n_theta+1) (or (n_theta+1,)) phase-waveform
+        array, returns the maximum across phases of the count of
+        polarity-consistent local extrema that reach ``limit`` within
+        ``rel_tol``, capped at 2.
+
+        Per polarity, a local extremum at the limit is identified by:
+            * a strict same-sign local maximum/minimum
+            * magnitude >= limit * (1 - rel_tol)
+        The Type I / Type II distinction is then the count per polarity,
+        capped at 2.
+        """
+        if waveform.ndim == 1:
+            waveform = waveform[np.newaxis, :]
+        thresh = limit * (1.0 - rel_tol)
+        n_max_global = 0
+        for ph in range(waveform.shape[0]):
+            w = waveform[ph, :-1]  # drop the wrap sample
+            if w.size < 3:
+                continue
+            # Positive local maxima
+            is_pmax = (w[1:-1] > w[:-2]) & (w[1:-1] > w[2:]) & (w[1:-1] > 0)
+            n_pos = int(np.sum(w[1:-1][is_pmax] >= thresh))
+            # Negative local minima (peaks of -w)
+            is_nmin = (w[1:-1] < w[:-2]) & (w[1:-1] < w[2:]) & (w[1:-1] < 0)
+            n_neg = int(np.sum(-w[1:-1][is_nmin] >= thresh))
+            n_max_global = max(n_max_global, n_pos, n_neg)
+        return min(n_max_global, 2)
