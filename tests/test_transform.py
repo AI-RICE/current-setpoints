@@ -258,9 +258,9 @@ def _scale_to_limit(transform: Transform, curr_dq: np.ndarray, limit: float) -> 
 def test_count_peaks_returns_zero_when_below_limit():
     """A pure-fundamental cell with peak well below I_max gives (0, 0)."""
     transform = _build_default_transform()
-    I = transform.machine.curr_max
+    i_max = transform.machine.curr_max
     # i_a = a*cos - a*sin = a*sqrt(2)*cos(theta + pi/4), peak = a*sqrt(2)
-    a = 0.3 * I / np.sqrt(2)
+    a = 0.3 * i_max / np.sqrt(2)
     curr_dq = np.array([a, a, 0.0, 0.0])
     n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
     assert n_curr == 0
@@ -274,8 +274,8 @@ def test_count_peaks_pure_fundamental_at_limit_is_type_I():
     each at the limit; the conventional ``Type I`` label is 1.
     """
     transform = _build_default_transform()
-    I = transform.machine.curr_max
-    a = I / np.sqrt(2)  # peak = a*sqrt(2) = I_max
+    i_max = transform.machine.curr_max
+    a = i_max / np.sqrt(2)  # peak = a*sqrt(2) = I_max
     curr_dq = np.array([a, a, 0.0, 0.0])
     n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
     assert n_curr == 1, f"Pure fundamental at limit must be Type I; got {n_curr}"
@@ -291,15 +291,13 @@ def test_count_peaks_flat_top_type_II_is_two():
     per half-period (Type II).
     """
     transform = _build_default_transform()
-    I = transform.machine.curr_max
+    i_max = transform.machine.curr_max
     phi_1 = np.pi / 4
     phi_3 = 3 * phi_1 + np.pi  # 7*pi/4, flat-top anti-phase
     a = 1.0
     eps = 0.3 * a  # large enough that two distinct peaks emerge
-    curr_dq = np.array(
-        [a, a, eps * np.cos(phi_3), eps * np.sin(phi_3)]
-    )
-    curr_dq = _scale_to_limit(transform, curr_dq, I)
+    curr_dq = np.array([a, a, eps * np.cos(phi_3), eps * np.sin(phi_3)])
+    curr_dq = _scale_to_limit(transform, curr_dq, i_max)
     n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
     assert n_curr == 2, f"Flat-top synthesised waveform must be Type II; got {n_curr}"
 
@@ -322,21 +320,19 @@ def test_count_peaks_distinguishes_flat_top_aligned_but_small_i3_from_type_II():
     returns Type I.
     """
     transform = _build_default_transform()
-    I = transform.machine.curr_max
+    i_max = transform.machine.curr_max
     phi_1 = np.pi / 4
     phi_3 = 3 * phi_1 + np.pi  # perfect flat-top alignment
     a = 1.0
     eps = 0.01 * a  # tiny -- one peak still dominates
-    curr_dq = np.array(
-        [a, a, eps * np.cos(phi_3), eps * np.sin(phi_3)]
-    )
-    curr_dq = _scale_to_limit(transform, curr_dq, I)
+    curr_dq = np.array([a, a, eps * np.cos(phi_3), eps * np.sin(phi_3)])
+    curr_dq = _scale_to_limit(transform, curr_dq, i_max)
 
     # Manually verify the waveform has only one positive peak at limit.
     curr_ph = transform.get_curr_ph(omega=0.0, curr_dq=curr_dq)
     w = curr_ph[:-1]
     is_pmax = (w[1:-1] > w[:-2]) & (w[1:-1] > w[2:]) & (w[1:-1] > 0)
-    n_pos_at_limit = int(np.sum(w[1:-1][is_pmax] >= I * (1 - 1e-3)))
+    n_pos_at_limit = int(np.sum(w[1:-1][is_pmax] >= i_max * (1 - 1e-3)))
     assert n_pos_at_limit == 1, (
         f"Sanity: a near-pure-fundamental waveform should have exactly one "
         f"positive peak at the limit; found {n_pos_at_limit}."
@@ -365,9 +361,9 @@ def test_count_peaks_does_not_misuse_arctan2_zero_zero():
     returns for the empty third-harmonic vector.
     """
     transform = _build_default_transform()
-    I = transform.machine.curr_max
-    # peak = 0.95 * I (below limit by 5%)
-    a = 0.95 * I / np.sqrt(2)
+    i_max = transform.machine.curr_max
+    # peak = 0.95 * i_max (below limit by 5%)
+    a = 0.95 * i_max / np.sqrt(2)
     curr_dq = np.array([a, a, 0.0, 0.0])
     n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
     assert n_curr == 0, f"Below limit must give n_curr = 0; got {n_curr}"
@@ -378,13 +374,17 @@ def test_count_peaks_caps_at_two():
     return more than 2 (the active-set classifier caps at Type II)."""
     transform = _build_default_transform()
     # Build a contrived case: pure flat-top at the limit (Type II).
-    I = transform.machine.curr_max
+    i_max = transform.machine.curr_max
     phi_1 = np.pi / 4
     phi_3 = 3 * phi_1 + np.pi
-    curr_dq = np.array([
-        1.0, 1.0,
-        0.4 * np.cos(phi_3), 0.4 * np.sin(phi_3),
-    ])
-    curr_dq = _scale_to_limit(transform, curr_dq, I)
+    curr_dq = np.array(
+        [
+            1.0,
+            1.0,
+            0.4 * np.cos(phi_3),
+            0.4 * np.sin(phi_3),
+        ]
+    )
+    curr_dq = _scale_to_limit(transform, curr_dq, i_max)
     n_curr, _ = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
     assert n_curr in (1, 2), f"Cap violated: got n_curr = {n_curr}"

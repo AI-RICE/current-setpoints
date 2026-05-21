@@ -206,12 +206,8 @@ class Transform:
         """
         curr_ph = self.get_curr_ph(omega, curr_dq)
         volt_ph, _, _ = self.get_volt_ph(omega, curr_dq)
-        n_curr_peaks = self._count_waveform_peaks_at_limit(
-            curr_ph, self.machine.curr_max, rel_tol
-        )
-        n_volt_peaks = self._count_waveform_peaks_at_limit(
-            volt_ph, self.machine.volt_max, rel_tol
-        )
+        n_curr_peaks = self._count_waveform_peaks_at_limit(curr_ph, self.machine.curr_max, rel_tol)
+        n_volt_peaks = self._count_waveform_peaks_at_limit(volt_ph, self.machine.volt_max, rel_tol)
         return n_curr_peaks, n_volt_peaks
 
     @staticmethod
