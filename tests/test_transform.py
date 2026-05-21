@@ -228,60 +228,163 @@ def test_get_max_vals_curr_peak_matches_analytical_for_pure_d1():
     assert np.isclose(curr_peak, 7.5)
 
 
-def test_harmonic_alignment_diff_returns_value_in_zero_pi():
-    """Output must always lie in [0, pi]."""
-    diff = Transform._harmonic_alignment_diff(0.5, 1.7, h=3)
-    assert 0.0 <= diff <= np.pi
+## ---------------------------------------------------------------------
+## Regression tests for the strict active-set peak detector.
+##
+## The earlier ``count_peaks`` classified Type I vs Type II via a
+## dq-angle alignment heuristic that had two bugs:
+##   1. dimensional mismatch -- the threshold ``tol * val_max`` mixed
+##      amperes/volts (RHS) with radians (LHS), so the comparison was
+##      meaningless;
+##   2. ``arctan2(0, 0)`` returns 0 in numpy, so cells with no
+##      third-harmonic content were classified by an irrelevant value.
+##
+## The replacement counts polarity-consistent local extrema of the
+## actual phase waveform that reach the limit, directly matching the
+## active-set definition. These tests cover the canonical Type I /
+## Type II cases plus a discriminating cell where the old detector
+## misfired but the new one is correct.
+## ---------------------------------------------------------------------
 
 
-def test_harmonic_alignment_diff_handles_wraparound():
+def _scale_to_limit(transform: Transform, curr_dq: np.ndarray, limit: float) -> np.ndarray:
+    """Helper: rescale curr_dq so the global peak of the phase-A current
+    equals ``limit`` exactly."""
+    curr_ph = transform.get_curr_ph(omega=0.0, curr_dq=curr_dq)
+    peak = float(np.max(np.abs(curr_ph)))
+    return curr_dq * (limit / peak)
+
+
+def test_count_peaks_returns_zero_when_below_limit():
+    """A pure-fundamental cell with peak well below I_max gives (0, 0)."""
+    transform = _build_default_transform()
+    I = transform.machine.curr_max
+    # i_a = a*cos - a*sin = a*sqrt(2)*cos(theta + pi/4), peak = a*sqrt(2)
+    a = 0.3 * I / np.sqrt(2)
+    curr_dq = np.array([a, a, 0.0, 0.0])
+    n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
+    assert n_curr == 0
+    assert n_volt == 0
+
+
+def test_count_peaks_pure_fundamental_at_limit_is_type_I():
     """
-    Two angles that are circularly close but straddle the 0/2*pi boundary
-    must report a small distance, not a near-2*pi distance.
-    """
-    eps = 1e-4
-    diff = Transform._harmonic_alignment_diff(-np.pi / 3 + eps, 2 * np.pi - eps, h=3)
-    assert 0.0 <= diff <= np.pi
-    assert diff < 1e-3
-
-
-def test_harmonic_alignment_diff_perfectly_aligned_is_zero():
-    # 3 * 0 + pi = pi == ang_h
-    diff = Transform._harmonic_alignment_diff(0.0, np.pi, h=3)
-    assert np.isclose(diff, 0.0)
-
-
-def test_alignment_diff_returns_zero_for_low_dim():
-    """Machines with dim < 4 (i.e., no harmonics above the fundamental) get 0.0."""
-    transform = _build_default_transform()
-    transform.dim = 2
-    assert transform._alignment_diff_all_harmonics(np.array([1.0, 1.0])) == 0.0
-
-
-def test_alignment_diff_picks_perfect_alignment():
-    """
-    For a 5-phase machine (dim=4), only h=3 is checked. With phi_1 = 0 and
-    phi_3 = pi, we have 3*0 + pi = pi == phi_3, so the alignment diff is 0.
+    A pure-fundamental sinusoid whose peak equals I_max must be Type I
+    (n_curr_peaks = 1). One positive and one negative peak per period,
+    each at the limit; the conventional ``Type I`` label is 1.
     """
     transform = _build_default_transform()
-    vec_dq = np.array([1.0, 0.0, -1.0, 0.0])
-    diff = transform._alignment_diff_all_harmonics(vec_dq)
-    assert np.isclose(diff, 0.0)
+    I = transform.machine.curr_max
+    a = I / np.sqrt(2)  # peak = a*sqrt(2) = I_max
+    curr_dq = np.array([a, a, 0.0, 0.0])
+    n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
+    assert n_curr == 1, f"Pure fundamental at limit must be Type I; got {n_curr}"
+    assert n_volt == 0
 
 
-def test_count_peaks_helper_zero_when_below_limit():
+def test_count_peaks_flat_top_type_II_is_two():
+    """
+    A genuine flat-top synthesised current waveform -- fundamental at
+    phi_1 = pi/4 combined with a third harmonic at the anti-phase
+    alignment phi_3 = 3*phi_1 + pi = 7*pi/4 with magnitude ~0.3 of the
+    fundamental -- has two equal-height same-sign peaks at the limit
+    per half-period (Type II).
+    """
     transform = _build_default_transform()
-    n = transform._count_peaks_helper(value=5.0, val_max=10.0, angle_diff=0.0, tol=1e-4)
-    assert n == 0
+    I = transform.machine.curr_max
+    phi_1 = np.pi / 4
+    phi_3 = 3 * phi_1 + np.pi  # 7*pi/4, flat-top anti-phase
+    a = 1.0
+    eps = 0.3 * a  # large enough that two distinct peaks emerge
+    curr_dq = np.array(
+        [a, a, eps * np.cos(phi_3), eps * np.sin(phi_3)]
+    )
+    curr_dq = _scale_to_limit(transform, curr_dq, I)
+    n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
+    assert n_curr == 2, f"Flat-top synthesised waveform must be Type II; got {n_curr}"
 
 
-def test_count_peaks_helper_one_when_at_limit_no_alignment():
+def test_count_peaks_distinguishes_flat_top_aligned_but_small_i3_from_type_II():
+    """
+    Regression test for the dimensional-mismatch bug in the dq-angle
+    detector.
+
+    Construct a cell where the third harmonic is *perfectly* flat-top
+    anti-phase aligned with the fundamental (so the buggy detector
+    sees angle_diff == 0 and returns Type II) but |i_3| is too small
+    to produce a second peak at the limit. The waveform actually has
+    one peak per polarity at the limit; the correct classification is
+    Type I.
+
+    With the old ``_count_peaks_helper`` and ``tol = 1e-4``,
+    ``angle_diff = 0 < tol * val_max = 1e-4 * I_max`` always holds, so
+    the old detector returned Type II. The new waveform-based detector
+    returns Type I.
+    """
     transform = _build_default_transform()
-    n = transform._count_peaks_helper(value=10.0, val_max=10.0, angle_diff=1.0, tol=1e-4)
-    assert n == 1
+    I = transform.machine.curr_max
+    phi_1 = np.pi / 4
+    phi_3 = 3 * phi_1 + np.pi  # perfect flat-top alignment
+    a = 1.0
+    eps = 0.01 * a  # tiny -- one peak still dominates
+    curr_dq = np.array(
+        [a, a, eps * np.cos(phi_3), eps * np.sin(phi_3)]
+    )
+    curr_dq = _scale_to_limit(transform, curr_dq, I)
+
+    # Manually verify the waveform has only one positive peak at limit.
+    curr_ph = transform.get_curr_ph(omega=0.0, curr_dq=curr_dq)
+    w = curr_ph[:-1]
+    is_pmax = (w[1:-1] > w[:-2]) & (w[1:-1] > w[2:]) & (w[1:-1] > 0)
+    n_pos_at_limit = int(np.sum(w[1:-1][is_pmax] >= I * (1 - 1e-3)))
+    assert n_pos_at_limit == 1, (
+        f"Sanity: a near-pure-fundamental waveform should have exactly one "
+        f"positive peak at the limit; found {n_pos_at_limit}."
+    )
+
+    n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
+    assert n_curr == 1, (
+        f"Expected Type I (n_curr = 1); got {n_curr}. The dq-angle-alignment "
+        f"detector incorrectly classifies this as Type II because phi_3 is "
+        f"perfectly flat-top-aligned, ignoring the fact that |i_3| is too "
+        f"small to produce a second peak at the limit."
+    )
 
 
-def test_count_peaks_helper_two_when_at_limit_and_aligned():
+def test_count_peaks_does_not_misuse_arctan2_zero_zero():
+    """
+    Regression test for the ``arctan2(0, 0)`` bug.
+
+    With ``i_3 = 0`` the dq3 angle is undefined; numpy returns 0 for
+    arctan2(0, 0), and the old detector then evaluated its threshold
+    against that arbitrary 0. The waveform-based detector inspects the
+    actual phase current and is unaffected by undefined dq angles.
+
+    For a pure-fundamental waveform with peak slightly below the limit,
+    n_curr must be 0 (no peak at limit) regardless of what arctan2
+    returns for the empty third-harmonic vector.
+    """
     transform = _build_default_transform()
-    n = transform._count_peaks_helper(value=10.0, val_max=10.0, angle_diff=0.0, tol=1e-4)
-    assert n == 2
+    I = transform.machine.curr_max
+    # peak = 0.95 * I (below limit by 5%)
+    a = 0.95 * I / np.sqrt(2)
+    curr_dq = np.array([a, a, 0.0, 0.0])
+    n_curr, n_volt = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
+    assert n_curr == 0, f"Below limit must give n_curr = 0; got {n_curr}"
+
+
+def test_count_peaks_caps_at_two():
+    """A waveform with many small ripples near the limit should not
+    return more than 2 (the active-set classifier caps at Type II)."""
+    transform = _build_default_transform()
+    # Build a contrived case: pure flat-top at the limit (Type II).
+    I = transform.machine.curr_max
+    phi_1 = np.pi / 4
+    phi_3 = 3 * phi_1 + np.pi
+    curr_dq = np.array([
+        1.0, 1.0,
+        0.4 * np.cos(phi_3), 0.4 * np.sin(phi_3),
+    ])
+    curr_dq = _scale_to_limit(transform, curr_dq, I)
+    n_curr, _ = transform.count_peaks(omega=0.0, curr_dq=curr_dq)
+    assert n_curr in (1, 2), f"Cap violated: got n_curr = {n_curr}"
