@@ -43,9 +43,6 @@ class IMTransform:
         self.dim: int = machine.dim
         self.add_volt_0: bool = add_volt_0
 
-        if add_volt_0:
-            raise NotImplementedError("Zero-sequence injection not yet implemented for IMTransform")
-
         if n_theta <= 0:
             raise ValueError("n_theta must be positive")
         n_theta = round(n_theta / (2 * self.n_phases)) * 2 * self.n_phases
@@ -111,19 +108,55 @@ class IMTransform:
         U = self._build_volt_dq_operator(omega, omega_r)
         return U @ curr_dq
 
+    def _all_phase_volts(self, volt_raw: np.ndarray) -> np.ndarray:
+        """
+        Replicate the phase-0 waveform to the full ``(n_phases, n_theta+1)``
+        array by cyclic shift of ``_phase_shift_samples`` per phase. The
+        last sample wraps to the first (period continuity), which the
+        shift operation preserves.
+        """
+        n = self._phase_shift_samples
+        # use the periodic part [0, n_theta) and shift; restore wrap sample
+        v0 = volt_raw[:-1]
+        rows = np.stack([np.roll(v0, -k * n) for k in range(self.n_phases)], axis=0)
+        return np.concatenate([rows, rows[:, :1]], axis=1)
+
+    @staticmethod
+    def _zsc_min_max(volt_all: np.ndarray) -> np.ndarray:
+        """
+        Komrska-2022 / Laksar-2025 eq.(10) optimal ZSC:
+
+            v_s0(theta) = -1/2 * (min_i v_i(theta) + max_i v_i(theta)).
+
+        Minimises the peak of the resulting leg-voltage waveform for
+        any phase-voltage shape. Returns the 1-D ``(n_theta+1,)`` ZSC.
+        """
+        return -0.5 * (np.min(volt_all, axis=0) + np.max(volt_all, axis=0))
+
     def get_volt_ph(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Phase-voltage waveform. Returns the 3-tuple
-        ``(volt_ph, volt_0, volt_raw)`` for API parity with the PMSM
-        path; ``volt_0`` is zero and ``volt_ph == volt_raw`` while
-        SVPWM injection remains disabled.
+        ``(volt_leg, volt_0, volt_raw)`` where ``volt_raw`` is the
+        motor-side per-phase voltage (against the star point) and
+        ``volt_leg = volt_raw + volt_0``. When ``self.add_volt_0`` is
+        True, ``volt_0`` is the Komrska/Laksar optimal ZSC computed
+        across all ``n_phases``; otherwise ``volt_0`` is zero and
+        ``volt_leg == volt_raw``. The voltage-limit constraint is
+        enforced on ``volt_leg`` --- it is the leg voltage that the
+        inverter rail bounds at +-V_DC/2.
         """
         self.omega = omega
         omega_r = slip_from_dq_foc(curr_dq, self.machine)
         U = self._build_volt_dq_operator(omega, omega_r)
         volt_dq = U @ curr_dq
         volt_raw = self.mat_dq_to_ph @ volt_dq
-        return volt_raw, np.zeros_like(volt_raw), volt_raw
+        if self.add_volt_0:
+            volt_all = self._all_phase_volts(volt_raw)
+            volt_0 = self._zsc_min_max(volt_all)
+        else:
+            volt_0 = np.zeros_like(volt_raw)
+        volt_leg = volt_raw + volt_0
+        return volt_leg, volt_0, volt_raw
 
     # ------------------------------------------------------------------
     # Active-set regime classification.
