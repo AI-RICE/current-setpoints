@@ -41,3 +41,7 @@ htmlcov/
 *.npy
 *.csv
 *.mat
+
+# Experiment / figure outputs (regenerable from the drivers)
+dynamic/figs/
+experiments/**/figs/
