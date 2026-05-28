@@ -1,0 +1,21 @@
+==============================================
+Fall (2016) -- verbatim Eqs (16)-(19) replication
+==============================================
+Machine: p=7, phi1=19.4 mWb, Imax=60.0 A
+D1 = cos(2pi/5) - cos(4pi/5) = 1.118034
+D2 = sin(2pi/5) + sin(4pi/5) = 1.538842
+
+HEALTHY:                       T_max =  20.370 Nm   i_q1 =  94.87 A   (Fall Fig 3a: 20.5 Nm)
+1-PHASE OPEN  (analytic):      T_max =  14.740 Nm   peak/|i_q1| = 0.8740   ratio = 72.36%   (Fall: 15.4 Nm, ~75%)
+1-PHASE OPEN  (numerical):     T_max =  14.740 Nm   ratio = 72.36%
+
+Verify equal magnitude at (i_d1, i_q1) = (0, 50.0):
+  peaks per phase (b,c,d,e): [43.702 43.702 43.702 43.702]   (should all be equal)
+  rms   per phase (b,c,d,e): [30.902 30.902 30.902 30.902]    (should all be equal)
+  expected peak = K * |i_q1| = 43.702
+
+2-PHASE ADJACENT  (a, b open):  T_max =   5.630 Nm   ratio = 27.64%   (Fall: ~5.5 Nm, ~27%)
+  peaks per surv phase (c,d,e):  [ 70.711 114.412  70.711]
+
+2-PHASE NON-ADJ   (a, c open):  T_max =   9.110 Nm   ratio = 44.72%   (Fall: ~9 Nm, ~44%)
+  peaks per surv phase (b,d,e):  [43.702 70.711 70.711]
