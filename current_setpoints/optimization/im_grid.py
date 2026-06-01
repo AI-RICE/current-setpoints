@@ -60,17 +60,24 @@ def calculate_grid_im(
     grid["const_mech_speed"] = 30.0 / (np.pi * machine.n_ppairs)
 
     omega_probe = float(opts.get("omega_probe", 50.0))
-    _, torq_max_global, ok_global = optimizer.maximize_torque(
-        omega=omega_probe, transform=transform
-    )
-    if not ok_global:
-        raise RuntimeError(
-            f"Global max-torque probe at omega={omega_probe} failed; "
-            "adjust omega_probe in opts or extend candidate seeds."
-        )
-    print(f"  Global T_max at omega_s={omega_probe:.1f} rad/s: {torq_max_global:.3f} Nm")
-
     n_torq, n_omega = opts["n_torq"], opts["n_omega"]
+
+    # Allow callers (e.g. variable-V_DC sweep) to pin the torque axis
+    # explicitly via opts["torq_max"]. Otherwise probe it at omega_probe.
+    if "torq_max" in opts and opts["torq_max"] is not None:
+        torq_max_global = float(opts["torq_max"])
+        print(f"  Using externally pinned T_max = {torq_max_global:.3f} Nm")
+    else:
+        _, torq_max_global, ok_global = optimizer.maximize_torque(
+            omega=omega_probe, transform=transform
+        )
+        if not ok_global:
+            raise RuntimeError(
+                f"Global max-torque probe at omega={omega_probe} failed; "
+                "adjust omega_probe in opts or extend candidate seeds."
+            )
+        print(f"  Global T_max at omega_s={omega_probe:.1f} rad/s: {torq_max_global:.3f} Nm")
+
     grid["vec_torq"] = np.linspace(opts["torq_min"], torq_max_global, n_torq)
     grid["vec_omega"] = np.linspace(
         opts["omega_min"] / grid["const_mech_speed"],
@@ -125,3 +132,64 @@ def calculate_grid_im(
 
     print("IM Grid Calculation Complete.")
     return grid
+
+
+def calculate_grid_im_vdc_sweep(
+    optimizer: MotorOptimizer,
+    transform: IMTransform,
+    opts: dict[str, Any],
+    vdc_fractions: list[float],
+) -> dict[str, Any]:
+    """
+    Re-runs ``calculate_grid_im`` at multiple DC-link voltage levels
+    by scaling ``machine.volt_max`` per slice. Used to produce the
+    variable-V_DC regime maps for the IM-TTE paper, Section IV.
+
+    The base ``volt_max`` is captured from ``transform.machine`` on
+    entry, multiplied by each fraction in ``vdc_fractions``, and
+    restored on exit. Other machine limits and parameters are
+    untouched.
+
+    Args:
+        optimizer, transform, opts: as in ``calculate_grid_im``.
+        vdc_fractions: list of multipliers applied to the nominal
+            ``volt_max``. Typical values: ``[1.0, 0.8, 0.6]``.
+
+    Returns:
+        dict with key ``slices``: dict mapping fraction -> grid, plus
+        ``vdc_nominal`` and ``vdc_fractions`` for downstream reference.
+
+    Notes:
+        - The torque-axis range is anchored to the nominal-V_DC grid's
+          T_max_global so the same ``vec_torq`` is used across slices,
+          making boundary motion in ``(omega, T*)`` directly readable
+          across the dict's grids.
+    """
+    machine = transform.machine
+    vdc_nominal = machine.volt_max
+
+    out: dict[str, Any] = {
+        "vdc_nominal": vdc_nominal,
+        "vdc_fractions": list(vdc_fractions),
+        "slices": {},
+    }
+
+    # First slice always at the nominal V_DC to anchor the torque axis.
+    if 1.0 not in vdc_fractions:
+        raise ValueError("vdc_fractions must include 1.0 to anchor the torque axis.")
+    ordered = [1.0] + [f for f in vdc_fractions if f != 1.0]
+
+    anchor_torq_max = None
+    for frac in ordered:
+        machine.volt_max = vdc_nominal * float(frac)
+        print(f"\n=== V_DC fraction = {frac:.2f} (volt_max = {machine.volt_max:.1f} V) ===")
+        slice_opts = dict(opts)
+        if anchor_torq_max is not None:
+            slice_opts["torq_max"] = anchor_torq_max
+        grid = calculate_grid_im(optimizer, transform, slice_opts)
+        if anchor_torq_max is None:
+            anchor_torq_max = float(grid["vec_torq"][-1])
+        out["slices"][frac] = grid
+
+    machine.volt_max = vdc_nominal
+    return out

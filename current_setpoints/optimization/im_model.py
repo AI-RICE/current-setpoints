@@ -42,24 +42,37 @@ class ModelIMAnalytical(BaseTorqueModel):
         """
         Multi-start candidates of dimension ``machine.dim`` (not
         ``n_phases - 1`` as in the PMSM ``BaseTorqueModel``).
+
+        Seven seeds: warm start (if given), small balanced
+        ``(d, q)``, three magnitudes of balanced MTPA along
+        ``d = q``, an FW seed with d > q, and a Type-II seed that
+        includes a small third-harmonic kick. The redundancy is
+        cheap (SLSQP returns quickly from each) and avoids the
+        slip-law degeneracy when ``i_sq^1 -> 0``.
         """
         dim = self._candidate_dim
         candidates: list[np.ndarray] = []
         if curr_dq_guess is not None:
             candidates.append(curr_dq_guess.copy())
-        else:
-            default_guess = np.zeros(dim)
-            default_guess[0] = 0.1  # small d-current to seed the slip law
-            default_guess[1] = 0.1
-            candidates.append(default_guess)
-        g_mtpa = np.zeros(dim)
-        g_mtpa[0] = self.curr_max * 0.7
-        g_mtpa[1] = self.curr_max * 0.7
-        candidates.append(g_mtpa)
-        g_fw = np.zeros(dim)
-        g_fw[0] = self.curr_max * 0.5
-        g_fw[1] = self.curr_max * 0.2
-        candidates.append(g_fw)
+        I = self.curr_max
+
+        # Small balanced seed: keeps slip law well-defined, never
+        # touches any constraint.
+        c = np.zeros(dim); c[0] = 0.1; c[1] = 0.1
+        candidates.append(c)
+        # MTPA seeds at three balanced magnitudes along d = q.
+        for amp in (0.3, 0.5, 0.7):
+            c = np.zeros(dim); c[0] = I * amp; c[1] = I * amp
+            candidates.append(c)
+        # FW seed: more d (rotor magnetisation) than q (torque current).
+        c = np.zeros(dim); c[0] = I * 0.85; c[1] = I * 0.30
+        candidates.append(c)
+        # Type-II seed with small third-harmonic kick.
+        if dim >= 4:
+            c = np.zeros(dim)
+            c[0] = I * 0.7; c[1] = I * 0.7
+            c[2] = I * 0.1; c[3] = -I * 0.1
+            candidates.append(c)
         return candidates
 
     def _build_A(self, omega_r: float) -> np.ndarray:
