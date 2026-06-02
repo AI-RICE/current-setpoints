@@ -61,12 +61,18 @@ class BaseTorqueModel(ABC):
         dim = self.n_phases - 1
         candidates: list[np.ndarray] = []
 
+        # Always include the default seed. A warm start (when provided) AUGMENTS
+        # the candidate set rather than replacing the default, because different
+        # operating points converge from different seeds: the field-weakening
+        # corner needs the warm start, while some points only converge from the
+        # default. Replacing the default could drop the only seed that works at a
+        # given speed (leaving maximize_torque non-convergent there).
+        default_guess = np.zeros(dim)
+        default_guess[0] = 1.0
+        candidates.append(default_guess)
+
         if curr_dq_guess is not None:
             candidates.append(curr_dq_guess.copy())
-        else:
-            default_guess = np.zeros(dim)
-            default_guess[0] = 1.0
-            candidates.append(default_guess)
 
         g_mtpa = np.zeros(dim)
         g_mtpa[1] = self.curr_max * 0.95

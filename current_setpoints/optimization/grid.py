@@ -151,11 +151,30 @@ def calculate_grid(
 
     grid.update(_init_grid_arrays(dim, n_torq, n_omega))
 
+    # Warm start for maximize_torque, carried across speeds. The max-torque
+    # locus is continuous in omega, so seeding each speed with the previous
+    # speed's solution lets SLSQP converge at the stiff field-weakening corner
+    # (where current and voltage limits are simultaneously active and the fixed
+    # cold-start candidates fail to converge). None for the first speed.
+    vec_curr_max_prev: np.ndarray | None = None
+
     for idx_omega in range(n_omega):
         omega_target = grid["vec_omega"][idx_omega]
         print(f"Calculating: Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)")
 
-        _, torq_max_local, _ = optimizer.maximize_torque(omega=omega_target, transform=transform)
+        vec_curr_max, torq_max_local, _ = optimizer.maximize_torque(
+            omega=omega_target, transform=transform, vec_curr_guess=vec_curr_max_prev
+        )
+        if np.isfinite(torq_max_local):
+            vec_curr_max_prev = vec_curr_max
+        else:
+            # SLSQP failed even with the warm start: use a ceiling that won't
+            # wrongly skip cells. In "standard" mode that's the global max; in
+            # "recalculated" mode torq_max_global is unset (0.0) and the targets
+            # are pre-supplied, so use +inf to attempt every cell (minimize_current
+            # fills with the warm-start guess if it can't converge). Either way
+            # avoids a blank vertical stripe in the maps.
+            torq_max_local = torq_max_global if mode == "standard" else float("inf")
         grid["vec_torq_max"][0, idx_omega] = torq_max_local
 
         vec_curr_dq_prev = np.zeros(dim)
