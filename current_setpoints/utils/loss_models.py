@@ -2,27 +2,23 @@
 Parametric loss-torque baselines for benchmarking against the neural torque
 model (NTM).
 
-Dividing the classical iron + mechanical loss power by mechanical speed gives a
-loss *torque* with named, physically-interpretable contributions. The
-recommended baseline (``IRON_LOSS_TERMS``) is
+Includes classical physics-based terms and an Empirical Polynomial Loss Model.
+The Empirical Polynomial baseline maps macroscopic vehicle powertrain losses 
+into a torque equivalent:
 
-    T_loss(w, i_s) = T_c + B*w + k_h*||i_s||**2 + k_e*w*||i_s||**2
+    T_loss(w, i_s) = T_c + B*w + k_w*w**2 + k_c*||i_s||**2
 
-    T_c                 : constant (Coulomb friction + no-load hysteresis)
-    B * w               : viscous friction + speed-dependent no-load iron loss
-    k_h * ||i_s||**2    : load-dependent hysteresis iron loss
-    k_e * w * ||i_s||**2: load-dependent eddy iron loss
+    T_c              : constant (friction stiction / Coulomb)
+    B * w            : viscous friction 
+    k_w * w**2       : aerodynamic windage & high-order speed losses
+    k_c * ||i_s||**2 : macroscopic load-dependent losses (proxy for T^2)
 
 ``w`` is the electrical speed and ``||i_s||`` the full stator-current magnitude
-(3rd harmonic included). A more generic phenomenological form is also provided
-as ``FULL_TERMS`` (T_c + B*w + k_w*w**2 + a*w*||i_s|| + b*w**2*||i_s||**2), and
-the speed-only sub-model as ``SPEED_ONLY_TERMS``. All are linear in their
-coefficients and fit by ordinary least squares.
+(3rd harmonic included). All are linear in their coefficients and fit by 
+ordinary least squares.
 
 Models are compared against the NTM on the *same* residual target
 (``measured - analytical``), so the reported RMSEs are directly comparable.
-``||i_s||`` captures current magnitude but not harmonic structure, which is the
-information the NTM additionally resolves.
 """
 
 from __future__ import annotations
@@ -31,10 +27,13 @@ from typing import Any
 
 import numpy as np
 
-# Physics feature terms (the constant T_c is always fit as the intercept).
+# Physics and Empirical feature terms (T_c is always fit as the intercept).
 SPEED_ONLY_TERMS: tuple[str, ...] = ("w", "w2")
 FULL_TERMS: tuple[str, ...] = ("w", "w2", "w_i", "w2_i2")
 IRON_LOSS_TERMS: tuple[str, ...] = ("w", "is2", "w_i2")
+
+# The new macroscopic empirical polynomial baseline
+EMPIRICAL_POLYNOMIAL_TERMS: tuple[str, ...] = ("w", "w2", "is2")
 
 # Coefficient name + unit per term, for reporting.
 _TERM_INFO: dict[str, tuple[str, str]] = {
@@ -42,7 +41,7 @@ _TERM_INFO: dict[str, tuple[str, str]] = {
     "w2": ("k_w", "Nm/(rad/s)^2"),
     "w_i": ("a", "Nm/((rad/s)*A)"),
     "w2_i2": ("b", "Nm/((rad/s)^2*A^2)"),
-    "is2": ("k_h", "Nm/A^2"),
+    "is2": ("k_c", "Nm/A^2"),  # Mapped to k_c for the empirical polynomial
     "w_i2": ("k_e", "Nm/((rad/s)*A^2)"),
 }
 
@@ -53,7 +52,7 @@ def parametric_loss_features(X: np.ndarray, terms: tuple[str, ...]) -> np.ndarra
 
     Args:
         X: Inputs, columns ``[omega, i_d1, i_q1, i_d3, i_q3]``.
-        terms: Subset of ``{"w", "w2", "w_i", "w2_i2"}`` to include.
+        terms: Subset of ``{"w", "w2", "w_i", "w2_i2", "is2", "w_i2"}`` to include.
 
     Returns:
         Feature matrix of shape ``(N, len(terms))``. ``||i_s||`` is the norm of
@@ -62,6 +61,7 @@ def parametric_loss_features(X: np.ndarray, terms: tuple[str, ...]) -> np.ndarra
     X = np.asarray(X, dtype=np.float64)
     omega = X[:, 0]
     i_norm = np.linalg.norm(X[:, 1:5], axis=1)
+    
     library = {
         "w": omega,
         "w2": omega**2,
@@ -76,7 +76,7 @@ def parametric_loss_features(X: np.ndarray, terms: tuple[str, ...]) -> np.ndarra
 def fit_parametric_loss(
     X_train: np.ndarray,
     T_loss_train: np.ndarray,
-    terms: tuple[str, ...] = IRON_LOSS_TERMS,
+    terms: tuple[str, ...] = EMPIRICAL_POLYNOMIAL_TERMS,
 ) -> dict[str, Any]:
     """
     Fits the parametric loss-torque model by ordinary least squares.
@@ -89,8 +89,7 @@ def fit_parametric_loss(
         X_train: Training inputs ``[omega, i_d1, i_q1, i_d3, i_q3]``.
         T_loss_train: Training loss-torque target (``analytical - measured``),
             so fitted coefficients are positive and physically interpretable.
-        terms: Which physics terms to include (``IRON_LOSS_TERMS`` —
-            default/recommended, ``FULL_TERMS``, or ``SPEED_ONLY_TERMS``).
+        terms: Which physics terms to include.
 
     Returns:
         Dict with ``terms``, ``intercept`` (T_c), ``coef`` (raw-unit array

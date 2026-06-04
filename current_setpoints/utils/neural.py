@@ -38,7 +38,7 @@ class NeuralTorquePredictor(nn.Module):
         self.register_buffer("x_std", torch.from_numpy(scaler_X.scale_).float().to(device))
 
         self.fc1 = nn.Linear(input_size, hidden_size)
-        self.act = nn.SiLU()
+        self.act = nn.GELU()
         self.fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, x_normed: torch.Tensor) -> torch.Tensor:

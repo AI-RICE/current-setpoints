@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
+from matplotlib.ticker import MultipleLocator
 
 from ..parameters import BaseMachine
 from ..simulation import MachineData
@@ -66,6 +67,80 @@ def plot_grid_segments(
 
         PlotConfig.apply_deduplicated_legend(ax)
         ax.grid(True)
+        plt.show()
+
+
+def plot_baseline_vs_compensated(
+    baseline_data: MachineData,
+    compensated_data: MachineData,
+    override_torq_2d_top: np.ndarray | None = None,
+    override_torq_2d_bottom: np.ndarray | None = None,
+    figsize: tuple[float, float] = (12.0, 18.5),
+    marker_size: float = 40.0,
+) -> None:
+    """
+    Plots two operating-region segment maps stacked vertically -- baseline on
+    top, compensated on bottom -- sharing one ``Segments`` legend on the right,
+    with no titles. Same per-map style as ``plot_grid_segments``.
+
+    Args:
+        baseline_data: MachineData for the top (baseline) map.
+        compensated_data: MachineData for the bottom (compensated) map.
+        override_torq_2d_top: Optional 2D torque grid to position the top map's
+            points by achieved torque instead of the commanded torque mesh.
+        override_torq_2d_bottom: Same for the bottom map.
+        figsize: Figure size in inches.
+        marker_size: Scatter marker area (``s``). Scaled up from the single-map
+            default (10) to compensate for the larger figure, so the dense
+            201x201 grid reads as solidly filled regions rather than separated dots.
+    """
+    colors_map = PlotConfig.get_colors()
+    labels_map = PlotConfig.get_labels()
+
+    def _plot(ax: Axes, data: MachineData, override_torq_2d: np.ndarray | None) -> None:
+        omega_2d, default_torq_2d = np.meshgrid(data.omega, data.torq)
+        torq_2d = override_torq_2d if override_torq_2d is not None else default_torq_2d
+
+        modes_valid = data.segments
+        valid_mask = ~np.isnan(modes_valid)
+        omega_valid = omega_2d[valid_mask]
+        torq_valid = torq_2d[valid_mask]
+        modes_valid = modes_valid[valid_mask]
+
+        for seg_val in data.unique_segments:
+            mask = modes_valid == seg_val
+            color = colors_map.get(seg_val, "black")
+            ax.scatter(
+                omega_valid[mask],
+                torq_valid[mask],
+                s=marker_size,
+                c=[color] * mask.sum(),
+                marker=".",
+                label=labels_map.get(seg_val, f"Segment_{seg_val}"),
+            )
+        ax.set_ylabel("Torque [Nm]")
+        # Axis "resolution": speed ticks every 200 r/min, torque ticks every 1 Nm.
+        ax.xaxis.set_major_locator(MultipleLocator(200))
+        ax.yaxis.set_major_locator(MultipleLocator(1))
+        # Tight axes: span exactly the grid extent (0..max speed, 0..max torque),
+        # data flush with the spines, no default matplotlib margins.
+        ax.set_xlim(float(data.omega.min()), float(data.omega.max()))
+        ax.set_ylim(float(data.torq.min()), float(data.torq.max()))
+        ax.grid(True)
+
+    with plt.rc_context(PlotConfig.get_rc_params()):
+        fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True, sharey=True)
+        _plot(axes[0], baseline_data, override_torq_2d_top)
+        _plot(axes[1], compensated_data, override_torq_2d_bottom)
+        axes[1].set_xlabel("Speed [r/min]")
+
+        # Reserve a slim right margin and anchor the legend just past the axes
+        # (small fixed gap) so it stays close to the maps regardless of figure
+        # width. Save with bbox_inches="tight" so the legend is not clipped.
+        fig.subplots_adjust(hspace=0.08, right=0.86)
+        PlotConfig.apply_deduplicated_legend(
+            fig, loc="center left", bbox_to_anchor=(0.88, 0.5), markerscale=3
+        )
         plt.show()
 
 
@@ -156,7 +231,6 @@ def plot_global_performance(
                     label=f"Test (RMSE: {rmse_test:.3f})",
                 )
                 axes[i].legend(loc="upper left", fontsize=14)
-                axes[i].set_title(f"{model}", fontsize=18)
 
             axes[i].plot([min_val, max_val], [min_val, max_val], "r--", lw=2)
             axes[i].set_xlabel("Measured Torque [Nm]")
@@ -199,10 +273,15 @@ def plot_residual_torque_error(dict_grid: dict[str, Any], machine: BaseMachine) 
             linewidths=0,
         )
         cbar = fig.colorbar(sc, ax=ax)
-        cbar.set_label("Residual Torque Error $T_{base} - T_{PAM}$ [Nm]", size=24, labelpad=20)
+        cbar.set_label("Residual Torque Error $T_{base} - T_{NTM}$ [Nm]", size=24, labelpad=20)
         ax.set_xlabel("Speed [r/min]", labelpad=10)
-        ax.set_ylabel("Achieved Torque [Nm]", labelpad=10)
+        ax.set_ylabel("Torque [Nm]", labelpad=10)
         ax.grid(True, which="both", linestyle="-", alpha=0.4)
+        # Tight x-axis: speed runs 0..max so it ends exactly at 1800 r/min, data
+        # flush with the spines. Torque starts at the origin; its upper bound stays
+        # autoscaled (cells are positioned at achieved torque, not the grid mesh).
+        ax.set_xlim(0.0, float(omega_rpm.max()))
+        ax.set_ylim(bottom=0)
         plt.tight_layout()
         plt.show()
 
@@ -221,7 +300,17 @@ def plot_current_trajectories_split(
 
     n_harmonics = (machine.n_phases - 1) // 2
 
-    with plt.rc_context(PlotConfig.get_rc_params({"axes.labelsize": 24})):
+    with plt.rc_context(
+        PlotConfig.get_rc_params(
+            {
+                "axes.labelsize": 28,
+                "xtick.labelsize": 24,
+                "ytick.labelsize": 24,
+                "legend.fontsize": 24,
+                "legend.title_fontsize": 26,
+            }
+        )
+    ):
         fig, axes = plt.subplots(n_harmonics, 2, figsize=(18, 7 * n_harmonics))
         if n_harmonics == 1:
             axes = np.expand_dims(axes, axis=0)
@@ -266,13 +355,13 @@ def plot_current_trajectories_split(
             axes[h, 0].set_xlabel(f"$i_{{d{h_num}}}$ [A]")
             axes[h, 1].set_xlabel(f"$i_{{d{h_num}}}$ [A]")
 
-        PlotConfig.apply_deduplicated_legend(fig, loc="center right", bbox_to_anchor=(0.92, 0.5), markerscale=3)
-
-        axes[0, 0].set_title("Baseline (Analytical)")
-        axes[0, 1].set_title("Recalculated (Neural Optimized)")
-
         plt.tight_layout()
-        plt.subplots_adjust(right=0.90, hspace=0.2, wspace=0.2)
+        plt.subplots_adjust(right=0.85, hspace=0.2, wspace=0.2)
+        # Legend fully outside the panels, to the right (no overlap). Save with
+        # bbox_inches="tight" so it is not clipped.
+        PlotConfig.apply_deduplicated_legend(
+            fig, loc="center left", bbox_to_anchor=(0.86, 0.5), markerscale=3
+        )
         plt.show()
 
 
@@ -331,10 +420,15 @@ def plot_joule_losses_reduction(
             linewidths=0,
         )
         cbar = fig.colorbar(sc, ax=ax)
-        cbar.set_label("Joule Losses Reduction [Watts]", rotation=270, labelpad=30, size=20)
+        cbar.set_label("Joule Losses Reduction $P_{j,base} - P_{j,eval}$ [W]", size=24, labelpad=20)
         ax.set_xlabel("Speed [r/min]", labelpad=10)
-        ax.set_ylabel("Achieved Torque [Nm]", labelpad=10)
+        ax.set_ylabel("Torque [Nm]", labelpad=10)
         ax.grid(True, which="both", linestyle="-", alpha=0.4)
+        # Tight x-axis: speed runs 0..max so it ends exactly at 1800 r/min, data
+        # flush with the spines. Torque starts at the origin; its upper bound stays
+        # autoscaled (cells are positioned at achieved torque, not the grid mesh).
+        ax.set_xlim(0.0, float(omega_rpm.max()))
+        ax.set_ylim(bottom=0)
         plt.tight_layout()
         plt.show()
 

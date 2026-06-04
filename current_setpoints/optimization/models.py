@@ -157,3 +157,70 @@ class ModelNeural(ModelAnalytical):
         )
 
         return torque_analytical + torque_residual
+
+
+class ModelLossParametric(ModelAnalytical):
+    """
+    Iron-loss-augmented torque model (Morimoto 1994).
+
+    Iron losses are introduced through a core-loss resistance placed in parallel
+    with the magnetizing branch of each subspace, evaluated at the per-plane
+    electrical frequencies ``omega`` (fundamental) and ``3*omega`` (third
+    harmonic). Reusing the baseline back-EMF flux
+    ``lambda = Psi_PM + L_s i_s = [lam_d1, lam_q1, lam_d3, lam_q3]``, the iron
+    loss is
+
+        P_fe = omega**2 * ||lam_1||**2 / R_c1 + 9 * omega**2 * ||lam_3||**2 / R_c3
+
+    where ``||lam_1||**2 = lam_d1**2 + lam_q1**2`` and
+    ``||lam_3||**2 = lam_d3**2 + lam_q3**2``; the factor ``9 = 3**2`` reflects the
+    threefold electrical frequency of the third-harmonic plane. Accounting for the
+    iron-loss braking torque ``T_fe = p_p * P_fe / omega``, the torque is
+
+        T_Rc = T_base - p_p * omega * (||lam_1||**2 / R_c1 + 9 * ||lam_3||**2 / R_c3)
+
+    The per-plane resistances ``R_c1``, ``R_c3`` are identified offline by least
+    squares from measured operating points and passed in here. This two-plane form
+    assumes the 5-phase dq layout ``[d_1, q_1, d_3, q_3]`` (fundamental + third
+    harmonic).
+
+    Reference:
+        S. Morimoto, Y. Takeda, et al., "Loss Minimization Control of Permanent
+        Magnet Synchronous Motor Drives," IEEE Trans. Ind. Electron., vol. 41,
+        no. 5, pp. 511-517, 1994.
+    """
+
+    def __init__(self, machine: BaseMachine, flux: Flux, r_c1: float, r_c3: float) -> None:
+        """
+        Initializes the iron-loss model with pre-identified core-loss resistances.
+
+        Args:
+            machine: Machine parameter object.
+            flux: Flux provider. The voltage-equation flux (``flux_volt``) defines
+                the back-EMF that drives the iron loss.
+            r_c1: Core-loss resistance of the fundamental plane [Ohm].
+            r_c3: Core-loss resistance of the third-harmonic plane [Ohm].
+        """
+        super().__init__(machine, flux)
+        self.r_c1 = r_c1
+        self.r_c3 = r_c3
+        self.L_stat = machine.L_stat
+
+    def calculate_torque(self, omega: float, curr_dq: np.ndarray) -> float:
+        """
+        Computes the analytical baseline torque minus the iron-loss braking torque.
+
+        ``omega`` is the electrical speed [rad/s], consistent with ``Flux.get_flux``.
+        """
+        torque_base = super().calculate_torque(omega, curr_dq)
+
+        # Back-EMF flux linkage lambda = Psi_PM + L_s i_s, ordered [d1, q1, d3, q3].
+        flux_volt, _ = self.flux.get_flux(omega, curr_dq)
+        flux_link = flux_volt + self.L_stat @ curr_dq
+
+        norm_sq_1 = flux_link[0] ** 2 + flux_link[1] ** 2
+        norm_sq_3 = flux_link[2] ** 2 + flux_link[3] ** 2
+
+        torque_fe = self.n_ppairs * omega * (norm_sq_1 / self.r_c1 + 9.0 * norm_sq_3 / self.r_c3)
+
+        return float(torque_base - torque_fe)
