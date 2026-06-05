@@ -5,7 +5,12 @@ import numpy as np
 import torch
 
 from ..parameters import BaseMachine, Flux
-from ..utils import NeuralTorquePredictor, predict_torque_neural
+from ..utils import (
+    NeuralTorquePredictor,
+    predict_torque_neural,
+    substitution2_loss_features,
+    substitution_loss_features,
+)
 
 
 class BaseTorqueModel(ABC):
@@ -159,68 +164,125 @@ class ModelNeural(ModelAnalytical):
         return torque_analytical + torque_residual
 
 
-class ModelLossParametric(ModelAnalytical):
+class ModelLossesSubstitution1:
     """
-    Iron-loss-augmented torque model (Morimoto 1994).
+    Analytical torque plus a simple voltage-substitution iron-loss correction.
 
-    Iron losses are introduced through a core-loss resistance placed in parallel
-    with the magnetizing branch of each subspace, evaluated at the per-plane
-    electrical frequencies ``omega`` (fundamental) and ``3*omega`` (third
-    harmonic). Reusing the baseline back-EMF flux
-    ``lambda = Psi_PM + L_s i_s = [lam_d1, lam_q1, lam_d3, lam_q3]``, the iron
-    loss is
+    The total torque is ``T_base + M_Fe``, where ``T_base`` is the analytical
+    baseline and ``M_Fe`` is an iron-loss term built from the dq voltages
+    (fundamental and 3rd-harmonic subspaces):
 
-        P_fe = omega**2 * ||lam_1||**2 / R_c1 + 9 * omega**2 * ||lam_3||**2 / R_c3
+        M_Fe = k_v * (p^2 * omega_m / (4 pi^2)) * (U1^2 + 9 U3^2)   # eddy-type
+             + k_h * (p / (2 pi))              * (U1^2 + 3 U3^2)    # hysteresis-type
 
-    where ``||lam_1||**2 = lam_d1**2 + lam_q1**2`` and
-    ``||lam_3||**2 = lam_d3**2 + lam_q3**2``; the factor ``9 = 3**2`` reflects the
-    threefold electrical frequency of the third-harmonic plane. Accounting for the
-    iron-loss braking torque ``T_fe = p_p * P_fe / omega``, the torque is
+    with ``U1^2 = U_d1^2 + U_q1^2``, ``U3^2 = U_d3^2 + U_q3^2``,
+    ``omega_m = omega / p`` the mechanical speed, and ``p`` the pole-pair count.
 
-        T_Rc = T_base - p_p * omega * (||lam_1||**2 / R_c1 + 9 * ||lam_3||**2 / R_c3)
-
-    The per-plane resistances ``R_c1``, ``R_c3`` are identified offline by least
-    squares from measured operating points and passed in here. This two-plane form
-    assumes the 5-phase dq layout ``[d_1, q_1, d_3, q_3]`` (fundamental + third
-    harmonic).
-
-    Reference:
-        S. Morimoto, Y. Takeda, et al., "Loss Minimization Control of Permanent
-        Magnet Synchronous Motor Drives," IEEE Trans. Ind. Electron., vol. 41,
-        no. 5, pp. 511-517, 1994.
+    The coefficients ``k_v, k_h`` are identified by least squares against the
+    measured residual; see ``current_setpoints.utils.loss_fit``. This model is
+    intended for residual benchmarking against the neural torque model, not for
+    optimizer-driven map generation. It deliberately does NOT subclass
+    ``ModelAnalytical``: its ``calculate_torque`` needs the dq voltage vector
+    explicitly (the measured voltages from the dataset), an incompatible
+    signature with the optimizer-facing models, so it composes a baseline model
+    internally instead of inheriting one.
     """
 
-    def __init__(self, machine: BaseMachine, flux: Flux, r_c1: float, r_c3: float) -> None:
+    def __init__(self, machine: BaseMachine, flux: Flux, k_v: float = 0.0, k_h: float = 0.0) -> None:
         """
-        Initializes the iron-loss model with pre-identified core-loss resistances.
+        Args:
+            machine: Machine parameter object (supplies ``n_ppairs`` = ``p``).
+            flux: Flux provider used by the analytical baseline.
+            k_v: Eddy-type loss coefficient.
+            k_h: Hysteresis-type loss coefficient.
+        """
+        self.baseline = ModelAnalytical(machine, flux)
+        self.n_ppairs = machine.n_ppairs
+        self.k_v = k_v
+        self.k_h = k_h
+
+    def iron_loss(self, omega: float, volt_dq: np.ndarray) -> float:
+        """
+        Iron-loss torque correction ``M_Fe`` at one operating point.
 
         Args:
-            machine: Machine parameter object.
-            flux: Flux provider. The voltage-equation flux (``flux_volt``) defines
-                the back-EMF that drives the iron loss.
-            r_c1: Core-loss resistance of the fundamental plane [Ohm].
-            r_c3: Core-loss resistance of the third-harmonic plane [Ohm].
+            omega: Electrical speed [rad/s].
+            volt_dq: dq voltage vector ``[U_d1, U_q1, U_d3, U_q3]``.
+
+        Returns:
+            float: ``M_Fe`` [Nm].
         """
-        super().__init__(machine, flux)
-        self.r_c1 = r_c1
-        self.r_c3 = r_c3
-        self.L_stat = machine.L_stat
+        f_v, f_h = substitution_loss_features(omega, volt_dq, self.n_ppairs)
+        return float(self.k_v * f_v + self.k_h * f_h)
 
-    def calculate_torque(self, omega: float, curr_dq: np.ndarray) -> float:
+    def calculate_torque(self, omega: float, curr_dq: np.ndarray, volt_dq: np.ndarray) -> float:
         """
-        Computes the analytical baseline torque minus the iron-loss braking torque.
+        Total torque ``T_base + M_Fe``.
 
-        ``omega`` is the electrical speed [rad/s], consistent with ``Flux.get_flux``.
+        Args:
+            omega: Electrical speed [rad/s].
+            curr_dq: dq current vector ``[i_d1, i_q1, i_d3, i_q3]`` (baseline).
+            volt_dq: dq voltage vector ``[U_d1, U_q1, U_d3, U_q3]`` (loss term).
+
+        Returns:
+            float: Total torque [Nm].
         """
-        torque_base = super().calculate_torque(omega, curr_dq)
+        return self.baseline.calculate_torque(omega, curr_dq) + self.iron_loss(omega, volt_dq)
 
-        # Back-EMF flux linkage lambda = Psi_PM + L_s i_s, ordered [d1, q1, d3, q3].
-        flux_volt, _ = self.flux.get_flux(omega, curr_dq)
-        flux_link = flux_volt + self.L_stat @ curr_dq
 
-        norm_sq_1 = flux_link[0] ** 2 + flux_link[1] ** 2
-        norm_sq_3 = flux_link[2] ** 2 + flux_link[3] ** 2
+class ModelLossSubstitution2:
+    """
+    Analytical torque plus an alternative voltage-substitution iron-loss term.
 
-        torque_fe = self.n_ppairs * omega * (norm_sq_1 / self.r_c1 + 9.0 * norm_sq_3 / self.r_c3)
+    Same structure as ``ModelLossesSubstitution1`` (total torque ``T_base +
+    M_Fe``, measured dq voltages passed explicitly, composes a baseline model
+    rather than subclassing it), but with a different substitution for ``M_Fe``:
 
-        return float(torque_base - torque_fe)
+        M_Fe = k_v / omega_m              * (U1^2 + U3^2)
+             + k_h * 2 pi / (p * omega_m^2) * (U1^2 + (1/3) U3^2)
+
+    with ``omega_m = omega / p``. Both terms diverge at standstill, so this
+    model is only valid away from ``omega = 0``. Coefficients are identified by
+    least squares; see ``current_setpoints.utils.loss_fit``.
+    """
+
+    def __init__(self, machine: BaseMachine, flux: Flux, k_v: float = 0.0, k_h: float = 0.0) -> None:
+        """
+        Args:
+            machine: Machine parameter object (supplies ``n_ppairs`` = ``p``).
+            flux: Flux provider used by the analytical baseline.
+            k_v: Eddy-type loss coefficient.
+            k_h: Hysteresis-type loss coefficient.
+        """
+        self.baseline = ModelAnalytical(machine, flux)
+        self.n_ppairs = machine.n_ppairs
+        self.k_v = k_v
+        self.k_h = k_h
+
+    def iron_loss(self, omega: float, volt_dq: np.ndarray) -> float:
+        """
+        Iron-loss torque correction ``M_Fe`` at one operating point.
+
+        Args:
+            omega: Electrical speed [rad/s].
+            volt_dq: dq voltage vector ``[U_d1, U_q1, U_d3, U_q3]``.
+
+        Returns:
+            float: ``M_Fe`` [Nm].
+        """
+        f_v, f_h = substitution2_loss_features(omega, volt_dq, self.n_ppairs)
+        return float(self.k_v * f_v + self.k_h * f_h)
+
+    def calculate_torque(self, omega: float, curr_dq: np.ndarray, volt_dq: np.ndarray) -> float:
+        """
+        Total torque ``T_base + M_Fe``.
+
+        Args:
+            omega: Electrical speed [rad/s].
+            curr_dq: dq current vector ``[i_d1, i_q1, i_d3, i_q3]`` (baseline).
+            volt_dq: dq voltage vector ``[U_d1, U_q1, U_d3, U_q3]`` (loss term).
+
+        Returns:
+            float: Total torque [Nm].
+        """
+        return self.baseline.calculate_torque(omega, curr_dq) + self.iron_loss(omega, volt_dq)

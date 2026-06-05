@@ -7,5 +7,11 @@ mapping, and multi-start optimization under physical current and voltage limits.
 
 from .constraints import current_constraint, voltage_constraint
 from .grid import calculate_grid, get_correction_grid, grid_to_data
-from .models import BaseTorqueModel, ModelAnalytical, ModelLossParametric, ModelNeural
+from .models import (
+    BaseTorqueModel,
+    ModelAnalytical,
+    ModelLossesSubstitution1,
+    ModelLossSubstitution2,
+    ModelNeural,
+)
 from .optimizer import MotorOptimizer
