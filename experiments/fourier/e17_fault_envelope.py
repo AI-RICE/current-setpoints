@@ -52,6 +52,7 @@ from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2  # noqa
 from current_setpoints.simulation import Transform  # noqa: E402
 
 # Dynamic/Yepes/Static arms come from the shared Fourier-on-fault-map solver
+from dynamic import phase_voltage as pv  # noqa: E402
 from experiments.fourier import envelope_solver as es  # noqa: E402
 
 # -- Fall constants (5-phase) -------------------------------------------
@@ -236,16 +237,17 @@ def main() -> None:
     for rpm in rpm_list:
         omega = rpm * (np.pi / 30.0) * machine.n_ppairs
         transform._set_omega(omega)
-        U = transform.mat_curr_dq_to_volt_dq
-        flux_volt, _ = transform.flux.get_flux(omega, np.zeros(transform.dim))
-        bemf_dq = omega * machine.mat_crossc @ flux_volt
-        Hf_s = Hf_all[idx_s]
-        Gf_s = np.einsum("skj,jl->skl", Hf_s, U)
-        bemf_ph_s = np.einsum("skj,j->sk", Hf_s, bemf_dq)
+        Hf_s = Hf_all[idx_s]  # reduced-Clarke CURRENT map (surviving phases 1..4)
+        # inverse-Park VOLTAGE linear maps for the surviving physical phases.
+        # voltage_linear_maps returns (phase, n, dim); solver wants (n, phase, dim).
+        gU_p, gL_p, bV_p = pv.voltage_linear_maps(transform, omega, idx_s, phases=(1, 2, 3, 4))
+        gU = gU_p.transpose(1, 0, 2)
+        gL = gL_p.transpose(1, 0, 2)
+        bV = bV_p.T
         Phi, dPhi = fourier_design(theta_s, es.H_FREE)
         Phi0, dPhi0 = fourier_design(theta_s, (0,))
-        maps_free = (Hf_s, Gf_s, bemf_ph_s, Phi, dPhi)
-        maps_dc = (Hf_s, Gf_s, bemf_ph_s, Phi0, dPhi0)
+        maps_free = (Hf_s, gU, gL, bV, Phi, dPhi)
+        maps_dc = (Hf_s, gU, gL, bV, Phi0, dPhi0)
 
         # Yepes / Dynamic / Static via envelope_solver's existing solver
         T_dyn = es.max_torque(model, transform, omega, "Dynamic", maps_free, Imax, Vmax, rms_max)

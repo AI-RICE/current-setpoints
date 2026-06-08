@@ -18,6 +18,18 @@ Note: Fall (Eqs 16-19 verbatim) is a *different* parametrisation
 (2-DOF, closed-form sinusoidal surviving currents) and is implemented
 inline in the e17 script -- see baselines/Fall/ for the standalone
 faithful Fall replication.
+
+Voltage convention (unified, validated -- see dynamic/phase_voltage.py):
+per-phase voltage uses the inverse-Park dq->phase map, the machine's
+native, fault-independent voltage transform (the SAME one the validated
+``Transform.get_volt_ph`` uses). Current under fault uses the
+reduced-Clarke map (``fault_phase_map``) so the open phase carries no
+current. These two maps genuinely differ and the asymmetry is physical.
+An earlier version reused the reduced-Clarke *current* map on v_dq, which
+over-counted surviving-phase voltage once omega*L*di/dtheta mattered and
+spuriously collapsed the Dynamic envelope at high speed. The voltage
+linear maps (gU, gL, bV) are now supplied by the caller via
+``phase_voltage.voltage_linear_maps`` and passed through ``maps``.
 """
 
 from __future__ import annotations
@@ -84,8 +96,14 @@ def solve_fault(
     """
     Solve the min-loss Fourier-on-fault-map problem at torque T.
     Returns (C, converged, maxI, maxV, max_rms_per_phase).
+
+    ``maps`` = (Hf_s, gU, gL, bV, Phi, dPhi) where:
+      Hf_s (n_con, n_surv, dim) -- reduced-Clarke CURRENT map (i_0 = 0).
+      gU, gL (n_con, n_surv, dim), bV (n_con, n_surv) -- inverse-Park
+        VOLTAGE linear maps from phase_voltage.voltage_linear_maps:
+        v_phase = gU . i_dq + omega * gL . di_dq + bV.
     """
-    Hf_s, _Gf_s, bemf_ph_s, Phi, dPhi = maps
+    Hf_s, gU, gL, bV, Phi, dPhi = maps
     dim = transform.dim
     nb = n_basis(harmonics)
     n_con, n_surv = Hf_s.shape[0], Hf_s.shape[1]
@@ -119,12 +137,10 @@ def solve_fault(
         {"type": "ineq", "fun": (lambda c: Imax + Ci @ c), "jac": (lambda c: Ci)},
     ]
     if use_voltage:
-        gU = np.einsum("skj,jl->skl", Hf_s, transform.mat_curr_dq_to_volt_dq)
-        gL = np.einsum("skj,jl->skl", Hf_s, transform.machine.L_stat)
         Cv = (Phi[:, None, :, None] * gU[:, :, None, :] + omega * dPhi[:, None, :, None] * gL[:, :, None, :]).reshape(
             n_con * n_surv, nvars
         )
-        bvec = bemf_ph_s.reshape(n_con * n_surv)
+        bvec = bV.reshape(n_con * n_surv)
         cons += [
             {"type": "ineq", "fun": (lambda c: Vmax - (Cv @ c + bvec)), "jac": (lambda c: -Cv)},
             {"type": "ineq", "fun": (lambda c: Vmax + (Cv @ c + bvec)), "jac": (lambda c: Cv)},
@@ -162,9 +178,7 @@ def solve_fault(
     rms = float(np.max(np.sqrt(np.mean(i_ph**2, axis=0))))
     if use_voltage:
         di = dPhi @ C
-        HU = np.einsum("skj,jl->skl", Hf_s, transform.mat_curr_dq_to_volt_dq)
-        HL = np.einsum("skj,jl->skl", Hf_s, transform.machine.L_stat)
-        v_ph = np.einsum("skl,sl->sk", HU, i_s) + omega * np.einsum("skl,sl->sk", HL, di) + bemf_ph_s
+        v_ph = np.einsum("skl,sl->sk", gU, i_s) + omega * np.einsum("skl,sl->sk", gL, di) + bV
         maxV = float(np.max(np.abs(v_ph)))
     else:
         maxV = 0.0
