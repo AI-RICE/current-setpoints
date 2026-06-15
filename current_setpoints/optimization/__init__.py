@@ -11,7 +11,10 @@ from .models import (
     BaseTorqueModel,
     ModelAnalytical,
     ModelLossesSubstitution1,
+    ModelLossesSubstitution1Excess,
+    ModelLossParametric,
     ModelLossSubstitution2,
+    ModelLossSubstitution2Excess,
     ModelNeural,
 )
 from .optimizer import MotorOptimizer

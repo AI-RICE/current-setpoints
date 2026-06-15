@@ -122,6 +122,72 @@ def substitution2_loss_features(
     return f_v, f_h
 
 
+def substitution_loss_features_excess(
+    omega: Any, volt_dq: Any, n_ppairs: int
+) -> tuple[Any, Any, Any]:
+    """
+    Three-term Bertotti basis for substitution 1 (B == U): the two terms of
+    ``substitution_loss_features`` plus the excess (anomalous) term
+
+        f_e = (p^1.5 * sqrt(omega_m) / (2 pi)^1.5) * (U1^1.5 + 3*sqrt(3) U3^1.5)
+
+    where ``U1^1.5 = (U_d1^2 + U_q1^2)^0.75`` and the ``3*sqrt(3) = 3^1.5`` factor
+    is the 3rd-harmonic ``(3 f)^1.5`` scaling. Returns ``(f_v, f_h, f_e)``.
+    """
+    omega = np.asarray(omega, dtype=np.float64)
+    volt_dq = np.asarray(volt_dq, dtype=np.float64)
+
+    if volt_dq.ndim == 1:
+        ud1, uq1, ud3, uq3 = volt_dq
+    else:
+        ud1, uq1, ud3, uq3 = volt_dq[:, 0], volt_dq[:, 1], volt_dq[:, 2], volt_dq[:, 3]
+
+    u1_sq = ud1**2 + uq1**2
+    u3_sq = ud3**2 + uq3**2
+
+    p = float(n_ppairs)
+    omega_m = omega / p
+
+    f_v = (p**2 * omega_m / (4.0 * np.pi**2)) * (u1_sq + 9.0 * u3_sq)
+    f_h = (p / (2.0 * np.pi)) * (u1_sq + 3.0 * u3_sq)
+    f_e = (p**1.5 * np.sqrt(omega_m) / (2.0 * np.pi) ** 1.5) * (
+        u1_sq**0.75 + 3.0 * np.sqrt(3.0) * u3_sq**0.75
+    )
+    return f_v, f_h, f_e
+
+
+def substitution2_loss_features_excess(
+    omega: Any, volt_dq: Any, n_ppairs: int
+) -> tuple[Any, Any, Any]:
+    """
+    Three-term Bertotti basis for substitution 2 (B == U/f): the two terms of
+    ``substitution2_loss_features`` plus the excess (anomalous) term
+
+        f_e = (U1^1.5 + U3^1.5) / omega_m
+
+    (the harmonic weight is 1 because frequency cancels in ``f^1.5 (U/f)^1.5``).
+    Diverges at standstill. Returns ``(f_v, f_h, f_e)``.
+    """
+    omega = np.asarray(omega, dtype=np.float64)
+    volt_dq = np.asarray(volt_dq, dtype=np.float64)
+
+    if volt_dq.ndim == 1:
+        ud1, uq1, ud3, uq3 = volt_dq
+    else:
+        ud1, uq1, ud3, uq3 = volt_dq[:, 0], volt_dq[:, 1], volt_dq[:, 2], volt_dq[:, 3]
+
+    u1_sq = ud1**2 + uq1**2
+    u3_sq = ud3**2 + uq3**2
+
+    p = float(n_ppairs)
+    omega_m = omega / p
+
+    f_v = (u1_sq + u3_sq) / omega_m
+    f_h = (2.0 * np.pi / (p * omega_m**2)) * (u1_sq + u3_sq / 3.0)
+    f_e = (u1_sq**0.75 + u3_sq**0.75) / omega_m
+    return f_v, f_h, f_e
+
+
 def split_like_neural(
     df: pd.DataFrame, test_size: float = TEST_SIZE, random_state: int = RANDOM_STATE
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -191,11 +257,10 @@ def fit_substitution_loss(
     t_base = _baseline_torque(df_train, analytical_model)
     target = t_meas - t_base  # residual the loss term must explain
 
-    f_v, f_h = features_fn(omega, volt, n_ppairs)
-    phi = np.column_stack([f_v, f_h])
+    feats = features_fn(omega, volt, n_ppairs)
+    phi = np.column_stack(feats)
 
     coef, *_ = np.linalg.lstsq(phi, target, rcond=None)
-    k_v, k_h = float(coef[0]), float(coef[1])
 
     pred = phi @ coef
     rmse = float(np.sqrt(np.mean((pred - target) ** 2)))
@@ -203,13 +268,15 @@ def fit_substitution_loss(
     ss_tot = float(np.sum((target - target.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 
-    return {
-        "k_v": k_v,
-        "k_h": k_h,
-        "rmse": rmse,
-        "r2": r2,
-        "n_points": int(len(target)),
-    }
+    # Name the first coefficients k_v, k_h, k_e (eddy, hysteresis, excess);
+    # ``coef`` holds the full vector so evaluation is agnostic to the count.
+    names = ("k_v", "k_h", "k_e", "k_4", "k_5")[: len(coef)]
+    result: dict[str, Any] = {name: float(c) for name, c in zip(names, coef)}
+    result["coef"] = coef
+    result["rmse"] = rmse
+    result["r2"] = r2
+    result["n_points"] = int(len(target))
+    return result
 
 
 def substitution_loss_rmse(
@@ -240,8 +307,13 @@ def substitution_loss_rmse(
     t_meas = df[TORQ_COL].to_numpy(dtype=np.float64)
 
     t_base = _baseline_torque(df, analytical_model)
-    f_v, f_h = features_fn(omega, volt, n_ppairs)
-    m_fe = coeffs["k_v"] * f_v + coeffs["k_h"] * f_h
+    feats = features_fn(omega, volt, n_ppairs)
+
+    coef = coeffs.get("coef")
+    if coef is None:
+        names = ("k_v", "k_h", "k_e", "k_4", "k_5")[: len(feats)]
+        coef = np.array([coeffs[name] for name in names], dtype=np.float64)
+    m_fe = np.column_stack(feats) @ np.asarray(coef, dtype=np.float64)
     t_pred = t_base + m_fe
 
     return float(np.sqrt(np.mean((t_pred - t_meas) ** 2)))
