@@ -17,4 +17,7 @@ from .models import (
     ModelLossSubstitution2Excess,
     ModelNeural,
 )
+from .im_model import ModelIMAnalytical
+from .im_grid import calculate_grid_im, calculate_grid_im_vdc_sweep
+from .efficiency import add_efficiency_map
 from .optimizer import MotorOptimizer
