@@ -61,6 +61,10 @@ indent-style = "space"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+# Run-as-script drivers manipulate sys.path / matplotlib backend before
+# importing project modules, which is intentional for `python <script>.py`.
+"dynamic/0*.py" = ["E402"]
+"experiments/**/*.py" = ["E402"]
 
 [tool.setuptools.packages.find]
 where = ["."]

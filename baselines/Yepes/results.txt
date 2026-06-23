@@ -1,0 +1,26 @@
+==================================================================
+Yepes (2024 TTE) NSBE-FRML, Section-II ML reference (Eq 7)
+==================================================================
+n = 5, non-salient, back-EMF = sin + +0.30*sin(3.)
+(SIGN_3=+1 is the flattening 'opposite phase' interpretation
+ that matches Yepes's stated ratio.)
+
+per-phase back-EMF:  peak = 0.9202  rms = 0.7382  crest = 1.2465
+
+HEALTHY (Eq 7, f = ones(5)):
+  peak |i_ML| / T   = 0.337692
+  T at peak = 1 A   = 2.9613  (normalized; this is Yepes's T_rated)
+
+1-PHASE OPEN (Eq 7, f = (0,1,1,1,1)):
+  max |i_a / T| (should be 0)  = 0.00e+00
+  peak per surviving phase     = [0.6623 0.3561 0.3561 0.6623]  (unequal -- ML does NOT impose equal magnitude)
+  peak |i_ML| / T              = 0.662270
+  T at peak = 1 A              = 1.5100
+
+ANCHOR:  T1 / T_rated  =  50.990%
+Yepes :  T1 / T_rated  =  75.5/152.7  =  49.443%
+diff  :  +1.547 pp  (within Yepes's three-digit precision of T1=75.5, T_rated=152.7)
+
+In Nm (with T_rated = 152.7 Nm by definition):
+  HEALTHY T at peak=1    =  152.70 Nm   (Yepes: 152.7)
+  1-PHASE OPEN  T at pk=1 =   77.86 Nm   (Yepes: 75.5)
