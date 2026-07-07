@@ -361,25 +361,25 @@ class ForwardModel:
 
     def volt_map_at_theta(
         self, theta_idx: int, omega: float
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Voltage-side linear maps at one rotor angle for the dynamic optimizer.
-        Returns (H_volt, u_volt) such that:
-            v_phase(θ) ≈ H_volt @ curr_dq + u_volt
+        Returns (gU, gL, bV) such that:
+            v_phase(θ) ≈ gU @ curr_dq + omega * gL @ (di/dθ) + bV
 
-        H_volt: (n_phases, dim) — linear map from curr_dq to phase voltages.
-        u_volt: (n_phases,)     — BEMF offset at this angle.
+        gU: (n_phases, dim) — static voltage map: H_ph @ (R + ω·J·L).
+        gL: (n_phases, dim) — inductive map: H_ph @ L (for ω·L·di/dθ term).
+        bV: (n_phases,)     — BEMF offset: H_ph @ e_dq.
 
         Uses inverse-Park (fault-independent). For ConstantFlux the linearization
-        is exact; for current-dependent flux it is evaluated at zero current
-        (the BEMF linearization point used throughout this codebase).
-        Faithful to BaseTransform.get_volt_map_at_theta.
+        is exact; for current-dependent flux it is evaluated at zero current.
         """
         zeros = np.zeros(self.drive.dim)
         U = self.drive.voltage_operator(omega, zeros)
+        L = self.drive.inductance(omega, zeros)
         bemf_dq = self.drive.bemf_dq(omega, zeros)
         H_ph = self._mat_dq_to_ph_all[theta_idx]   # (n_phases, dim)
-        return H_ph @ U, H_ph @ bemf_dq
+        return H_ph @ U, H_ph @ L, H_ph @ bemf_dq
 
     # ── fault constraint delegation ───────────────────────────────────────────
 

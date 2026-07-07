@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..utils.loss_fit import substitution_loss_features
 
 
 def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
@@ -147,8 +146,12 @@ class DriveModel(ABC):
         (seed 0, scale 8.0, n=300, A returned symmetric).
         """
         dim = self.dim
-        rng = np.random.default_rng(0)
-        Xs = rng.normal(scale=8.0, size=(300, dim))
+        # Use the legacy global RNG with state save/restore to avoid numpy
+        # RNG-constructor ABC recursion in older numpy versions.
+        _state = np.random.get_state()
+        np.random.seed(0)
+        Xs = np.random.normal(scale=8.0, size=(300, dim))
+        np.random.set_state(_state)
         idx = [(i, j) for i in range(dim) for j in range(i, dim)]
         feats = np.array([[x[i] * x[j] for (i, j) in idx] + list(x) + [1.0] for x in Xs])
         y = np.array([self.torque(omega, x) for x in Xs])
@@ -169,6 +172,7 @@ class DriveModel(ABC):
         ModelLossesSubstitution1 formula. Post-hoc benchmarking only.
         Faithful to ModelLossesSubstitution1.iron_loss.
         """
+        from ..utils.loss_fit import substitution_loss_features  # lazy — avoids circular import
         f_v, f_h = substitution_loss_features(omega, volt_dq, self.n_ppairs)
         return float(self.k_v * f_v + self.k_h * f_h)
 
