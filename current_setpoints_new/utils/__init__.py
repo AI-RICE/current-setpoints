@@ -7,6 +7,7 @@ from .loss_fit import (
 )
 from .training_utils import evaluate_model, prepare_fold_dataloaders, train_model
 from .load_data import load_aggregated_csv_data
+from .flux_fit import fit_pm_flux
 from .plotting import (
     PlotConfig,
     plot_baseline_vs_compensated,
@@ -28,6 +29,7 @@ __all__ = [
     "evaluate_model",
     "prepare_fold_dataloaders",
     "load_aggregated_csv_data",
+    "fit_pm_flux",
     "PlotConfig",
     "plot_grid_segments",
     "plot_baseline_vs_compensated",

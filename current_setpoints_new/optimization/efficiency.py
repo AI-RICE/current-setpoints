@@ -65,7 +65,7 @@ def phase_flux_waveforms(
     drive = fwd.drive
     zeros = np.zeros(drive.dim)
     L_s = drive.inductance(omega, zeros)                   # (dim, dim)
-    psi_pm, _ = drive.flux.flux(omega, zeros)              # (dim,)  — PM flux_volt at zero current
+    psi_pm = drive.flux.flux(omega, zeros)                  # (dim,)  — PM flux at zero current
     lambda_dq = L_s @ curr_dq + psi_pm                    # (dim,)  — constant for static curr_dq
 
     n_theta = fwd.vec_theta.size - 1

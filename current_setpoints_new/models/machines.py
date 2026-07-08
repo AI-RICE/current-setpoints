@@ -7,7 +7,6 @@ import numpy as np
 import torch
 
 
-
 def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
     """
     Anti-symmetric block-diagonal J matrix for n_harmonics dq subspaces.
@@ -32,6 +31,9 @@ class FluxModel(ABC):
     (constant arrays, FEM table, or neural network). cross_coupling (J) is
     magnetic geometry and lives here alongside flux and L.
 
+    A single flux vector is used for both the voltage (back-EMF) and torque
+    equations — they describe the same physical PM flux linkage.
+
     Not used by IM — induction motors have no PM flux and implement the
     voltage equation directly on the drive class.
     """
@@ -39,8 +41,8 @@ class FluxModel(ABC):
     cross_coupling: np.ndarray  # J — anti-symmetric rotation/coupling matrix
 
     @abstractmethod
-    def flux(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (flux_volt, flux_torq) for the voltage and torque equations."""
+    def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        """Returns the PM flux vector used by both the voltage and torque equations."""
 
     @abstractmethod
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
@@ -56,23 +58,20 @@ class ConstantFlux(FluxModel):
     Flux provider for PMSM with constant (linear) magnetics.
     All arrays are stored directly; omega and curr_dq are ignored by both methods.
     Replaces parameters/flux.py: Flux, ConstantFlux, Flux_IEEEMachine2.
-    The IEEEMachine2 constants are baked into PMSM5Phase.__init__.
     """
 
     def __init__(
         self,
-        flux_volt: np.ndarray,
-        flux_torq: np.ndarray,
+        flux_pm: np.ndarray,
         L_stat: np.ndarray,
         cross_coupling: np.ndarray,
     ) -> None:
-        self.flux_volt = np.asarray(flux_volt)
-        self.flux_torq = np.asarray(flux_torq)
+        self.flux_pm = np.asarray(flux_pm)
         self.L_stat = np.asarray(L_stat)
         self.cross_coupling = np.asarray(cross_coupling)
 
-    def flux(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return self.flux_volt, self.flux_torq
+    def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        return self.flux_pm
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         return self.L_stat
@@ -191,14 +190,15 @@ class PMSM5Phase(DriveModel):
         n_phases=5, n_ppairs=8
         R_stat = diag([0.0191, 0.0514, 0.0805, 0.0801]) Ω
         L_stat = 1e-3 * [[...]] H
-        flux_volt = [0.0115, 0.0018, 0, 0] Wb
-        flux_torq = [1.18255974e-2, -1.36757644e-3, 8.94095382e-5, -4.58552615e-5] Wb
+        flux_pm — single PM flux vector [d1, q1, d3, q3], identified by
+            joint least squares against measured voltage and torque in
+            data/aggregated_file_means.csv (see utils.flux_fit.fit_pm_flux).
 
     Torque (faithful to ModelAnalytical.calculate_torque):
         T = i^T A i + 2 b^T i
         A = (m·pp/4) · (J @ L + L @ J^T)
-        b = (m·pp/4) · (J @ flux_torq)
-        Both computed per-call — L and flux_torq will be ω- and i-dependent
+        b = (m·pp/4) · (J @ flux_pm)
+        Both computed per-call — L and flux_pm will be ω- and i-dependent
         for LUT / neural flux providers.
     """
 
@@ -222,18 +222,19 @@ class PMSM5Phase(DriveModel):
                 [-0.0041, -0.0053, 0.0475, 0.0722],
             ]
         )
-        flux_volt = np.array([0.0115, 0.0018, 0.0, 0.0])
-        flux_torq = np.array([1.18255974e-02, -1.36757644e-03, 8.94095382e-05, -4.58552615e-05])
+        # Identified by utils.flux_fit.fit_pm_flux via joint least squares
+        # against measured voltage and torque in data/aggregated_file_means.csv.
+        flux_pm = np.array([1.13438169e-02, 1.71999345e-03, 1.57771228e-05, 1.56271556e-05])
 
-        self.flux: FluxModel = ConstantFlux(flux_volt, flux_torq, L_stat, cross_coupling)
+        self.flux: FluxModel = ConstantFlux(flux_pm, L_stat, cross_coupling)
 
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         L = self.flux.inductance(omega, curr_dq)
         return self.R_stat + omega * self.flux.cross_coupling @ L
 
     def bemf_dq(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        flux_volt, _ = self.flux.flux(omega, curr_dq)
-        return omega * self.flux.cross_coupling @ flux_volt
+        flux_pm = self.flux.flux(omega, curr_dq)
+        return omega * self.flux.cross_coupling @ flux_pm
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         return self.flux.inductance(omega, curr_dq)
@@ -241,15 +242,15 @@ class PMSM5Phase(DriveModel):
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
         """
         T = i^T A i + 2 b^T i.
-        A = (m·pp/4) · (J @ L + L @ J^T),  b = (m·pp/4) · (J @ flux_torq).
+        A = (m·pp/4) · (J @ L + L @ J^T),  b = (m·pp/4) · (J @ flux_pm).
         Faithful to ModelAnalytical.calculate_torque.
         """
-        _, flux_torq = self.flux.flux(omega, curr_dq)
+        flux_pm = self.flux.flux(omega, curr_dq)
         L = self.flux.inductance(omega, curr_dq)
         J = self.flux.cross_coupling
         k = self.n_phases * self.n_ppairs / 4.0
         A = k * (J @ L + L @ J.T)
-        b = k * (J @ flux_torq)
+        b = k * (J @ flux_pm)
         return float(curr_dq @ A @ curr_dq + 2 * b @ curr_dq)
 
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
