@@ -126,8 +126,6 @@ class DriveModel(ABC):
 
     def torque_quadratic(self, omega: float) -> tuple[np.ndarray, np.ndarray, float]:
         dim = self.dim
-        # Use the legacy global RNG with state save/restore to avoid numpy
-        # RNG-constructor ABC recursion in older numpy versions.
         _state = np.random.get_state()
         np.random.seed(0)
         Xs = np.random.normal(scale=8.0, size=(300, dim))

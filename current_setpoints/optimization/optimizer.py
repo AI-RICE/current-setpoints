@@ -361,7 +361,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
         def slot(n: int) -> slice:
             return slice(n * dim, (n + 1) * dim)
 
-        # ── iron-loss auxiliary ───────────────────────────────────────────────
         iron_active = self.iron_weight > 0.0 or self.excess_weight > 0.0
         iron_scale = (omega**2) / (delta_theta**2) / n_grid
         excess_scale = (omega / delta_theta) ** 1.5 / n_grid
@@ -386,7 +385,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
             grad_X = np.einsum("knj,kn->nj", Lp, np.roll(w, 1, axis=1) - w)
             return val, grad_X.flatten()
 
-        # ── objective ────────────────────────────────────────────────────────
         rho = self.rho
         if rho > 0.0:
             slew_pairs = [(n, (n + 1) % n_grid) for n in range(n_grid)]
@@ -414,7 +412,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
                 _, ig = _iron_term(X_flat)
                 return 2.0 * X_flat + ig
 
-        # ── constraints ──────────────────────────────────────────────────────
         constraints: list[dict[str, Any]] = []
 
         # Torque equalities (nonlinear; SLSQP uses finite-diff Jacobian)
