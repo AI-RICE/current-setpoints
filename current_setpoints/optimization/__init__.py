@@ -1,23 +1,43 @@
-"""
-Motor Optimization and Mapping Package
-
-This package provides tools for motor torque modeling, grid-based performance
-mapping, and multi-start optimization under physical current and voltage limits.
-"""
-
-from .constraints import current_constraint, voltage_constraint
-from .grid import calculate_grid, get_correction_grid, grid_to_data
-from .models import (
-    BaseTorqueModel,
-    ModelAnalytical,
-    ModelLossesSubstitution1,
-    ModelLossesSubstitution1Excess,
-    ModelLossParametric,
-    ModelLossSubstitution2,
-    ModelLossSubstitution2Excess,
-    ModelNeural,
+from .optimizer import (
+    ActiveSetOptimizer,
+    BaseOptimizer,
+    FourierOptimizer,
+    IndependentOptimizer,
+    Solution,
+    StaticOptimizer,
 )
-from .im_model import ModelIMAnalytical
-from .im_grid import calculate_grid_im, calculate_grid_im_vdc_sweep
-from .efficiency import add_efficiency_map
-from .optimizer import MotorOptimizer
+from .grid import calculate_grid, get_correction_grid
+from .data import MachineData, Waveforms, evaluate, grid_to_data
+from .efficiency import (
+    add_efficiency_map,
+    deadbeat_tracking,
+    eddy_loss,
+    excess_loss,
+    hysteresis_loss,
+    iron_loss,
+    low_pass_trajectory,
+    phase_flux_waveforms,
+)
+
+__all__ = [
+    "Solution",
+    "BaseOptimizer",
+    "StaticOptimizer",
+    "IndependentOptimizer",
+    "ActiveSetOptimizer",
+    "FourierOptimizer",
+    "calculate_grid",
+    "get_correction_grid",
+    "MachineData",
+    "Waveforms",
+    "evaluate",
+    "grid_to_data",
+    "phase_flux_waveforms",
+    "eddy_loss",
+    "hysteresis_loss",
+    "excess_loss",
+    "iron_loss",
+    "low_pass_trajectory",
+    "deadbeat_tracking",
+    "add_efficiency_map",
+]

@@ -1,92 +1,194 @@
-"""
-Copper-loss efficiency post-processor for multiphase IM regime-aware
-setpoint grids. Reads a regular ``(T*, omega)`` grid produced by
-``calculate_grid_im`` and adds per-cell stator-copper, rotor-copper,
-and copper-loss efficiency arrays.
-
-No iron loss, windage, or inverter loss is modeled here -- these
-require additional measured or fitted parameters and are deliberately
-out of scope. The fields added are an *upper bound* on the true
-drive-train efficiency; the relative comparison between two grids
-(e.g. proposed vs. ``i_3 = 0``) is unaffected by the missing terms
-to the extent that those terms are controller-agnostic.
-
-Definitions (motoring sign convention; absolute value of mechanical
-power is used so the same formula reads sensibly under regen):
-
-    P_stator = (m / 2) * R_s * ||i_s||^2
-    omega_r  = (R_r^1 / L_r^1) * (i_sd^1 / i_sq^1)             FOC slip
-    i_r      = k_ir(omega_r) * i_s
-    P_rotor  = (m / 2) * i_r^T * R_r * i_r
-    P_mech   = T * (omega_elec / p_p)
-    eta_cu   = |P_mech| / (|P_mech| + P_stator + P_rotor)
-
-For amplitude-invariant Clarke, ``(m/2) * ||i_dq||^2`` is the
-mean-over-theta of ``sum_k i_phase_k^2`` (Parseval); the same
-identity is used by ``drive_cycle.evaluate_drive_cycle``.
-"""
 from __future__ import annotations
 
 from typing import Any
 
 import numpy as np
 
-from ..parameters.im_coupling import k_ir_matrix, slip_from_dq_foc
-from ..parameters.im_machine import BaseMachineIM
+from ..models.forward_model import ForwardModel
 
 
-def add_efficiency_map(grid: dict[str, Any], machine: BaseMachineIM) -> dict[str, Any]:
-    """
-    Augment ``grid`` in place with per-cell stator/rotor copper-loss and
-    copper-loss efficiency arrays. Returns the same dict for chaining.
+# ─────────────────────────────────────────────────────────────────────────────
+# Flux waveforms
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Args:
-        grid: Output of ``calculate_grid_im``. Must contain
-            ``vec_torq`` (n_torq,), ``vec_omega`` (n_omega, electrical
-            rad/s), and ``curr_dq_grid`` (dim, n_torq, n_omega).
-        machine: ``BaseMachineIM`` instance providing ``R_s_scalar``,
-            ``R_r``, ``n_phases``, ``n_ppairs``, and the coupling matrices
-            needed for ``k_ir`` and the slip law.
+def phase_flux_waveforms(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq: np.ndarray,
+    n_grid: int = 64,
+) -> np.ndarray:
+    drive = fwd.drive
+    zeros = np.zeros(drive.dim)
+    L_s = drive.inductance(omega, zeros)                   # (dim, dim)
+    psi_pm = drive.flux.flux(omega, zeros)                  # (dim,)  — PM flux at zero current
+    lambda_dq = L_s @ curr_dq + psi_pm                    # (dim,)  — constant for static curr_dq
 
-    Returns:
-        ``grid`` with three new keys:
-          * ``grid_loss_stator`` (n_torq, n_omega) -- stator copper [W]
-          * ``grid_loss_rotor``  (n_torq, n_omega) -- rotor copper [W]
-          * ``grid_eta_cu``      (n_torq, n_omega) -- copper-only efficiency
+    n_theta = fwd.vec_theta.size - 1
+    theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
+    idx_grid = (np.round(theta_grid / (2 * np.pi) * n_theta).astype(int)) % n_theta
 
-        Cells that are infeasible in ``curr_dq_grid`` (NaN) propagate
-        NaN to all three new arrays.
-    """
-    T_ax = np.asarray(grid["vec_torq"], dtype=float)
-    om_ax = np.asarray(grid["vec_omega"], dtype=float)
-    curr = np.asarray(grid["curr_dq_grid"], dtype=float)
+    # stack: list of (n_surv,) → (n_surv, n_grid)
+    return np.stack(
+        [fwd.phase_map_at_theta(int(k)) @ lambda_dq for k in idx_grid],
+        axis=1,
+    )
 
-    m = machine.n_phases
-    R_s = float(machine.R_s_scalar)
-    p_p = machine.n_ppairs
 
-    n_t, n_o = len(T_ax), len(om_ax)
-    P_s = np.full((n_t, n_o), np.nan)
-    P_r = np.full((n_t, n_o), np.nan)
-    eta = np.full((n_t, n_o), np.nan)
+# ─────────────────────────────────────────────────────────────────────────────
+# Iron-loss components
+# ─────────────────────────────────────────────────────────────────────────────
 
-    for j in range(n_o):
-        om_mech = om_ax[j] / p_p
-        for i in range(n_t):
-            i_s = curr[:, i, j]
-            if np.any(np.isnan(i_s)):
+def eddy_loss(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq: np.ndarray,
+    *,
+    k_e: float = 1.0,
+    n_grid: int = 64,
+) -> float:
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq, n_grid)
+    delta_theta = 2 * np.pi / n_grid
+    dlambda_dth = (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta
+    dlambda_dt = omega * dlambda_dth
+    return float(k_e * np.mean(np.sum(dlambda_dt ** 2, axis=0)))
+
+
+def hysteresis_loss(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq: np.ndarray,
+    *,
+    k_h: float = 1.0,
+    beta: float = 1.8,
+    n_grid: int = 64,
+) -> float:
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq, n_grid)
+    b_max = np.max(np.abs(lambda_ph), axis=1)
+    return float(k_h * (omega / (2 * np.pi)) * np.sum(b_max ** beta))
+
+
+def excess_loss(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq: np.ndarray,
+    *,
+    k_x: float = 1.0,
+    n_grid: int = 64,
+) -> float:
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq, n_grid)
+    delta_theta = 2 * np.pi / n_grid
+    dlambda_dt = omega * (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta
+    return float(k_x * np.mean(np.sum(np.abs(dlambda_dt) ** 1.5, axis=0)))
+
+
+def iron_loss(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq: np.ndarray,
+    *,
+    k_e: float = 1.0,
+    k_h: float = 1.0,
+    k_x: float = 0.0,
+    beta: float = 1.8,
+    n_grid: int = 64,
+) -> dict[str, float]:
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq, n_grid)
+    delta_theta = 2 * np.pi / n_grid
+    dlambda_dth = (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta
+    dlambda_dt = omega * dlambda_dth
+
+    p_e = float(k_e * np.mean(np.sum(dlambda_dt ** 2, axis=0)))
+    b_max = np.max(np.abs(lambda_ph), axis=1)
+    p_h = float(k_h * (omega / (2 * np.pi)) * np.sum(b_max ** beta))
+    p_x = float(k_x * np.mean(np.sum(np.abs(dlambda_dt) ** 1.5, axis=0))) if k_x != 0.0 else 0.0
+
+    return {"eddy": p_e, "hysteresis": p_h, "excess": p_x, "total": p_e + p_h + p_x}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Controller simulation utilities (trajectory-level)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def low_pass_trajectory(curr_dq_grid: np.ndarray, h_cutoff: int) -> np.ndarray:
+    N = curr_dq_grid.shape[0]
+    coeffs = np.fft.rfft(curr_dq_grid, axis=0)
+    coeffs[h_cutoff + 1:] = 0.0
+    return np.fft.irfft(coeffs, n=N, axis=0)
+
+
+def deadbeat_tracking(
+    curr_dq_grid: np.ndarray,
+    n_samples: int,
+    delay: int = 0,
+) -> np.ndarray:
+    X = np.asarray(curr_dq_grid)
+    N = X.shape[0]
+    if n_samples >= N or n_samples <= 0:
+        return X.copy()
+    sample_idx = np.linspace(0, N, n_samples + 1, endpoint=True).astype(int)[:-1]
+    samples = X[sample_idx]
+    if delay:
+        samples = np.roll(samples, delay, axis=0)
+    rep_counts = np.diff(np.concatenate([sample_idx, [N]]))
+    return np.repeat(samples, rep_counts, axis=0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Grid-level entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def add_efficiency_map(
+    grid: dict[str, Any],
+    fwd: ForwardModel,
+    *,
+    k_e: float = 1.0,
+    k_h: float = 1.0,
+    k_x: float = 0.0,
+    beta: float = 1.8,
+    n_grid: int = 64,
+) -> dict[str, Any]:
+    out: dict[str, Any] = dict(grid)
+
+    curr_dq_grid = grid["curr_dq_grid"]   # (dim, n_torq, n_omega)
+    vec_omega = grid["vec_omega"]
+    dim, n_torq, n_omega = curr_dq_grid.shape
+
+    shape = (n_torq, n_omega)
+    loss_eddy = np.full(shape, np.nan)
+    loss_hyst = np.full(shape, np.nan)
+    loss_exc = np.full(shape, np.nan)
+    loss_iron_arr = np.full(shape, np.nan)
+
+    for idx_omega in range(n_omega):
+        omega = float(vec_omega[idx_omega])
+        for idx_torq in range(n_torq):
+            curr_dq = curr_dq_grid[:, idx_torq, idx_omega]
+            if np.any(np.isnan(curr_dq)):
                 continue
-            P_s_ij = 0.5 * m * R_s * float(i_s @ i_s)
-            om_r = slip_from_dq_foc(i_s, machine)
-            i_r = k_ir_matrix(om_r, machine) @ i_s
-            P_r_ij = 0.5 * m * float(i_r @ machine.R_r @ i_r)
-            P_mech = abs(T_ax[i] * om_mech)
-            P_in = P_mech + P_s_ij + P_r_ij
-            P_s[i, j] = P_s_ij
-            P_r[i, j] = P_r_ij
-            eta[i, j] = P_mech / P_in if P_in > 1e-9 else 0.0
 
-    grid["grid_loss_stator"] = P_s
-    grid["grid_loss_rotor"] = P_r
-    grid["grid_eta_cu"] = eta
-    return grid
+            il = iron_loss(
+                fwd, omega, curr_dq,
+                k_e=k_e, k_h=k_h, k_x=k_x, beta=beta, n_grid=n_grid,
+            )
+            loss_eddy[idx_torq, idx_omega] = il["eddy"]
+            loss_hyst[idx_torq, idx_omega] = il["hysteresis"]
+            loss_exc[idx_torq, idx_omega] = il["excess"]
+            loss_iron_arr[idx_torq, idx_omega] = il["total"]
+
+    out["grid_loss_eddy"] = loss_eddy
+    out["grid_loss_hyst"] = loss_hyst
+    out["grid_loss_excess"] = loss_exc
+    out["grid_loss_iron"] = loss_iron_arr
+    return out
+
+
+__all__ = [
+    "phase_flux_waveforms",
+    "eddy_loss",
+    "hysteresis_loss",
+    "excess_loss",
+    "iron_loss",
+    "low_pass_trajectory",
+    "deadbeat_tracking",
+    "add_efficiency_map",
+]

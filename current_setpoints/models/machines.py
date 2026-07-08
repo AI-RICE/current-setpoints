@@ -8,11 +8,6 @@ import torch
 
 
 def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
-    """
-    Anti-symmetric block-diagonal J matrix for n_harmonics dq subspaces.
-    Block h (1st, 3rd, 5th, ...) has the 2x2 form [[0, -h], [h, 0]].
-    Shared by PMSM and IM — identical formula in both BaseMachine and BaseMachineIM.
-    """
     dim = 2 * n_harmonics
     J = np.zeros((dim, dim))
     for i in range(n_harmonics):
@@ -23,43 +18,18 @@ def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
 
 
 class FluxModel(ABC):
-    """
-    Abstract flux linkage provider for machines with permanent-magnet flux.
-
-    Encapsulates both the flux vector λ(ω, i) and the incremental inductance
-    L = ∂λ/∂i together, because L is always derived from the same source as λ
-    (constant arrays, FEM table, or neural network). cross_coupling (J) is
-    magnetic geometry and lives here alongside flux and L.
-
-    A single flux vector is used for both the voltage (back-EMF) and torque
-    equations — they describe the same physical PM flux linkage.
-
-    Not used by IM — induction motors have no PM flux and implement the
-    voltage equation directly on the drive class.
-    """
-
     cross_coupling: np.ndarray  # J — anti-symmetric rotation/coupling matrix
 
     @abstractmethod
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        """Returns the PM flux vector used by both the voltage and torque equations."""
+        pass
 
     @abstractmethod
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
-        """
-        Returns L = ∂λ/∂i.
-        For constant models omega and curr_dq are ignored.
-        For LUT / neural models both are used.
-        """
+        pass
 
 
 class ConstantFlux(FluxModel):
-    """
-    Flux provider for PMSM with constant (linear) magnetics.
-    All arrays are stored directly; omega and curr_dq are ignored by both methods.
-    Replaces parameters/flux.py: Flux, ConstantFlux, Flux_IEEEMachine2.
-    """
-
     def __init__(
         self,
         flux_pm: np.ndarray,
@@ -77,18 +47,44 @@ class ConstantFlux(FluxModel):
         return self.L_stat
 
 
+class NeuralFlux(FluxModel):
+    def __init__(
+        self,
+        net: Any,  # NeuralFluxPredictor
+        scaler: Any,  # sklearn StandardScaler
+        device: torch.device,
+        L_stat: np.ndarray,
+        cross_coupling: np.ndarray,
+    ) -> None:
+        self.net = net
+        self.scaler = scaler
+        self.device = device
+        self.L_stat = np.asarray(L_stat)
+        self.cross_coupling = np.asarray(cross_coupling)
+        self._scaler_mean = torch.from_numpy(scaler.mean_).float().to(device)
+        self._scaler_scale = torch.from_numpy(scaler.scale_).float().to(device)
+
+    def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        X = self.scaler.transform(np.hstack(([omega], curr_dq)).reshape(1, -1))
+        with torch.no_grad():
+            out = self.net(torch.from_numpy(X).float().to(self.device))
+        return out.cpu().numpy().reshape(-1)
+
+    def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
+        if curr_dq is None:
+            curr_dq = np.zeros(self.L_stat.shape[0])
+        x_raw = torch.tensor(np.hstack(([omega], curr_dq)), dtype=torch.float32, device=self.device)
+
+        def f(x: torch.Tensor) -> torch.Tensor:
+            x_normed = ((x - self._scaler_mean) / self._scaler_scale).unsqueeze(0)
+            return self.net(x_normed).squeeze(0)
+
+        jac = torch.autograd.functional.jacobian(f, x_raw)  # (dim, 1 + dim): d(flux_j)/d(x_k)
+        d_flux_d_i = jac[:, 1:].detach().cpu().numpy()
+        return self.L_stat + d_flux_d_i
+
+
 class DriveModel(ABC):
-    """
-    Self-contained drive model. Encapsulates all physics for one machine type.
-
-    Subclasses assign all attributes in their __init__ directly.
-    Limits (curr_max, volt_max, omega_max) are not set by default;
-    call set_max_pars() before any optimizer reads them.
-
-    voltage_operator, bemf_dq, and inductance are abstract — PMSM implements
-    them via a FluxModel; IM implements them directly with its own rotor coupling.
-    """
-
     # identity
     n_phases: int
     n_harmonics: int
@@ -106,44 +102,29 @@ class DriveModel(ABC):
     k_v: float  # eddy-type iron-loss coefficient (ModelLossesSubstitution1)
     k_h: float  # hysteresis-type iron-loss coefficient
 
-    
     @abstractmethod
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        """
-        Returns the matrix U such that u_dq = U @ i_dq + bemf_dq(omega, curr_dq).
-        Shape (dim, dim).
-        """
+        pass
 
     @abstractmethod
     def bemf_dq(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        """
-        Back-EMF vector in the dq frame: ω·J·flux_volt(ω, i).
-        Zero for IM (no PM flux).
-        """
+        pass
 
     @abstractmethod
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
-        """L = ∂λ/∂i at the given operating point."""
+        pass
 
     # mechanical
 
     @abstractmethod
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
-        """Exact pointwise electromagnetic torque [Nm]."""
+        pass
 
     @abstractmethod
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
-        """Multi-start candidate current vectors for the optimizer."""
-
+        pass
 
     def torque_quadratic(self, omega: float) -> tuple[np.ndarray, np.ndarray, float]:
-        """
-        Returns (A, b, c) such that T(i) ≈ i^T A i + b^T i + c.
-        Fitted by least squares from self.torque() samples.
-        Exact for PMSM/IM (torque is truly quadratic in i); best-fit surrogate for neural.
-        Faithful to dynamic/fourier_optimizer.extract_quadratic_torque
-        (seed 0, scale 8.0, n=300, A returned symmetric).
-        """
         dim = self.dim
         # Use the legacy global RNG with state save/restore to avoid numpy
         # RNG-constructor ABC recursion in older numpy versions.
@@ -166,12 +147,8 @@ class DriveModel(ABC):
         return A, b, c
 
     def iron_loss(self, omega: float, volt_dq: np.ndarray) -> float:
-        """
-        Iron-loss torque correction M_Fe = k_v·f_v + k_h·f_h.
-        ModelLossesSubstitution1 formula. Post-hoc benchmarking only.
-        Faithful to ModelLossesSubstitution1.iron_loss.
-        """
         from ..utils.loss_fit import substitution_loss_features  # lazy — avoids circular import
+
         f_v, f_h = substitution_loss_features(omega, volt_dq, self.n_ppairs)
         return float(self.k_v * f_v + self.k_h * f_h)
 
@@ -181,27 +158,7 @@ class DriveModel(ABC):
         self.omega_max = omega_max
 
 
-
 class PMSM5Phase(DriveModel):
-    """
-    5-phase PMSM — IEEEMachine2 prototype.
-
-    Parameters:
-        n_phases=5, n_ppairs=8
-        R_stat = diag([0.0191, 0.0514, 0.0805, 0.0801]) Ω
-        L_stat = 1e-3 * [[...]] H
-        flux_pm — single PM flux vector [d1, q1, d3, q3], identified by
-            joint least squares against measured voltage and torque in
-            data/aggregated_file_means.csv (see utils.flux_fit.fit_pm_flux).
-
-    Torque (faithful to ModelAnalytical.calculate_torque):
-        T = i^T A i + 2 b^T i
-        A = (m·pp/4) · (J @ L + L @ J^T)
-        b = (m·pp/4) · (J @ flux_pm)
-        Both computed per-call — L and flux_pm will be ω- and i-dependent
-        for LUT / neural flux providers.
-    """
-
     def __init__(self) -> None:
         self.n_phases = 5
         self.n_harmonics = 2
@@ -240,11 +197,6 @@ class PMSM5Phase(DriveModel):
         return self.flux.inductance(omega, curr_dq)
 
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
-        """
-        T = i^T A i + 2 b^T i.
-        A = (m·pp/4) · (J @ L + L @ J^T),  b = (m·pp/4) · (J @ flux_pm).
-        Faithful to ModelAnalytical.calculate_torque.
-        """
         flux_pm = self.flux.flux(omega, curr_dq)
         L = self.flux.inductance(omega, curr_dq)
         J = self.flux.cross_coupling
@@ -254,12 +206,6 @@ class PMSM5Phase(DriveModel):
         return float(curr_dq @ A @ curr_dq + 2 * b @ curr_dq)
 
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
-        """
-        PMSM multi-start seeds.
-        Warm start augments rather than replaces — different points converge
-        from different seeds; replacing the default can lose the only working seed.
-        Faithful to BaseTorqueModel.get_candidates.
-        """
         dim = self.dim
         candidates: list[np.ndarray] = []
         default = np.zeros(dim)
@@ -278,26 +224,6 @@ class PMSM5Phase(DriveModel):
 
 
 class IM9Phase(DriveModel):
-    """
-    9-phase induction motor — 15 kW laboratory prototype.
-
-    Parameters from Laksar et al. (IM_TIA draft, 2025), Table I:
-        n_phases=9, n_ppairs=2, n_harmonics=2
-        R_s = 5.0 Ω
-        R_r = diag([1.54, 1.54, 1.57, 1.57]) Ω
-        L_mu = 1e-3 · diag([496, 496, 58.2, 58.2]) H
-        L_s_sigma = 1e-3 · diag([15.1, 15.1, 13.6, 13.6]) H
-        L_r_sigma = 1e-3 · diag([53.3, 53.3, 33.4, 33.4]) H
-
-    No PM flux — voltage equation and torque implemented directly.
-    k_ir and slip_from_dq_foc live on this class (no FluxModel).
-
-    Torque (faithful to ModelIMAnalytical.calculate_torque):
-        T = i_s^T A(omega_r) i_s
-        A(omega_r) = (m·pp/2) · J · L_mu · k_ir(omega_r)
-        Note coefficient /2, not /4 as in PMSM — intentional per IM_TIA.
-    """
-
     def __init__(self) -> None:
         self.n_phases = 9
         self.n_harmonics = 2
@@ -318,15 +244,7 @@ class IM9Phase(DriveModel):
         self._L_r = self._L_mu + L_r_sigma
         self._cross_coupling = _build_cross_coupling(self.n_harmonics)
 
-    # ── IM-specific magnetics ─────────────────────────────────────────────────
-
     def k_ir(self, omega_r: float) -> np.ndarray:
-        """
-        Full dim×dim block-diagonal k_ir(omega_r) matrix assembled from
-        per-harmonic 2x2 blocks.
-        Per Laksar et al. (IM_TIA draft, 2025), eq. (kir_matrix).
-        Faithful to parameters/im_coupling.k_ir_matrix.
-        """
         K = np.zeros((self.dim, self.dim))
         for i in range(self.n_harmonics):
             h = 2 * i + 1
@@ -338,16 +256,6 @@ class IM9Phase(DriveModel):
 
     @staticmethod
     def _k_ir_block(omega_r: float, L_mu_h: float, L_r_h: float, R_r_h: float, h: int) -> np.ndarray:
-        """
-        2x2 k_ir block for harmonic h at rotor slip frequency omega_r.
-
-            k_ir^h = h·omega_r·L_mu^h / D · [[-h·omega_r·L_r^h,  R_r^h      ],
-                                               [-R_r^h,           -h·omega_r·L_r^h]]
-            D = (R_r^h)^2 + (h·omega_r·L_r^h)^2
-
-        Returns zero matrix when D == 0 (synchronous speed — no rotor current).
-        Faithful to parameters/im_coupling.k_ir_block.
-        """
         h_omega_r = h * omega_r
         denom = R_r_h**2 + (h_omega_r * L_r_h) ** 2
         if denom == 0.0:
@@ -361,55 +269,30 @@ class IM9Phase(DriveModel):
         )
 
     def slip_from_dq_foc(self, curr_dq: np.ndarray, eps: float = 1e-9) -> float:
-        """
-        First-harmonic rotor-flux-orientation slip law:
-            omega_r = (R_r^1 / L_r^1) * (i_sd^1 / i_sq^1)
-
-        Returns 0 when |i_sq^1| < eps (zero-torque / standstill limit).
-        Faithful to parameters/im_coupling.slip_from_dq_foc.
-        """
         i_sd_1 = curr_dq[0]
         i_sq_1 = curr_dq[1]
         if abs(i_sq_1) < eps:
             return 0.0
         return (self._R_r[0, 0] / self._L_r[0, 0]) * (i_sd_1 / i_sq_1)
 
-    # ── facade ───────────────────────────────────────────────────────────────
-
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        """R_s + ω·J·L_eff(omega_r),  L_eff = L_s + L_mu·k_ir(omega_r)."""
         return self.R_stat + omega * self._cross_coupling @ self.inductance(omega, curr_dq)
 
     def bemf_dq(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        """Zero — IM has no permanent-magnet flux."""
         return np.zeros(self.dim)
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
-        """
-        L_eff = L_s + L_mu · k_ir(omega_r).
-        Returns L_s when curr_dq is None (static approximation).
-        """
         if curr_dq is None:
             return self._L_s
         omega_r = self.slip_from_dq_foc(curr_dq)
         return self._L_s + self._L_mu @ self.k_ir(omega_r)
 
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
-        """
-        T = i_s^T A(omega_r) i_s,  A(omega_r) = (m·pp/2) · J · L_mu · k_ir(omega_r).
-        omega accepted for API parity but does not enter the torque expression directly.
-        Faithful to ModelIMAnalytical.calculate_torque and _build_A.
-        """
         omega_r = self.slip_from_dq_foc(curr_dq)
         A = (self.n_phases * self.n_ppairs / 2.0) * (self._cross_coupling @ self._L_mu @ self.k_ir(omega_r))
         return float(curr_dq @ A @ curr_dq)
 
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
-        """
-        IM multi-start seeds. Seven seeds to avoid slip-law degeneracy
-        when i_sq^1 -> 0 and to cover balanced MTPA, FW, and 3rd-harmonic kick.
-        Faithful to ModelIMAnalytical.get_candidates.
-        """
         dim = self.dim
         I = self.curr_max
         candidates: list[np.ndarray] = []
@@ -438,12 +321,6 @@ class IM9Phase(DriveModel):
         return candidates
 
     def copper_loss(self, omega: float, curr_dq: np.ndarray) -> float:
-        """
-        Stator + rotor copper loss.
-            P_stator = (m/2) · R_s · ||i_s||^2
-            P_rotor  = (m/2) · i_r^T · R_r · i_r,   i_r = k_ir(omega_r) · i_s
-        Faithful to efficiency.py add_efficiency_map.
-        """
         R_s = self.R_stat[0, 0]
         P_stator = self.k_phase * R_s * float(curr_dq @ curr_dq)
         omega_r = self.slip_from_dq_foc(curr_dq)
@@ -453,12 +330,6 @@ class IM9Phase(DriveModel):
 
 
 class NeuralPMSM5Phase(PMSM5Phase):
-    """
-    PMSM5Phase with neural torque residual correction.
-    torque() = analytical baseline (from PMSM5Phase) + neural residual.
-    Faithful to ModelNeural.calculate_torque.
-    """
-
     def __init__(
         self,
         net: Any,  # NeuralTorquePredictor
@@ -474,8 +345,18 @@ class NeuralPMSM5Phase(PMSM5Phase):
         return super().torque(omega, curr_dq) + self._predict(omega, curr_dq)
 
     def _predict(self, omega: float, curr_dq: np.ndarray) -> float:
-        """NumPy ↔ PyTorch bridge for a single (omega, curr_dq) inference call."""
         X = self._scaler.transform(np.hstack(([omega], curr_dq)).reshape(1, -1))
         with torch.no_grad():
             residual = self._net(torch.from_numpy(X).float().to(self._device))
         return float(residual.cpu().numpy().item())
+
+
+class NeuralFluxPMSM5Phase(PMSM5Phase):
+    def __init__(
+        self,
+        net: Any,  # NeuralFluxPredictor
+        scaler: Any,  # sklearn StandardScaler
+        device: torch.device,
+    ) -> None:
+        super().__init__()
+        self.flux: FluxModel = NeuralFlux(net, scaler, device, self.flux.L_stat, self.flux.cross_coupling)

@@ -1,293 +1,173 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import torch
 
-from ..simulation import MachineData, Transform
-from .models import ModelAnalytical, ModelNeural
-from .optimizer import MotorOptimizer
+from ..models.forward_model import ForwardModel
+from .optimizer import BaseOptimizer
+
+if TYPE_CHECKING:
+    from ..models.machines import NeuralPMSM5Phase
 
 
-def grid_to_data(grid: dict[str, Any], k_skip: int) -> MachineData:
-    """
-    Converts a grid dictionary into a structured MachineData object.
-
-    Args:
-        grid: Dictionary containing optimization results and vectors.
-        k_skip: Step size for downsampling the grid; forwarded to
-            ``MachineData.select_k``. A value of 1 keeps every sample.
-
-    Returns:
-        MachineData: Encapsulated motor data for training or analysis.
-    """
-    torq = grid["vec_torq"]
-    omega = grid["const_mech_speed"] * grid["vec_omega"]
-    return MachineData(
-        torq=torq,
-        omega=omega,
-        segments=grid["grid_segments"],
-        curr_dq_grid=grid["curr_dq_grid"],
-        k_skip=k_skip,
-    )
+def count_peaks(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq: np.ndarray,
+    rel_tol: float = 1e-3,
+) -> tuple[int, int]:
+    return fwd.count_peaks(omega, curr_dq, rel_tol)
 
 
 def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarray]:
-    """
-    Initializes empty 2D and 3D matrices for all physical parameters in the motor grid.
-    """
-    keys = [
-        "grid_curr_peak",
-        "grid_volt_peak",
-        "grid_curr_ang_diff",
-        "grid_volt_ang_diff",
-        "grid_segments",
-    ]
-
-    grid: dict[str, np.ndarray] = {k: np.full((n_torq, n_omega), np.nan) for k in keys}
-
+    grid: dict[str, np.ndarray] = {
+        k: np.full((n_torq, n_omega), np.nan) for k in ("grid_curr_peak", "grid_volt_peak", "grid_segments")
+    }
     grid["vec_torq_max"] = np.full((1, n_omega), np.nan)
     grid["curr_dq_grid"] = np.full((dim, n_torq, n_omega), np.nan)
-
     return grid
 
 
 def _fill_grid_point(
     grid: dict[str, Any],
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
-    vec_curr_dq: np.ndarray,
+    curr_dq: np.ndarray,
     idx_torq: int,
     idx_omega: int,
 ) -> None:
-    """
-    Calculates physical metrics for a specific DQ current vector and stores
-    them in the grid.
+    curr_peak, volt_peak = fwd.peak_vals(omega, curr_dq)
+    n_curr, n_volt = fwd.count_peaks(omega, curr_dq)
 
-    Args:
-        grid: The results dictionary to update.
-        transform: The Transform instance used for voltage/peak calculations.
-        omega: Electrical speed [rad/s] at this operating point.
-        vec_curr_dq: DQ current vector for this operating point.
-        idx_torq: Current torque index.
-        idx_omega: Current speed index.
-    """
-    curr_peak, curr_ang_diff, volt_peak, volt_ang_diff = transform.get_max_vals(omega, vec_curr_dq)
-
-    n_curr_peaks, n_volt_peaks = transform.count_peaks(omega, vec_curr_dq)
-
-    grid["curr_dq_grid"][:, idx_torq, idx_omega] = vec_curr_dq
-
+    grid["curr_dq_grid"][:, idx_torq, idx_omega] = curr_dq
     grid["grid_curr_peak"][idx_torq, idx_omega] = curr_peak
     grid["grid_volt_peak"][idx_torq, idx_omega] = volt_peak
-    grid["grid_curr_ang_diff"][idx_torq, idx_omega] = curr_ang_diff
-    grid["grid_volt_ang_diff"][idx_torq, idx_omega] = volt_ang_diff
-
-    grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt_peaks + n_curr_peaks
+    grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt + n_curr
 
 
 def calculate_grid(
-    optimizer: MotorOptimizer,
-    transform: Transform,
+    optimizer: BaseOptimizer,
+    fwd: ForwardModel,
     opts: dict[str, Any],
     mode: str = "standard",
     dict_grid_corr: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Unified grid calculation engine for motor mapping.
-
-    Modes:
-      - "standard": Generates a new grid (Baseline or Compensated) using warm-starts.
-      - "recalculated": Re-runs an existing grid through a different model/optimizer.
-
-    Args:
-        optimizer: MotorOptimizer instance containing the torque model.
-        transform: Transform instance handling speed-dependent matrices.
-        opts: Configuration dictionary with keys:
-            ``n_torq`` (int), ``n_omega`` (int),
-            ``torq_min`` (float, Nm),
-            ``omega_min`` (float, mechanical RPM; ``machine.omega_max`` is
-            used as the upper bound and is also in mechanical RPM).
-        mode: Calculation strategy choice.
-        dict_grid_corr: Baseline result dictionary required for "recalculated" mode.
-
-    Returns:
-        Dict: Completed motor grid dictionary.
-    """
     if mode not in ("standard", "recalculated"):
-        raise ValueError("Mode must be either 'standard' or 'recalculated'")
+        raise ValueError(f"mode must be 'standard' or 'recalculated', got {mode!r}")
+    if mode == "recalculated" and dict_grid_corr is None:
+        raise ValueError("dict_grid_corr must be provided for recalculated mode.")
 
-    print(f"Starting {mode.capitalize()} Grid Calculation...")
+    drive = fwd.drive
+    dim = drive.dim
+    const_mech_speed = 30.0 / (np.pi * drive.n_ppairs)
+    omega_probe = float(opts.get("omega_probe", 0.0))
 
-    machine = transform.machine
-    dim = machine.n_phases - 1
-
-    grid: dict[str, Any] = {}
-    grid["const_mech_speed"] = 30 / (np.pi * machine.n_ppairs)
-
-    torq_max_global: float = 0.0
-    grid_torq_targets: Any = None
+    grid: dict[str, Any] = {"const_mech_speed": const_mech_speed}
 
     if mode == "standard":
-        _, torq_max_global, _ = optimizer.maximize_torque(omega=0.0, transform=transform)
+        if "torq_max" in opts and opts["torq_max"] is not None:
+            torq_max_global = float(opts["torq_max"])
+        else:
+            sol = optimizer.maximize_torque(omega_probe)
+            if not sol.success:
+                raise RuntimeError(
+                    f"Global T_max probe at omega={omega_probe} rad/s failed. "
+                    "Adjust omega_probe in opts or extend seeds."
+                )
+            torq_max_global = sol.torque
 
         n_torq, n_omega = opts["n_torq"], opts["n_omega"]
         grid["vec_torq"] = np.linspace(opts["torq_min"], torq_max_global, n_torq)
         grid["vec_omega"] = np.linspace(
-            opts["omega_min"] / grid["const_mech_speed"],
-            machine.omega_max / grid["const_mech_speed"],
+            opts["omega_min"] / const_mech_speed,
+            drive.omega_max / const_mech_speed,
             n_omega,
         )
+        grid_torq_targets = None
     else:
-        if dict_grid_corr is None:
-            raise ValueError("dict_grid_corr must be provided for recalculated mode.")
-        n_torq = len(dict_grid_corr["vec_torq"])
-        n_omega = len(dict_grid_corr["vec_omega"])
-        grid["vec_torq"] = dict_grid_corr["vec_torq"]
-        grid["vec_omega"] = dict_grid_corr["vec_omega"]
-        grid_torq_targets = dict_grid_corr["grid_torq_neural"]
+        n_torq = len(dict_grid_corr["vec_torq"])  # type: ignore[index]
+        n_omega = len(dict_grid_corr["vec_omega"])  # type: ignore[index]
+        grid["vec_torq"] = dict_grid_corr["vec_torq"]  # type: ignore[index]
+        grid["vec_omega"] = dict_grid_corr["vec_omega"]  # type: ignore[index]
+        grid_torq_targets = dict_grid_corr["grid_torq_neural"]  # type: ignore[index]
         grid["grid_torq_neural"] = grid_torq_targets
+        torq_max_global = float(grid["vec_torq"][-1])
 
     grid.update(_init_grid_arrays(dim, n_torq, n_omega))
 
-    # Warm start for maximize_torque, carried across speeds. The max-torque
-    # locus is continuous in omega, so seeding each speed with the previous
-    # speed's solution lets SLSQP converge at the stiff field-weakening corner
-    # (where current and voltage limits are simultaneously active and the fixed
-    # cold-start candidates fail to converge). None for the first speed.
-    vec_curr_max_prev: np.ndarray | None = None
+    print(f"Starting {mode} grid: {n_torq} torques × {n_omega} speeds")
+
+    # Warm-start for maximize_torque carried across speeds (FW corner convergence)
+    prev_max_curr: np.ndarray | None = None
 
     for idx_omega in range(n_omega):
-        omega_target = grid["vec_omega"][idx_omega]
-        print(f"Calculating: Omega step {idx_omega + 1}/{n_omega} ({omega_target * grid['const_mech_speed']:.1f} RPM)")
+        omega = float(grid["vec_omega"][idx_omega])
+        rpm = omega * const_mech_speed
+        print(f"  Speed {idx_omega + 1}/{n_omega}: {rpm:.1f} RPM")
 
-        vec_curr_max, torq_max_local, _ = optimizer.maximize_torque(
-            omega=omega_target, transform=transform, vec_curr_guess=vec_curr_max_prev
-        )
-        if np.isfinite(torq_max_local):
-            vec_curr_max_prev = vec_curr_max
+        # Per-speed T_max probe (warm-started from previous speed)
+        sol_max = optimizer.maximize_torque(omega, guess=prev_max_curr)
+        if sol_max.success:
+            torq_max_local = sol_max.torque
+            prev_max_curr = sol_max.curr_dq
         else:
-            # SLSQP failed even with the warm start: use a ceiling that won't
-            # wrongly skip cells. In "standard" mode that's the global max; in
-            # "recalculated" mode torq_max_global is unset (0.0) and the targets
-            # are pre-supplied, so use +inf to attempt every cell (minimize_current
-            # fills with the warm-start guess if it can't converge). Either way
-            # avoids a blank vertical stripe in the maps.
+            # Fall back to global estimate so cells aren't silently skipped
             torq_max_local = torq_max_global if mode == "standard" else float("inf")
         grid["vec_torq_max"][0, idx_omega] = torq_max_local
 
-        vec_curr_dq_prev = np.zeros(dim)
-        vec_curr_dq_prev[0] = 1.0
+        # Initial warm-start for the torque sweep: first seed from drive
+        prev_curr = drive.seeds()[0]
 
         for idx_torq in range(n_torq):
             if mode == "standard":
-                torq_target = grid["vec_torq"][idx_torq]
-                vec_curr_dq_guess = vec_curr_dq_prev.copy()
-
-                if torq_target > torq_max_local or torq_target > torq_max_global:
+                torq_target = float(grid["vec_torq"][idx_torq])
+                guess = prev_curr.copy()
+                if torq_target > min(torq_max_local, torq_max_global):
                     break
-
             else:
-                assert dict_grid_corr is not None
-                torq_target = grid_torq_targets[idx_torq, idx_omega]
-
-                vec_curr_dq_guess = dict_grid_corr["curr_dq_grid"][:, idx_torq, idx_omega]
-
-                if np.isnan(torq_target) or np.any(np.isnan(vec_curr_dq_guess)) or torq_target > torq_max_local:
+                torq_target = float(grid_torq_targets[idx_torq, idx_omega])  # type: ignore[index]
+                corr_curr = dict_grid_corr["curr_dq_grid"][:, idx_torq, idx_omega]  # type: ignore[index]
+                if np.isnan(torq_target) or np.any(np.isnan(corr_curr)) or torq_target > torq_max_local:
                     continue
+                guess = corr_curr
 
-            vec_curr_dq_opt, success = optimizer.minimize_current(
-                torq_target=torq_target,
-                omega=omega_target,
-                transform=transform,
-                vec_curr_guess=vec_curr_dq_guess,
-            )
+            sol = optimizer.minimize_current(torq_target, omega, guess=guess)
 
             if mode == "standard":
-                if success:
-                    vec_curr_dq_prev = vec_curr_dq_opt
-                    _fill_grid_point(
-                        grid,
-                        transform,
-                        omega_target,
-                        vec_curr_dq_opt,
-                        idx_torq,
-                        idx_omega,
-                    )
+                if sol.success:
+                    prev_curr = sol.curr_dq
+                    _fill_grid_point(grid, fwd, omega, sol.curr_dq, idx_torq, idx_omega)
             else:
-                vec_curr_dq_final = vec_curr_dq_opt if success else vec_curr_dq_guess
-                _fill_grid_point(
-                    grid,
-                    transform,
-                    omega_target,
-                    vec_curr_dq_final,
-                    idx_torq,
-                    idx_omega,
-                )
+                # Recalculated: use optimizer result if converged, else keep baseline
+                curr_final = sol.curr_dq if sol.success else guess
+                _fill_grid_point(grid, fwd, omega, curr_final, idx_torq, idx_omega)
 
-    print(f"{mode.capitalize()} Grid Calculation Complete.")
+    print(f"{mode.capitalize()} grid complete.")
     return grid
 
 
 def get_correction_grid(
     dict_grid: dict[str, Any],
-    model: ModelNeural,
+    neural: "NeuralPMSM5Phase",
 ) -> dict[str, Any]:
-    """
-    Computes the correction grid by predicting torque using the neural torque
-    model on the analytical baseline currents.
+    print("Computing neural correction grid...")
 
-    The new ``ModelNeural`` already returns (analytical + neural-residual) from
-    its ``calculate_torque`` method, so this function simply walks every valid
-    grid cell and asks the model for the total predicted torque. The neural
-    residual itself is also computed batched for speed.
+    out = {k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()}
 
-    Args:
-        dict_grid: Dictionary containing the baseline analytical grid.
-        model: A ``ModelNeural`` instance combining analytical + residual logic.
-            It exposes ``neural_model``, ``scaler``, ``device``, plus
-            ``calculate_torque(omega, curr_dq)`` for the analytical part.
-
-    Returns:
-        Dict: A copy of ``dict_grid`` with an added ``grid_torq_neural`` field
-        containing the model's torque prediction at every valid cell.
-    """
-    print("Computing ML Correction Grid...")
-
-    dict_grid_corr = {k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in dict_grid.items()}
-
-    dim, n_torq, n_omega = dict_grid_corr["curr_dq_grid"].shape
+    dim, n_torq, n_omega = dict_grid["curr_dq_grid"].shape
+    vec_omega = dict_grid["vec_omega"]
+    const_mech_speed = dict_grid["const_mech_speed"]
     grid_torq_neural = np.full((n_torq, n_omega), np.nan)
 
-    omega_2d = np.tile(dict_grid_corr["vec_omega"], (n_torq, 1))
+    for idx_omega in range(n_omega):
+        omega = float(vec_omega[idx_omega])
+        for idx_torq in range(n_torq):
+            curr = dict_grid["curr_dq_grid"][:, idx_torq, idx_omega]
+            if np.any(np.isnan(curr)):
+                continue
+            grid_torq_neural[idx_torq, idx_omega] = neural.torque(omega, curr)
 
-    curr_flat = dict_grid_corr["curr_dq_grid"].reshape(dim, -1)
-    omega_flat = omega_2d.flatten()
-
-    valid_mask = ~np.isnan(curr_flat[0, :])
-
-    if np.any(valid_mask):
-        omega_valid = omega_flat[valid_mask]
-        curr_valid = curr_flat[:, valid_mask]
-        n_valid = omega_valid.size
-
-        X_in = np.vstack([omega_valid, curr_valid]).T
-        X_scaled = model.scaler.transform(X_in)
-        X_tensor = torch.from_numpy(X_scaled).float().to(model.device)
-
-        with torch.no_grad():
-            residuals = model.neural_model(X_tensor).cpu().numpy().flatten()
-
-        analyticals = np.empty(n_valid, dtype=np.float64)
-        for i in range(n_valid):
-            analyticals[i] = ModelAnalytical.calculate_torque(model, float(omega_valid[i]), curr_valid[:, i])
-
-        torq_neural_flat = np.full(n_torq * n_omega, np.nan)
-        torq_neural_flat[valid_mask] = analyticals + residuals
-
-        grid_torq_neural = torq_neural_flat.reshape(n_torq, n_omega)
-
-    dict_grid_corr["grid_torq_neural"] = grid_torq_neural
-
-    return dict_grid_corr
+    out["grid_torq_neural"] = grid_torq_neural
+    print("Neural correction grid complete.")
+    return out
