@@ -1,4 +1,4 @@
-"""Shared fixtures for current_setpoints_new tests."""
+"""Shared fixtures for current_setpoints tests."""
 from __future__ import annotations
 
 import sys
@@ -10,9 +10,9 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from current_setpoints_new.models.machines import PMSM5Phase, IM9Phase
-from current_setpoints_new.models.forward_model import Fault, ForwardModel
-from current_setpoints_new.optimization.optimizer import StaticOptimizer
+from current_setpoints.models.machines import PMSM5Phase, IM9Phase
+from current_setpoints.models.forward_model import Fault, ForwardModel
+from current_setpoints.optimization.optimizer import StaticOptimizer
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0

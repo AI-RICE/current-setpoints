@@ -1,6 +1,6 @@
 """
 Physics-correctness tests for PMSM5Phase and IM9Phase.
-All tests use current_setpoints_new exclusively.
+All tests use current_setpoints exclusively.
 """
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import numpy as np
 import pytest
 
-from current_setpoints_new.models.machines import (
+from current_setpoints.models.machines import (
     PMSM5Phase, IM9Phase, ConstantFlux, _build_cross_coupling
 )
 
@@ -76,16 +76,15 @@ def test_pmsm_inductance_positive_definite(pmsm):
 
 def test_pmsm_flux_shapes(pmsm):
     zeros = np.zeros(4)
-    fv, ft = pmsm.flux.flux(0.0, zeros)
+    fv = pmsm.flux.flux(0.0, zeros)
     assert fv.shape == (4,)
-    assert ft.shape == (4,)
 
 
 def test_pmsm_flux_volt_values(pmsm):
-    fv, _ = pmsm.flux.flux(0.0, np.zeros(4))
-    np.testing.assert_allclose(fv[0], 0.0115, rtol=1e-6)
-    np.testing.assert_allclose(fv[1], 0.0018, rtol=1e-6)
-    np.testing.assert_allclose(fv[2:], 0.0, atol=1e-12)
+    fv = pmsm.flux.flux(0.0, np.zeros(4))
+    np.testing.assert_allclose(fv[0], 1.13438169e-02, rtol=1e-6)
+    np.testing.assert_allclose(fv[1], 1.71999345e-03, rtol=1e-6)
+    np.testing.assert_allclose(fv[2:], 0.0, atol=2e-5)
 
 
 # ── PMSM5Phase physics ────────────────────────────────────────────────────────

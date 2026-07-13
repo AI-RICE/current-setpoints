@@ -1,18 +1,20 @@
 """
 Tests for calculate_grid, grid_to_data, MachineData, Waveforms, and evaluate.
-All use current_setpoints_new exclusively.
+All use current_setpoints exclusively.
 """
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
 import pytest
+import torch
+from torch import nn
 
-from current_setpoints_new.models.machines import PMSM5Phase, IM9Phase
-from current_setpoints_new.models.forward_model import ForwardModel, Fault
-from current_setpoints_new.optimization.optimizer import StaticOptimizer
-from current_setpoints_new.optimization.grid import calculate_grid
-from current_setpoints_new.optimization.data import (
+from current_setpoints.models.machines import PMSM5Phase, IM9Phase, NeuralPMSM5Phase
+from current_setpoints.models.forward_model import ForwardModel, Fault
+from current_setpoints.optimization.optimizer import StaticOptimizer
+from current_setpoints.optimization.grid import calculate_grid, get_correction_grid
+from current_setpoints.optimization.data import (
     MachineData, Waveforms, evaluate, grid_to_data
 )
 
@@ -250,3 +252,86 @@ def test_evaluate_volt_dq_consistent(fwd):
     w = evaluate(fwd, omega, curr)
     expected_vdq = fwd.volt_dq(omega, curr)
     np.testing.assert_allclose(w.volt_dq, expected_vdq, rtol=1e-12)
+
+
+# ── calculate_grid — neural drive + get_correction_grid + recalculated mode ──
+# Ported from the old-layout test_grid.py (ModelNeural wrapper is gone in the
+# new API: a NeuralPMSM5Phase drive is used directly as StaticOptimizer's fwd.drive).
+
+class DummyScaler:
+    """A fake scaler that just returns the input exactly as it is."""
+
+    def transform(self, X):
+        return X
+
+
+class DummyNet(nn.Module):
+    """A fake neural network that outputs a dummy torque residual."""
+
+    def forward(self, x_normed: torch.Tensor) -> torch.Tensor:
+        return torch.sum(x_normed, dim=1, keepdim=True)
+
+
+@pytest.fixture(scope="module")
+def neural_pmsm():
+    m = NeuralPMSM5Phase(net=DummyNet(), scaler=DummyScaler(), device=torch.device("cpu"))
+    m.set_max_pars(30.0, 13.0, 1800)
+    return m
+
+
+@pytest.fixture(scope="module")
+def fwd_neural(neural_pmsm):
+    return ForwardModel(neural_pmsm, n_theta=700)
+
+
+@pytest.fixture(scope="module")
+def static_opt_neural(fwd_neural):
+    return StaticOptimizer(fwd_neural, opts=SLSQP_OPTS)
+
+
+def test_calculate_grid_neural_runs_successfully(static_opt_neural, fwd_neural):
+    opts = {**GRID_OPTS_SMALL, "torq_min": 7.5}
+    grid = calculate_grid(static_opt_neural, fwd_neural, opts=opts, mode="standard")
+    assert isinstance(grid, dict)
+    assert grid["curr_dq_grid"].shape == (4, 2, 2)
+
+
+def test_get_correction_grid_adds_neural_torque(neural_pmsm):
+    dim, n_torq, n_omega = 4, 2, 2
+    curr_dq_grid = np.zeros((dim, n_torq, n_omega))
+    curr_dq_grid[:, 1, 1] = np.nan
+
+    mock_baseline_grid = {
+        "vec_torq": np.array([10.0, 20.0]),
+        "vec_omega": np.array([100.0, 200.0]),
+        "curr_dq_grid": curr_dq_grid,
+        "const_mech_speed": 1.0,
+    }
+
+    corr_grid = get_correction_grid(dict_grid=mock_baseline_grid, neural=neural_pmsm)
+
+    assert "grid_torq_neural" in corr_grid
+    assert corr_grid["grid_torq_neural"].shape == (n_torq, n_omega)
+    assert np.isnan(corr_grid["grid_torq_neural"][1, 1])
+    assert not np.isnan(corr_grid["grid_torq_neural"][0, 0])
+
+
+def test_calculate_grid_recalculated_runs_successfully(static_opt, fwd):
+    dim, n_torq, n_omega = fwd.drive.dim, 2, 2
+    mock_corr_grid = {
+        "vec_torq": np.array([10.0, 20.0]),
+        "vec_omega": np.array([1.0, 2.0]),
+        "grid_torq_neural": np.array([[9.5, 9.0], [19.5, 19.0]]),
+        "curr_dq_grid": np.zeros((dim, n_torq, n_omega)),
+    }
+
+    recalculated_grid = calculate_grid(
+        optimizer=static_opt,
+        fwd=fwd,
+        opts={},
+        mode="recalculated",
+        dict_grid_corr=mock_corr_grid,
+    )
+
+    assert recalculated_grid is not None
+    assert recalculated_grid["curr_dq_grid"].shape == (dim, n_torq, n_omega)

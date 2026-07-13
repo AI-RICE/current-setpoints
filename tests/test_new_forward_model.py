@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import numpy as np
 import pytest
 
-from current_setpoints_new.models.machines import PMSM5Phase
-from current_setpoints_new.models.forward_model import Fault, ForwardModel
+from current_setpoints.models.machines import PMSM5Phase
+from current_setpoints.models.forward_model import Fault, ForwardModel
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0
@@ -370,3 +370,38 @@ def test_volt_map_bv_zero_at_zero_speed(fwd):
     """bV is the BEMF offset — must be zero at ω=0."""
     _, _, bV = fwd.volt_map_at_theta(0, 0.0)
     np.testing.assert_allclose(bV, 0.0, atol=1e-14)
+
+
+# ── h_k^I / h_k^V regression — ported from the old-layout test_phase_voltage.py ──
+# (dynamic/phase_voltage.py's "unified per-phase voltage" fix is now built into
+# ForwardModel itself: _mat_dq_to_ph_all (voltage, inverse-Park, fault-independent)
+# vs _mat_curr_to_ph (current, reduced-Clarke under fault) — see docs/sota.md §3.)
+
+def test_volt_map_at_theta_matches_volt_ph_direct_evaluation(fwd):
+    """volt_map_at_theta (the per-angle linear map used by the dynamic
+    optimizers) must reconstruct exactly what volt_ph evaluates directly —
+    two code paths, same trajectory, bit-for-bit agreement."""
+    omega = 1100.0 * (np.pi / 30.0) * fwd.drive.n_ppairs
+    curr_dq = np.array([6.0, 18.0, 1.0, -0.5])
+    theta_idx = 123
+    gU, gL, bV = fwd.volt_map_at_theta(theta_idx, omega)
+    v_map = gU @ curr_dq + bV
+
+    _, _, volt_raw = fwd.volt_ph(omega, curr_dq)
+    v_direct = volt_raw[:, theta_idx]
+    np.testing.assert_allclose(v_map, v_direct, atol=1e-9)
+
+
+def test_open_phase_current_needs_reduced_clarke(fwd_f1):
+    """The fault's reduced-Clarke current map drops the open phase entirely
+    (curr_ph only reports the surviving phases) — but plain inverse-Park
+    would put decisively nonzero current there. Current realisation under
+    fault therefore cannot use inverse-Park, unlike voltage; the asymmetry
+    is physical, not a free convention choice."""
+    curr_dq = np.array([8.0, 20.0, 1.5, -2.0])
+    open_phase = fwd_f1.fault.open_phases[0]
+    assert open_phase not in fwd_f1.fault._kept
+
+    P_open = fwd_f1._mat_dq_to_ph_all[:, open_phase, :]
+    i_open_inverse_park = np.einsum("tj,j->t", P_open, curr_dq)
+    assert np.max(np.abs(i_open_inverse_park)) > 1.0
