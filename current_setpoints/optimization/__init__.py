@@ -1,11 +1,7 @@
-from .optimizer import (
-    ActiveSetOptimizer,
-    BaseOptimizer,
-    FourierOptimizer,
-    IndependentOptimizer,
-    Solution,
-    StaticOptimizer,
-)
+from .optimizer import BaseOptimizer, Solution, StaticOptimizer
+from .dynamic_optimizer import DynamicOptimizer, IndependentOptimizer
+from .active_set_optimizer import ActiveSetOptimizer
+from .fourier_optimizer import FourierOptimizer
 from .grid import calculate_grid, get_correction_grid
 from .data import MachineData, Waveforms, evaluate, grid_to_data
 from .efficiency import (
@@ -23,6 +19,7 @@ __all__ = [
     "Solution",
     "BaseOptimizer",
     "StaticOptimizer",
+    "DynamicOptimizer",
     "IndependentOptimizer",
     "ActiveSetOptimizer",
     "FourierOptimizer",

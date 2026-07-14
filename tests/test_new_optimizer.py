@@ -10,7 +10,7 @@ import pytest
 
 from current_setpoints.models.machines import PMSM5Phase, IM9Phase
 from current_setpoints.models.forward_model import Fault, ForwardModel
-from current_setpoints.optimization.optimizer import (
+from current_setpoints.optimization import (
     Solution,
     StaticOptimizer,
     IndependentOptimizer,
