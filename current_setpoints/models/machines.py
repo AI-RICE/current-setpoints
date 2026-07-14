@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -328,6 +329,42 @@ def neural_flux_pmsm5phase(
     machine = PMSMDrive(params, flux=flux)
     machine.set_max_pars(curr_max, volt_max, omega_max)
     return machine
+
+
+# Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
+# "consistent-L training" section for how it was produced): a single-hidden-layer MLP,
+# hidden_size=24, GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output flux_pm (dim=4).
+_WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
+_FLUX_NN_HIDDEN_SIZE = 24
+_FLUX_NN_ACTIVATION = "gelu"
+_FLUX_NN_INPUT_SIZE = 5
+_FLUX_NN_OUTPUT_SIZE = 4
+
+
+def ieee_machine2_trained_neural_flux(
+    *,
+    device: torch.device | None = None,
+    curr_max: float = 30.0,
+    volt_max: float = 13.0,
+    omega_max: float = 1800.0,
+) -> PMSMDrive:
+    """IEEE-Machine-2 with the trained neural flux model from ``weights/``
+    (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) loaded and composed in.
+    One-line equivalent of loading the net/scaler yourself and calling
+    ``neural_flux_pmsm5phase(net, scaler, device)``."""
+    from ..utils.neural_model import load_neural_flux_model  # lazy — avoids circular import
+
+    device = device if device is not None else torch.device("cpu")
+    net, scaler = load_neural_flux_model(
+        str(_WEIGHTS_DIR / "FluxNN_Weights.pth"),
+        str(_WEIGHTS_DIR / "FluxNN_Scaler.npy"),
+        hidden_size=_FLUX_NN_HIDDEN_SIZE,
+        input_size=_FLUX_NN_INPUT_SIZE,
+        output_size=_FLUX_NN_OUTPUT_SIZE,
+        device=device,
+        activation=_FLUX_NN_ACTIVATION,
+    )
+    return neural_flux_pmsm5phase(net, scaler, device, curr_max=curr_max, volt_max=volt_max, omega_max=omega_max)
 
 
 @dataclass
