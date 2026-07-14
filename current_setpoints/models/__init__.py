@@ -1,3 +1,5 @@
+from .forward_model import Fault, ForwardModel
+from .im_lut import IMDriveLUT, IMHarmonicParams, IMLUTParams, im9_prototype
 from .machines import (
     ConstantFlux,
     DriveModel,
@@ -8,9 +10,12 @@ from .machines import (
     NeuralPMSM5Phase,
     PMSM5Phase,
 )
-from .forward_model import Fault, ForwardModel
 
 __all__ = [
+    "IMDriveLUT",
+    "IMHarmonicParams",
+    "IMLUTParams",
+    "im9_prototype",
     "FluxModel",
     "ConstantFlux",
     "NeuralFlux",
