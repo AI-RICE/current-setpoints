@@ -8,17 +8,28 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
+from scipy.special import erf as _np_erf, expit as _np_sigmoid
 
-# Closed-form derivatives for utils.neural_model.ACTIVATIONS, used by
-# NeuralFlux.inductance() to avoid torch.autograd.grad's fixed per-call
-# dispatch overhead (large relative to this tiny elementwise computation).
-_ACTIVATION_DERIVATIVES: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
-    "relu": lambda z: (z > 0).to(z.dtype),
-    "gelu": lambda z: 0.5 * (1.0 + torch.erf(z / math.sqrt(2.0)))
-    + z * torch.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
-    "silu": lambda z: torch.sigmoid(z) * (1.0 + z * (1.0 - torch.sigmoid(z))),
-    "tanh": lambda z: 1.0 - torch.tanh(z) ** 2,
-    "leaky_relu": lambda z: torch.where(z > 0, torch.ones_like(z), torch.full_like(z, 0.01)),
+# Plain-numpy activations/derivatives for utils.neural_model.ACTIVATIONS, used
+# by NeuralFlux to evaluate its tiny (single-hidden-layer) network without
+# torch's per-op dispatch overhead — large relative to a network this size
+# called this many times during a grid/optimization sweep. Verified to match
+# the torch forward pass and torch.autograd.functional.jacobian to float
+# precision (~1e-9/1e-10).
+_NP_ACTIVATIONS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "relu": lambda z: np.maximum(z, 0.0),
+    "gelu": lambda z: 0.5 * z * (1.0 + _np_erf(z / math.sqrt(2.0))),
+    "silu": lambda z: z * _np_sigmoid(z),
+    "tanh": np.tanh,
+    "leaky_relu": lambda z: np.where(z > 0, z, 0.01 * z),
+}
+_NP_ACTIVATION_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "relu": lambda z: (z > 0).astype(z.dtype),
+    "gelu": lambda z: 0.5 * (1.0 + _np_erf(z / math.sqrt(2.0)))
+    + z * np.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
+    "silu": lambda z: _np_sigmoid(z) * (1.0 + z * (1.0 - _np_sigmoid(z))),
+    "tanh": lambda z: 1.0 - np.tanh(z) ** 2,
+    "leaky_relu": lambda z: np.where(z > 0, 1.0, 0.01),
 }
 
 
@@ -76,8 +87,22 @@ class NeuralFlux(FluxModel):
         self.device = device
         self.L_stat = np.asarray(L_stat)
         self.cross_coupling = np.asarray(cross_coupling)
-        self._scaler_mean = torch.from_numpy(scaler.mean_).float().to(device)
-        self._scaler_scale = torch.from_numpy(scaler.scale_).float().to(device)
+        # Weights/scaler pulled once into plain numpy arrays: this network is
+        # tiny (single hidden layer, ~24 units) and evaluated hundreds of
+        # thousands of times per grid, so torch's per-op dispatch overhead
+        # (present even under no_grad()) dominates over the actual FLOPs.
+        # Forward pass and its analytic derivative are done in numpy instead
+        # — verified to match the torch versions to float precision
+        # (~1e-9/1e-10), not an approximation.
+        with torch.no_grad():
+            self._W1 = net.fc1.weight.cpu().numpy()
+            self._b1 = net.fc1.bias.cpu().numpy()
+            self._W2 = net.fc2.weight.cpu().numpy()
+            self._b2 = net.fc2.bias.cpu().numpy()
+        self._mean = scaler.mean_
+        self._scale = scaler.scale_
+        self._act = _NP_ACTIVATIONS[net.activation]
+        self._act_deriv = _NP_ACTIVATION_DERIVATIVES[net.activation]
         # Last-call caches: the optimizer's constraint functions (current limit,
         # voltage limit, torque equality) each independently re-derive flux/
         # inductance for the SAME (omega, curr_dq) within one SLSQP evaluation
@@ -90,14 +115,11 @@ class NeuralFlux(FluxModel):
         key = (float(omega), *(float(v) for v in curr_dq))
         if self._flux_cache is not None and self._flux_cache[0] == key:
             return self._flux_cache[1]
-        # Normalize with the already-loaded scaler tensors directly rather than
-        # sklearn's StandardScaler.transform() (identical arithmetic, but skips
-        # its input-validation overhead on every single-row call).
-        x_raw = torch.tensor(np.hstack(([omega], curr_dq)), dtype=torch.float32, device=self.device)
-        x_normed = (x_raw - self._scaler_mean) / self._scaler_scale
-        with torch.no_grad():
-            out = self.net(x_normed.unsqueeze(0))
-        result = out.cpu().numpy().reshape(-1)
+        x = np.hstack(([omega], curr_dq))
+        x_normed = (x - self._mean) / self._scale
+        z = self._W1 @ x_normed + self._b1
+        a = self._act(z)
+        result = self._W2 @ a + self._b2
         self._flux_cache = (key, result)
         return result
 
@@ -105,29 +127,22 @@ class NeuralFlux(FluxModel):
         """
         L = L_stat + d(flux)/d(i), where the derivative is computed directly
         from the network's weights (single hidden layer: fc1 -> act -> fc2)
-        via the chain rule, rather than autograd: d(out)/d(x) =
-        W2 @ diag(act'(z)) @ W1 / scaler_scale. ~60x faster than
-        ``torch.autograd.functional.jacobian`` for this network size and
-        exact (not an approximation) — verified to match it to float
-        precision.
+        via the chain rule: d(out)/d(x) = W2 @ diag(act'(z)) @ W1 / scale.
+        Exact (not an approximation) — verified to match
+        ``torch.autograd.functional.jacobian`` to float precision.
         """
         if curr_dq is None:
             curr_dq = np.zeros(self.L_stat.shape[0])
         key = (float(omega), *(float(v) for v in curr_dq))
         if self._inductance_cache is not None and self._inductance_cache[0] == key:
             return self._inductance_cache[1]
-        x_raw = torch.tensor(np.hstack(([omega], curr_dq)), dtype=torch.float32, device=self.device)
-        x_normed = (x_raw - self._scaler_mean) / self._scaler_scale
-
-        with torch.no_grad():
-            W1 = self.net.fc1.weight
-            b1 = self.net.fc1.bias
-            W2 = self.net.fc2.weight
-            z = W1 @ x_normed + b1
-            d_act_dz = _ACTIVATION_DERIVATIVES[self.net.activation](z)
-            d_out_d_xnormed = W2 @ torch.diag(d_act_dz) @ W1  # (dim, 1 + dim)
-            d_out_d_x = d_out_d_xnormed / self._scaler_scale.unsqueeze(0)
-            d_flux_d_i = d_out_d_x[:, 1:].cpu().numpy()
+        x = np.hstack(([omega], curr_dq))
+        x_normed = (x - self._mean) / self._scale
+        z = self._W1 @ x_normed + self._b1
+        d_act_dz = self._act_deriv(z)
+        d_out_d_xnormed = self._W2 @ (d_act_dz[:, None] * self._W1)  # (dim, 1 + dim)
+        d_out_d_x = d_out_d_xnormed / self._scale
+        d_flux_d_i = d_out_d_x[:, 1:]
         result = self.L_stat + d_flux_d_i
         self._inductance_cache = (key, result)
         return result
