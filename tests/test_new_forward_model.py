@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import numpy as np
 import pytest
 
-from current_setpoints.models.machines import PMSM5Phase
+from current_setpoints.models.machines import ieee_machine2
 from current_setpoints.models.forward_model import Fault, ForwardModel
 
 CURR_MAX = 30.0
@@ -18,9 +18,7 @@ VOLT_MAX = 13.0
 
 @pytest.fixture(scope="module")
 def pmsm():
-    m = PMSM5Phase()
-    m.set_max_pars(CURR_MAX, VOLT_MAX, 1800)
-    return m
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=1800)
 
 
 @pytest.fixture(scope="module")

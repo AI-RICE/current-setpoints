@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from current_setpoints.models.machines import PMSM5Phase, IM9Phase, neural_pmsm5phase
+from current_setpoints.models.machines import ieee_machine2, im9_prototype, neural_pmsm5phase
 from current_setpoints.models.forward_model import ForwardModel, Fault
 from current_setpoints.optimization.optimizer import StaticOptimizer
 from current_setpoints.optimization.grid import calculate_grid, get_correction_grid
@@ -23,16 +23,12 @@ SLSQP_OPTS = {"disp": False, "ftol": 1e-8, "maxiter": 300}
 
 @pytest.fixture(scope="module")
 def pmsm():
-    m = PMSM5Phase()
-    m.set_max_pars(30.0, 13.0, 1800)
-    return m
+    return ieee_machine2(curr_max=30.0, volt_max=13.0, omega_max=1800)
 
 
 @pytest.fixture(scope="module")
 def im():
-    m = IM9Phase()
-    m.set_max_pars(curr_max=20.0, volt_max=200.0, omega_max=1500)
-    return m
+    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
 
 
 @pytest.fixture(scope="module")

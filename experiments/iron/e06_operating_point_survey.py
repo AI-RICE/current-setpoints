@@ -37,7 +37,7 @@ if ROOT not in sys.path:
 matplotlib.use("Agg")
 
 from current_setpoints.models.forward_model import ForwardModel
-from current_setpoints.models.machines import PMSM5Phase
+from current_setpoints.models.machines import ieee_machine2
 from current_setpoints.optimization import ActiveSetOptimizer, IndependentOptimizer, StaticOptimizer
 from dynamic.iron_loss import iron_loss
 from experiments.chatter.common import joule_loss
@@ -50,8 +50,7 @@ def _figs_dir() -> str:
 
 
 def main() -> None:
-    machine = PMSM5Phase()
-    machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
+    machine = ieee_machine2(curr_max=30.0, volt_max=13.0, omega_max=1800)
     fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
     optimizer = StaticOptimizer(
         fwd,

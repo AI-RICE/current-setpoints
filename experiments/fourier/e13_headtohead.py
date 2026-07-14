@@ -46,7 +46,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from current_setpoints.models.forward_model import ForwardModel  # noqa: E402
-from current_setpoints.models.machines import PMSM5Phase  # noqa: E402
+from current_setpoints.models.machines import ieee_machine2  # noqa: E402
 from current_setpoints.optimization import ActiveSetOptimizer, FourierOptimizer  # noqa: E402
 from dynamic._waveforms import evaluate_dq_on_grid  # noqa: E402
 from dynamic.voltage_diagnostics import voltage_residuals_dense  # noqa: E402
@@ -112,8 +112,7 @@ def spectral_voltage_residual(fwd: ForwardModel, omega: float, X_grid: np.ndarra
 
 
 def main() -> None:
-    machine = PMSM5Phase()
-    machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
+    machine = ieee_machine2(curr_max=30.0, volt_max=13.0, omega_max=1800)
     fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
     Imax, Vmax = machine.curr_max, machine.volt_max
 

@@ -27,12 +27,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from current_setpoints.models.forward_model import ForwardModel
-from current_setpoints.models.machines import PMSM5Phase
+from current_setpoints.models.machines import PMSMDrive, ieee_machine2
 
 
 @dataclass
 class Setup:
-    machine: PMSM5Phase
+    machine: PMSMDrive
     fwd: ForwardModel
     omega_el: float
     torq_target: float
@@ -56,8 +56,7 @@ def make_setup(n_mech_rpm: float = 1500.0, torq_target: float = 4.5, n_theta: in
     -- the "max V-residual corner" where active-set, iron loss, and
     current limits all interact.
     """
-    machine = PMSM5Phase()
-    machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
+    machine = ieee_machine2(curr_max=30.0, volt_max=13.0, omega_max=1800)
     fwd = ForwardModel(machine, add_volt_0=False, n_theta=n_theta)
     omega_el = n_mech_rpm * (np.pi / 30.0) * machine.n_ppairs
     return Setup(

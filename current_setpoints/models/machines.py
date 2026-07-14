@@ -330,15 +330,6 @@ def neural_flux_pmsm5phase(
     return machine
 
 
-class PMSM5Phase(PMSMDrive):
-    """Compatibility subclass — equivalent to ``ieee_machine2()`` with no
-    limits set (existing call sites follow construction with
-    ``set_max_pars(...)``). Prefer ``ieee_machine2()`` in new code."""
-
-    def __init__(self) -> None:
-        super().__init__(ieee_machine2_params())
-
-
 @dataclass
 class IMParams:
     """Data for one concrete 9-phase induction-motor prototype."""
@@ -482,11 +473,3 @@ def im9_prototype(
     machine = InductionDrive(im9_prototype_params())
     machine.set_max_pars(curr_max, volt_max, omega_max)
     return machine
-
-
-class IM9Phase(InductionDrive):
-    """Compatibility subclass — equivalent to ``im9_prototype()`` with no
-    limits set. Prefer ``im9_prototype()`` in new code."""
-
-    def __init__(self) -> None:
-        super().__init__(im9_prototype_params())

@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import numpy as np
 import pytest
 
-from current_setpoints.models.machines import PMSM5Phase, IM9Phase
+from current_setpoints.models.machines import ieee_machine2, im9_prototype
 from current_setpoints.models.forward_model import Fault, ForwardModel
 from current_setpoints.optimization import (
     Solution,
@@ -35,16 +35,12 @@ OMEGA_HIGH = to_elec(1500, 8)
 
 @pytest.fixture(scope="module")
 def pmsm():
-    m = PMSM5Phase()
-    m.set_max_pars(CURR_MAX, VOLT_MAX, OMEGA_MAX)
-    return m
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=OMEGA_MAX)
 
 
 @pytest.fixture(scope="module")
 def im():
-    m = IM9Phase()
-    m.set_max_pars(curr_max=20.0, volt_max=200.0, omega_max=1500)
-    return m
+    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
 
 
 @pytest.fixture(scope="module")

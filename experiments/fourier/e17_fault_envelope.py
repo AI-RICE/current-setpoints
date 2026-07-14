@@ -48,7 +48,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from current_setpoints.models.forward_model import ForwardModel  # noqa: E402
-from current_setpoints.models.machines import PMSM5Phase  # noqa: E402
+from current_setpoints.models.machines import ieee_machine2  # noqa: E402
 
 # Dynamic/Yepes/Static arms come from the shared Fourier-on-fault-map solver
 from experiments.fourier import envelope_solver as es  # noqa: E402
@@ -199,8 +199,7 @@ def fall_max_torque(
 
 
 def main() -> None:
-    machine = PMSM5Phase()
-    machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
+    machine = ieee_machine2(curr_max=30.0, volt_max=13.0, omega_max=1800)
     fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
     Imax, Vmax = machine.curr_max, machine.volt_max
     rms_max = Imax / np.sqrt(2.0)

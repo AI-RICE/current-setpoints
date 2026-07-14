@@ -1,5 +1,6 @@
 """
-Physics-correctness tests for PMSM5Phase and IM9Phase.
+Physics-correctness tests for PMSMDrive (ieee_machine2) and InductionDrive
+(im9_prototype).
 All tests use current_setpoints exclusively.
 """
 import sys, os
@@ -9,7 +10,7 @@ import numpy as np
 import pytest
 
 from current_setpoints.models.machines import (
-    PMSM5Phase, IM9Phase, ConstantFlux, _build_cross_coupling
+    ieee_machine2, im9_prototype, ConstantFlux, _build_cross_coupling
 )
 
 CURR_MAX = 30.0
@@ -21,16 +22,12 @@ OMEGA_MAX = 1800
 
 @pytest.fixture(scope="module")
 def pmsm():
-    m = PMSM5Phase()
-    m.set_max_pars(CURR_MAX, VOLT_MAX, OMEGA_MAX)
-    return m
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=OMEGA_MAX)
 
 
 @pytest.fixture(scope="module")
 def im():
-    m = IM9Phase()
-    m.set_max_pars(curr_max=20.0, volt_max=200.0, omega_max=1500)
-    return m
+    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
 
 
 # ── Cross-coupling matrix ─────────────────────────────────────────────────────
