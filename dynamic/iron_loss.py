@@ -21,7 +21,7 @@ Three proxy components, all in the time domain (no FFT required):
 
 The flux model is intentionally minimal: ``lambda(theta) = L_s x(theta)
 + Psi_PM(theta)``. ``Psi_PM`` is taken from
-``transform.flux.get_flux(omega, x)`` at the mean operating dq so the
+``drive.flux.flux(omega, x)`` at the mean operating dq so the
 PM contribution is a constant offset in time (it's the rotor's PM
 linkage, which is a periodic function of ``theta`` in the stator frame
 but is fixed-amplitude per phase). The constants ``k_e``, ``k_h``,
@@ -39,28 +39,18 @@ from __future__ import annotations
 
 import numpy as np
 
-from current_setpoints.simulation import Transform
+from current_setpoints.models.forward_model import ForwardModel
 
 
-def _grid_indices(transform: Transform, n_grid: int) -> np.ndarray:
-    """Coarse-grid sample indices into ``transform.vec_theta``."""
-    n_theta = transform.vec_theta.size - 1
+def _grid_indices(fwd: ForwardModel, n_grid: int) -> np.ndarray:
+    """Coarse-grid sample indices into ``fwd.vec_theta``."""
+    n_theta = fwd.vec_theta.size - 1
     theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
     return (np.round(theta_grid / (2 * np.pi) * n_theta).astype(int)) % n_theta
 
 
-def _phase_basis(transform: Transform, idx_grid: np.ndarray) -> np.ndarray:
-    """``h_k(theta_n)`` rows, shape ``(n_phases, n_grid, dim)``."""
-    n_theta = transform.vec_theta.size - 1
-    shift = transform._phase_shift_samples
-    return np.stack(
-        [transform.mat_dq_to_ph[(idx_grid - k * shift) % n_theta] for k in range(transform.n_phases)],
-        axis=0,
-    )
-
-
 def phase_flux_waveforms(
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
     curr_dq_grid: np.ndarray,
 ) -> np.ndarray:
@@ -70,22 +60,23 @@ def phase_flux_waveforms(
 
     ``lambda_dq = L_s @ x + Psi_PM``; project with ``h_k(theta_n)``.
     """
-    transform._set_omega(omega)
+    drive = fwd.drive
     n_grid, dim = curr_dq_grid.shape
+    mean_curr = curr_dq_grid.mean(axis=0)
 
-    L = transform.machine.L_stat
-    flux_volt, _ = transform.flux.get_flux(omega, curr_dq_grid.mean(axis=0))
-    psi_pm_dq = flux_volt  # (dim,)
+    L = drive.inductance(omega, mean_curr)
+    flux_model = getattr(drive, "flux", None)
+    psi_pm_dq = flux_model.flux(omega, mean_curr) if flux_model is not None else np.zeros(dim)
 
     lambda_dq = curr_dq_grid @ L.T + psi_pm_dq[None, :]  # (n_grid, dim)
-    idx_grid = _grid_indices(transform, n_grid)
-    H = _phase_basis(transform, idx_grid)
-    lambda_ph = np.einsum("knj,nj->kn", H, lambda_dq)  # (n_phases, n_grid)
+    idx_grid = _grid_indices(fwd, n_grid)
+    H = fwd._mat_dq_to_ph_all[idx_grid]  # (n_grid, n_phases, dim)
+    lambda_ph = np.einsum("nkj,nj->kn", H, lambda_dq)  # (n_phases, n_grid)
     return lambda_ph
 
 
 def eddy_loss(
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
     curr_dq_grid: np.ndarray,
     k_e: float = 1.0,
@@ -97,7 +88,7 @@ def eddy_loss(
     grid, using ``d/dt = omega * d/dtheta``. Quadratic in the
     trajectory.
     """
-    lambda_ph = phase_flux_waveforms(transform, omega, curr_dq_grid)
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq_grid)
     n_grid = lambda_ph.shape[1]
     delta_theta = 2 * np.pi / n_grid
     dlambda_dth = (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta  # (n_phases, n_grid)
@@ -106,7 +97,7 @@ def eddy_loss(
 
 
 def hysteresis_loss(
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
     curr_dq_grid: np.ndarray,
     k_h: float = 1.0,
@@ -118,13 +109,13 @@ def hysteresis_loss(
     ``B_max_k = max_n |lambda_k(theta_n)|``. Non-smooth in the
     trajectory; use post-hoc.
     """
-    lambda_ph = phase_flux_waveforms(transform, omega, curr_dq_grid)
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq_grid)
     b_max_per_phase = np.max(np.abs(lambda_ph), axis=1)
     return float(k_h * (omega / (2 * np.pi)) * np.sum(b_max_per_phase**beta))
 
 
 def excess_loss(
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
     curr_dq_grid: np.ndarray,
     k_x: float = 1.0,
@@ -136,7 +127,7 @@ def excess_loss(
     slope, so it weights moderately-fast variations more than the
     pure eddy term does.
     """
-    lambda_ph = phase_flux_waveforms(transform, omega, curr_dq_grid)
+    lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq_grid)
     n_grid = lambda_ph.shape[1]
     delta_theta = 2 * np.pi / n_grid
     dlambda_dt = omega * (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta
@@ -144,7 +135,7 @@ def excess_loss(
 
 
 def iron_loss(
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
     curr_dq_grid: np.ndarray,
     *,
@@ -159,9 +150,9 @@ def iron_loss(
     Returns a dict ``{"eddy": ..., "hysteresis": ..., "excess": ..., "total": ...}``.
     Set ``k_x=0`` (default) to disable the Bertotti excess term.
     """
-    p_e = eddy_loss(transform, omega, curr_dq_grid, k_e=k_e)
-    p_h = hysteresis_loss(transform, omega, curr_dq_grid, k_h=k_h, beta=beta)
-    p_x = excess_loss(transform, omega, curr_dq_grid, k_x=k_x) if k_x != 0.0 else 0.0
+    p_e = eddy_loss(fwd, omega, curr_dq_grid, k_e=k_e)
+    p_h = hysteresis_loss(fwd, omega, curr_dq_grid, k_h=k_h, beta=beta)
+    p_x = excess_loss(fwd, omega, curr_dq_grid, k_x=k_x) if k_x != 0.0 else 0.0
     return {"eddy": p_e, "hysteresis": p_h, "excess": p_x, "total": p_e + p_h + p_x}
 
 

@@ -34,28 +34,29 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from current_setpoints.optimization import ModelAnalytical, MotorOptimizer
-from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2
-from current_setpoints.simulation import Transform
-from current_setpoints.utils.plotting_dynamic import plot_dq_phase_combined
-from dynamic.independent_optimizer import run_independent_per_angle
+from current_setpoints.models.forward_model import ForwardModel
+from current_setpoints.models.machines import PMSM5Phase
+from current_setpoints.optimization import IndependentOptimizer, StaticOptimizer
+from dynamic._waveforms import plot_dq_phase_combined
 from dynamic.regimes import active_set, active_set_tag, fingerprint
 
 
 def main() -> None:
-    machine = IEEEMachine2()
+    machine = PMSM5Phase()
     nmax_mech_rpm = 1800
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=nmax_mech_rpm)
 
-    flux = Flux_IEEEMachine2()
-    transform = Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=700)
+    fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
 
-    analytical = ModelAnalytical(machine=machine, flux=flux)
     solver_opts = {"disp": False, "ftol": 1e-8, "maxiter": 500, "eps": 1e-8}
-    optimizer = MotorOptimizer(model=analytical, opts=solver_opts)
+    optimizer = StaticOptimizer(fwd, opts=solver_opts)
 
     torq_target = 4.0  # Nm -- well below the low-speed maximum (~7.76 Nm)
     n_grid = 64
+    # Note: unlike the pre-refactor run_independent_per_angle, IndependentOptimizer
+    # does not accept an external warm-start across calls (each solve reseeds from
+    # fwd.drive.seeds()[0] and chains internally along its own angle grid).
+    ind_optimizer = IndependentOptimizer(fwd, opts=solver_opts, n_grid=n_grid)
 
     n_sweep = 30
     rpm_min, rpm_max = 50.0, 1500.0
@@ -69,46 +70,36 @@ def main() -> None:
     torq_caps: list[float] = []
     actives: list[frozenset[tuple[str, int, int]] | None] = []
 
+    dim = machine.dim
     curr_dq_prev = np.array([1.0, 0.0, 0.0, 0.0])
     for omega_el in omega_grid:
-        _, torq_max_local, ok_top = optimizer.maximize_torque(omega=omega_el, transform=transform)
-        torq_caps.append(torq_max_local if ok_top else float("nan"))
+        sol_top = optimizer.maximize_torque(omega_el)
+        torq_max_local = sol_top.torque if sol_top.success else float("nan")
+        torq_caps.append(torq_max_local)
 
-        feasible = ok_top and torq_max_local > torq_target
+        feasible = sol_top.success and torq_max_local > torq_target
         if not feasible:
-            static_dq.append(np.full(transform.dim, np.nan))
+            static_dq.append(np.full(dim, np.nan))
             static_ok.append(False)
-            dyn_dq.append(np.full((n_grid, transform.dim), np.nan))
+            dyn_dq.append(np.full((n_grid, dim), np.nan))
             dyn_ok.append(np.zeros(n_grid, dtype=bool))
             actives.append(None)
             continue
 
-        x_static, ok_s = optimizer.minimize_current(
-            torq_target=torq_target,
-            omega=omega_el,
-            transform=transform,
-            vec_curr_guess=curr_dq_prev,
-        )
-        if ok_s:
-            curr_dq_prev = x_static
-        static_dq.append(x_static)
-        static_ok.append(bool(ok_s))
+        sol_s = optimizer.minimize_current(torq_target, omega_el, guess=curr_dq_prev)
+        if sol_s.success:
+            curr_dq_prev = sol_s.curr_dq
+        static_dq.append(sol_s.curr_dq)
+        static_ok.append(bool(sol_s.success))
 
-        _, x_dyn, ok_dyn = run_independent_per_angle(
-            model=analytical,
-            transform=transform,
-            omega=omega_el,
-            torq_target=torq_target,
-            curr_max=machine.curr_max,
-            volt_max=machine.volt_max,
-            n_grid=n_grid,
-            warm_start=x_static if ok_s else None,
-        )
+        sol_dyn = ind_optimizer.minimize_current(torq_target, omega_el)
+        x_dyn = sol_dyn.curr_dq
+        ok_dyn = sol_dyn.diagnostics["ok_grid"]
         dyn_dq.append(x_dyn)
         dyn_ok.append(ok_dyn)
 
         if bool(np.all(ok_dyn)):
-            alpha_I, alpha_V, n_I, n_V = fingerprint(transform, omega_el, x_dyn, machine.curr_max, machine.volt_max)
+            alpha_I, alpha_V, n_I, n_V = fingerprint(fwd, omega_el, x_dyn, machine.curr_max, machine.volt_max)
             actives.append(active_set(alpha_I, alpha_V, n_I, n_V))
         else:
             actives.append(None)
@@ -146,7 +137,7 @@ def main() -> None:
             tag = f"n{rpm:0.0f}rpm_{tag_active}_{which}"
             title = f"T*={torq_target:.2f}Nm, n_mech={rpm:.0f}rpm, active={tag_active} ({which} crossing)"
             fig, _ = plot_dq_phase_combined(
-                transform,
+                fwd,
                 omega_grid[idx],
                 dyn_dq[idx],
                 curr_dq_static=static_dq[idx] if static_ok[idx] else None,

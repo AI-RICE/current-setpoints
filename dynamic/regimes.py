@@ -22,28 +22,22 @@ from __future__ import annotations
 
 import numpy as np
 
-from current_setpoints.simulation import Transform
-from current_setpoints.utils.plotting_dynamic import (
-    _dynamic_phase_waveforms,
-    _phase_currents_all,
-)
+from current_setpoints.models.forward_model import ForwardModel
+
+from ._waveforms import dynamic_phase_waveforms
 
 
-def _phase_waveforms_all(transform: Transform, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _phase_waveforms_all(fwd: ForwardModel, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns ``(curr_ph_all, volt_ph_all)`` of shape ``(n_phases, n_theta + 1)``,
     handling both static (1D ``curr_dq``) and dynamic (2D ``curr_dq``) modes.
     """
     if curr_dq.ndim == 2:
         theta_grid = np.linspace(0.0, 2 * np.pi, curr_dq.shape[0], endpoint=False)
-        curr_ph_a, volt_ph_a = _dynamic_phase_waveforms(transform, omega, theta_grid, curr_dq)
-    else:
-        curr_ph_a = transform.get_curr_ph(omega, curr_dq)
-        volt_ph_a, _, _ = transform.get_volt_ph(omega, curr_dq)
-    return (
-        _phase_currents_all(transform, curr_ph_a),
-        _phase_currents_all(transform, volt_ph_a),
-    )
+        return dynamic_phase_waveforms(fwd, omega, theta_grid, curr_dq)
+    curr_ph_a = fwd.curr_ph(omega, curr_dq)
+    volt_ph_a, _, _ = fwd.volt_ph(omega, curr_dq)
+    return curr_ph_a, volt_ph_a
 
 
 def _count_arcs_periodic(mask: np.ndarray) -> int:
@@ -59,7 +53,7 @@ def _count_arcs_periodic(mask: np.ndarray) -> int:
 
 
 def fingerprint(
-    transform: Transform,
+    fwd: ForwardModel,
     omega: float,
     curr_dq: np.ndarray,
     curr_max: float,
@@ -69,7 +63,7 @@ def fingerprint(
     """
     Returns ``(alpha_I, alpha_V, n_I, n_V)``, each of shape ``(n_phases,)``.
     """
-    curr_all, volt_all = _phase_waveforms_all(transform, omega, curr_dq)
+    curr_all, volt_all = _phase_waveforms_all(fwd, omega, curr_dq)
     mask_I = np.abs(curr_all) >= (1.0 - eps) * curr_max
     mask_V = np.abs(volt_all) >= (1.0 - eps) * volt_max
     alpha_I = mask_I.mean(axis=1)
