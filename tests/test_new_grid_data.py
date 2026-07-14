@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from current_setpoints.models.machines import PMSM5Phase, IM9Phase, NeuralPMSM5Phase
+from current_setpoints.models.machines import PMSM5Phase, IM9Phase, neural_pmsm5phase
 from current_setpoints.models.forward_model import ForwardModel, Fault
 from current_setpoints.optimization.optimizer import StaticOptimizer
 from current_setpoints.optimization.grid import calculate_grid, get_correction_grid
@@ -256,7 +256,7 @@ def test_evaluate_volt_dq_consistent(fwd):
 
 # ── calculate_grid — neural drive + get_correction_grid + recalculated mode ──
 # Ported from the old-layout test_grid.py (ModelNeural wrapper is gone in the
-# new API: a NeuralPMSM5Phase drive is used directly as StaticOptimizer's fwd.drive).
+# new API: a neural_pmsm5phase() drive is used directly as StaticOptimizer's fwd.drive).
 
 class DummyScaler:
     """A fake scaler that just returns the input exactly as it is."""
@@ -274,9 +274,7 @@ class DummyNet(nn.Module):
 
 @pytest.fixture(scope="module")
 def neural_pmsm():
-    m = NeuralPMSM5Phase(net=DummyNet(), scaler=DummyScaler(), device=torch.device("cpu"))
-    m.set_max_pars(30.0, 13.0, 1800)
-    return m
+    return neural_pmsm5phase(net=DummyNet(), scaler=DummyScaler(), device=torch.device("cpu"))
 
 
 @pytest.fixture(scope="module")

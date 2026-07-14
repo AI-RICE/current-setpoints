@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -84,6 +85,28 @@ class NeuralFlux(FluxModel):
         return self.L_stat + d_flux_d_i
 
 
+class NeuralTorqueResidual:
+    """Callable torque-residual component: composed into a drive via its
+    optional ``torque_residual`` constructor argument, mirroring how
+    ``NeuralFlux`` composes into the ``flux`` argument."""
+
+    def __init__(
+        self,
+        net: Any,  # NeuralTorquePredictor
+        scaler: Any,  # sklearn StandardScaler
+        device: torch.device,
+    ) -> None:
+        self.net = net
+        self.scaler = scaler
+        self.device = device
+
+    def __call__(self, omega: float, curr_dq: np.ndarray) -> float:
+        X = self.scaler.transform(np.hstack(([omega], curr_dq)).reshape(1, -1))
+        with torch.no_grad():
+            residual = self.net(torch.from_numpy(X).float().to(self.device))
+        return float(residual.cpu().numpy().item())
+
+
 class DriveModel(ABC):
     # identity
     n_phases: int
@@ -156,32 +179,45 @@ class DriveModel(ABC):
         self.omega_max = omega_max
 
 
-class PMSM5Phase(DriveModel):
-    def __init__(self) -> None:
-        self.n_phases = 5
-        self.n_harmonics = 2
-        self.dim = 4
-        self.n_ppairs = 8
-        self.k_phase = 5 / 2
+@dataclass
+class PMSMParams:
+    """Data for one concrete 5-phase PMSM prototype — everything a
+    ``PMSMDrive`` needs that isn't structural physics."""
 
-        self.R_stat = np.diag([0.0191, 0.0514, 0.0805, 0.0801])
-        self.k_v = 0.0
-        self.k_h = 0.0
+    n_phases: int
+    n_ppairs: int
+    R_stat: np.ndarray
+    L_stat: np.ndarray
+    flux_pm: np.ndarray
+    k_v: float = 0.0
+    k_h: float = 0.0
+
+
+class PMSMDrive(DriveModel):
+    """Parameter-free PMSM physics. Concrete machines are built via a named
+    factory (e.g. ``ieee_machine2()``) returning a configured instance;
+    variation between machine variants is composition (``flux=``,
+    ``torque_residual=``), not subclassing."""
+
+    def __init__(
+        self,
+        params: PMSMParams,
+        flux: FluxModel | None = None,
+        torque_residual: Callable[[float, np.ndarray], float] | None = None,
+    ) -> None:
+        self.n_phases = params.n_phases
+        self.n_harmonics = 2
+        self.dim = 2 * self.n_harmonics
+        self.n_ppairs = params.n_ppairs
+        self.k_phase = self.n_phases / 2
+
+        self.R_stat = params.R_stat
+        self.k_v = params.k_v
+        self.k_h = params.k_h
 
         cross_coupling = _build_cross_coupling(self.n_harmonics)
-        L_stat = 1e-3 * np.array(
-            [
-                [0.0920, -0.0286, -0.0141, 0.0010],
-                [-0.0133, 0.1090, -0.0008, -0.0092],
-                [-0.0088, 0.0037, 0.0725, -0.0466],
-                [-0.0041, -0.0053, 0.0475, 0.0722],
-            ]
-        )
-        # Identified by utils.flux_fit.fit_pm_flux via joint least squares
-        # against measured voltage and torque in data/aggregated_file_means.csv.
-        flux_pm = np.array([1.13438169e-02, 1.71999345e-03, 1.57771228e-05, 1.56271556e-05])
-
-        self.flux: FluxModel = ConstantFlux(flux_pm, L_stat, cross_coupling)
+        self.flux: FluxModel = flux if flux is not None else ConstantFlux(params.flux_pm, params.L_stat, cross_coupling)
+        self._torque_residual = torque_residual
 
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         L = self.flux.inductance(omega, curr_dq)
@@ -201,7 +237,10 @@ class PMSM5Phase(DriveModel):
         k = self.n_phases * self.n_ppairs / 4.0
         A = k * (J @ L + L @ J.T)
         b = k * (J @ flux_pm)
-        return float(curr_dq @ A @ curr_dq + 2 * b @ curr_dq)
+        t = float(curr_dq @ A @ curr_dq + 2 * b @ curr_dq)
+        if self._torque_residual is not None:
+            t += self._torque_residual(omega, curr_dq)
+        return t
 
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
         dim = self.dim
@@ -221,25 +260,119 @@ class PMSM5Phase(DriveModel):
         return candidates
 
 
-class IM9Phase(DriveModel):
+def ieee_machine2_params() -> PMSMParams:
+    """Parameters for the 5-phase IEEE-Machine-2 prototype. R_stat, L_stat,
+    flux_pm identified by ``utils.flux_fit.fit_pm_flux`` via joint least
+    squares against measured voltage and torque in
+    ``data/aggregated_file_means.csv``."""
+    return PMSMParams(
+        n_phases=5,
+        n_ppairs=8,
+        R_stat=np.diag([0.0191, 0.0514, 0.0805, 0.0801]),
+        L_stat=1e-3
+        * np.array(
+            [
+                [0.0920, -0.0286, -0.0141, 0.0010],
+                [-0.0133, 0.1090, -0.0008, -0.0092],
+                [-0.0088, 0.0037, 0.0725, -0.0466],
+                [-0.0041, -0.0053, 0.0475, 0.0722],
+            ]
+        ),
+        flux_pm=np.array([1.13438169e-02, 1.71999345e-03, 1.57771228e-05, 1.56271556e-05]),
+    )
+
+
+def ieee_machine2(
+    *,
+    curr_max: float = 30.0,
+    volt_max: float = 13.0,
+    omega_max: float = 1800.0,
+) -> PMSMDrive:
+    """5-phase IEEE-Machine-2 prototype. ``curr_max``/``volt_max``/``omega_max``
+    are converter/controller limits, not machine physics, so they're
+    overridable here rather than baked into ``PMSMParams``."""
+    machine = PMSMDrive(ieee_machine2_params())
+    machine.set_max_pars(curr_max, volt_max, omega_max)
+    return machine
+
+
+def neural_pmsm5phase(
+    net: Any,
+    scaler: Any,
+    device: torch.device,
+    *,
+    curr_max: float = 30.0,
+    volt_max: float = 13.0,
+    omega_max: float = 1800.0,
+) -> PMSMDrive:
+    """IEEE-Machine-2 with a neural torque residual composed in."""
+    machine = PMSMDrive(ieee_machine2_params(), torque_residual=NeuralTorqueResidual(net, scaler, device))
+    machine.set_max_pars(curr_max, volt_max, omega_max)
+    return machine
+
+
+def neural_flux_pmsm5phase(
+    net: Any,
+    scaler: Any,
+    device: torch.device,
+    *,
+    curr_max: float = 30.0,
+    volt_max: float = 13.0,
+    omega_max: float = 1800.0,
+) -> PMSMDrive:
+    """IEEE-Machine-2 with a neural flux model composed in place of the
+    default ``ConstantFlux``."""
+    params = ieee_machine2_params()
+    cross_coupling = _build_cross_coupling(2)
+    flux = NeuralFlux(net, scaler, device, params.L_stat, cross_coupling)
+    machine = PMSMDrive(params, flux=flux)
+    machine.set_max_pars(curr_max, volt_max, omega_max)
+    return machine
+
+
+class PMSM5Phase(PMSMDrive):
+    """Compatibility subclass — equivalent to ``ieee_machine2()`` with no
+    limits set (existing call sites follow construction with
+    ``set_max_pars(...)``). Prefer ``ieee_machine2()`` in new code."""
+
     def __init__(self) -> None:
-        self.n_phases = 9
+        super().__init__(ieee_machine2_params())
+
+
+@dataclass
+class IMParams:
+    """Data for one concrete 9-phase induction-motor prototype."""
+
+    n_phases: int
+    n_ppairs: int
+    R_s: float
+    R_r: np.ndarray
+    L_mu: np.ndarray
+    L_s_sigma: np.ndarray
+    L_r_sigma: np.ndarray
+    k_v: float = 0.0
+    k_h: float = 0.0
+
+
+class InductionDrive(DriveModel):
+    """Parameter-free induction-motor physics. Concrete machines are built
+    via a named factory (e.g. ``im9_prototype()``)."""
+
+    def __init__(self, params: IMParams) -> None:
+        self.n_phases = params.n_phases
         self.n_harmonics = 2
-        self.dim = 4
-        self.n_ppairs = 2
-        self.k_phase = 9 / 2
+        self.dim = 2 * self.n_harmonics
+        self.n_ppairs = params.n_ppairs
+        self.k_phase = self.n_phases / 2
 
-        R_s = 5.0
-        self.R_stat = R_s * np.eye(self.dim)
-        self.k_v = 0.0
-        self.k_h = 0.0
+        self.R_stat = params.R_s * np.eye(self.dim)
+        self.k_v = params.k_v
+        self.k_h = params.k_h
 
-        self._R_r = np.diag([1.54, 1.54, 1.57, 1.57])
-        self._L_mu = 1e-3 * np.diag([496.0, 496.0, 58.2, 58.2])
-        L_s_sigma = 1e-3 * np.diag([15.1, 15.1, 13.6, 13.6])
-        L_r_sigma = 1e-3 * np.diag([53.3, 53.3, 33.4, 33.4])
-        self._L_s = self._L_mu + L_s_sigma
-        self._L_r = self._L_mu + L_r_sigma
+        self._R_r = params.R_r
+        self._L_mu = params.L_mu
+        self._L_s = self._L_mu + params.L_s_sigma
+        self._L_r = self._L_mu + params.L_r_sigma
         self._cross_coupling = _build_cross_coupling(self.n_harmonics)
 
     def k_ir(self, omega_r: float) -> np.ndarray:
@@ -327,34 +460,33 @@ class IM9Phase(DriveModel):
         return P_stator + P_rotor
 
 
-class NeuralPMSM5Phase(PMSM5Phase):
-    def __init__(
-        self,
-        net: Any,  # NeuralTorquePredictor
-        scaler: Any,  # sklearn StandardScaler
-        device: torch.device,
-    ) -> None:
-        super().__init__()
-        self._net = net
-        self._scaler = scaler
-        self._device = device
-
-    def torque(self, omega: float, curr_dq: np.ndarray) -> float:
-        return super().torque(omega, curr_dq) + self._predict(omega, curr_dq)
-
-    def _predict(self, omega: float, curr_dq: np.ndarray) -> float:
-        X = self._scaler.transform(np.hstack(([omega], curr_dq)).reshape(1, -1))
-        with torch.no_grad():
-            residual = self._net(torch.from_numpy(X).float().to(self._device))
-        return float(residual.cpu().numpy().item())
+def im9_prototype_params() -> IMParams:
+    """Parameters for the 9-phase induction-motor prototype."""
+    return IMParams(
+        n_phases=9,
+        n_ppairs=2,
+        R_s=5.0,
+        R_r=np.diag([1.54, 1.54, 1.57, 1.57]),
+        L_mu=1e-3 * np.diag([496.0, 496.0, 58.2, 58.2]),
+        L_s_sigma=1e-3 * np.diag([15.1, 15.1, 13.6, 13.6]),
+        L_r_sigma=1e-3 * np.diag([53.3, 53.3, 33.4, 33.4]),
+    )
 
 
-class NeuralFluxPMSM5Phase(PMSM5Phase):
-    def __init__(
-        self,
-        net: Any,  # NeuralFluxPredictor
-        scaler: Any,  # sklearn StandardScaler
-        device: torch.device,
-    ) -> None:
-        super().__init__()
-        self.flux: FluxModel = NeuralFlux(net, scaler, device, self.flux.L_stat, self.flux.cross_coupling)
+def im9_prototype(
+    *,
+    curr_max: float = 20.0,
+    volt_max: float = 200.0,
+    omega_max: float = 1500.0,
+) -> InductionDrive:
+    machine = InductionDrive(im9_prototype_params())
+    machine.set_max_pars(curr_max, volt_max, omega_max)
+    return machine
+
+
+class IM9Phase(InductionDrive):
+    """Compatibility subclass — equivalent to ``im9_prototype()`` with no
+    limits set. Prefer ``im9_prototype()`` in new code."""
+
+    def __init__(self) -> None:
+        super().__init__(im9_prototype_params())

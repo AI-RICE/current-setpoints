@@ -8,7 +8,7 @@ from ..models.forward_model import ForwardModel
 from .optimizer import BaseOptimizer
 
 if TYPE_CHECKING:
-    from ..models.machines import NeuralPMSM5Phase
+    from ..models.machines import PMSMDrive
 
 
 def count_peaks(
@@ -149,7 +149,7 @@ def calculate_grid(
 
 def get_correction_grid(
     dict_grid: dict[str, Any],
-    neural: "NeuralPMSM5Phase",
+    neural: "PMSMDrive",
 ) -> dict[str, Any]:
     print("Computing neural correction grid...")
 
