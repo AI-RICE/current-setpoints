@@ -29,8 +29,9 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
 from dynamic.iron_loss import eddy_loss, excess_loss, hysteresis_loss
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import chatter_amplitude, joule_loss, make_setup
 
 
@@ -59,13 +60,8 @@ def main() -> None:
         for alpha in alphas:
             t0 = time.time()
             kw = kw_fun(alpha)
-            r = run_active_set(
-                model=setup.model,
-                transform=setup.transform,
-                omega=setup.omega_el,
-                torq_target=setup.torq_target,
-                curr_max=setup.machine.curr_max,
-                volt_max=setup.machine.volt_max,
+            optimizer = ActiveSetOptimizer(
+                setup.fwd,
                 n_grid=n_grid,
                 max_outer_iter=10,
                 tol=1e-3,
@@ -73,14 +69,16 @@ def main() -> None:
                 scheme="forward",
                 **kw,
             )
-            X = r["curr_dq_grid"]
+            sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+            X = sol.curr_dq
+            active = sol.diagnostics.get("active", frozenset())
             J = joule_loss(X)
-            Pe = eddy_loss(setup.transform, setup.omega_el, X)
-            Px = excess_loss(setup.transform, setup.omega_el, X)
-            Ph = hysteresis_loss(setup.transform, setup.omega_el, X)
+            Pe = eddy_loss(setup.fwd, setup.omega_el, X)
+            Px = excess_loss(setup.fwd, setup.omega_el, X)
+            Ph = hysteresis_loss(setup.fwd, setup.omega_el, X)
             C = chatter_amplitude(X, h_max=7)
             res_dense, _ = voltage_residuals_dense(
-                setup.transform,
+                setup.fwd,
                 setup.omega_el,
                 X,
                 setup.machine.volt_max,
@@ -92,7 +90,7 @@ def main() -> None:
             d["Ph"].append(Ph)
             d["C"].append(C)
             d["res"].append(res_dense)
-            d["A_size"].append(len(r["active"]))
+            d["A_size"].append(len(active))
             print(
                 f"  alpha={alpha:.1e}  J={J:8.3f}  P_e={Pe:8.3f}  P_x={Px:8.3f}  "
                 f"C={C:.4f}  res={res_dense:+.4f}V  t={time.time() - t0:.1f}s"

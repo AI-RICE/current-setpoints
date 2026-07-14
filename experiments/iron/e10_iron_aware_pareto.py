@@ -44,8 +44,9 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
 from dynamic.iron_loss import iron_loss
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import chatter_amplitude, joule_loss, make_setup
 
 
@@ -70,13 +71,8 @@ def main() -> None:
     total_t0 = time.time()
     for alpha in alphas:
         t0 = time.time()
-        r = run_active_set(
-            model=setup.model,
-            transform=setup.transform,
-            omega=setup.omega_el,
-            torq_target=setup.torq_target,
-            curr_max=setup.machine.curr_max,
-            volt_max=setup.machine.volt_max,
+        optimizer = ActiveSetOptimizer(
+            setup.fwd,
             n_grid=n_grid,
             max_outer_iter=10,
             tol=1e-3,
@@ -84,12 +80,14 @@ def main() -> None:
             scheme="forward",
             iron_weight=float(alpha),
         )
-        X = r["curr_dq_grid"]
+        sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+        X = sol.curr_dq
+        active = sol.diagnostics.get("active", frozenset())
         J = joule_loss(X)
-        loss = iron_loss(setup.transform, setup.omega_el, X)
+        loss = iron_loss(setup.fwd, setup.omega_el, X)
         C = chatter_amplitude(X, h_max=7)
         res_dense, _ = voltage_residuals_dense(
-            setup.transform,
+            setup.fwd,
             setup.omega_el,
             X,
             setup.machine.volt_max,
@@ -102,8 +100,8 @@ def main() -> None:
                 "Ph": loss["hysteresis"],
                 "C": C,
                 "res": res_dense,
-                "A_size": len(r["active"]),
-                "converged": bool(r["converged"]),
+                "A_size": len(active),
+                "converged": bool(sol.success),
                 "obj_total": J + float(alpha) * loss["eddy"],
             }
         )
@@ -112,7 +110,7 @@ def main() -> None:
             f"  alpha={alpha:.1e}  J={J:8.3f}  P_e={loss['eddy']:8.3f}  "
             f"obj=J+alpha*P_e={rows[-1]['obj_total']:8.3f}  "
             f"P_h={loss['hysteresis']:.3f}  C={C:.4f}  "
-            f"res={res_dense:+.4f}V  |A|={len(r['active']):3d}  "
+            f"res={res_dense:+.4f}V  |A|={len(active):3d}  "
             f"t={time.time() - t0:.1f}s"
         )
     print(f"\nTotal wall: {time.time() - total_t0:.1f}s")
@@ -173,7 +171,7 @@ def main() -> None:
     cmap = plt.get_cmap("tab10")
     for ax, a in zip(axes.flat, sel_alphas, strict=True):
         X = trajectories[a]
-        for j in range(setup.transform.dim):
+        for j in range(setup.machine.dim):
             ax.plot(
                 theta_grid,
                 X[:, j],

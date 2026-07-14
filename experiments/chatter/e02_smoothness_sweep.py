@@ -34,7 +34,8 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import (
     chatter_amplitude,
     figs_dir,
@@ -54,24 +55,21 @@ def main() -> None:
     convergeds: list[bool] = []
 
     for rho in rhos:
-        result = run_active_set(
-            model=setup.model,
-            transform=setup.transform,
-            omega=setup.omega_el,
-            torq_target=setup.torq_target,
-            curr_max=setup.machine.curr_max,
-            volt_max=setup.machine.volt_max,
+        optimizer = ActiveSetOptimizer(
+            setup.fwd,
             n_grid=n_grid,
             max_outer_iter=10,
             tol=1e-3,
             rho=float(rho),
             scheme="forward",
         )
-        X = result["curr_dq_grid"]
+        sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+        X = sol.curr_dq
+        active = sol.diagnostics.get("active", frozenset())
         J = joule_loss(X)
         C = chatter_amplitude(X, h_max=7)
         r_dense, _ = voltage_residuals_dense(
-            setup.transform,
+            setup.fwd,
             setup.omega_el,
             X,
             setup.machine.volt_max,
@@ -79,10 +77,10 @@ def main() -> None:
         losses.append(J)
         chatters.append(C)
         residuals.append(r_dense)
-        convergeds.append(bool(result["converged"]))
+        convergeds.append(bool(sol.success))
         print(
             f"rho={rho:.1e}  J={J:.4f}  C={C:.4f}  r_dense={r_dense:+.4f} V  "
-            f"|A|={len(result['active']):3d}  converged={result['converged']}"
+            f"|A|={len(active):3d}  converged={sol.success}"
         )
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)

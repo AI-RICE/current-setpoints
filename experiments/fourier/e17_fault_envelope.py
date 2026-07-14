@@ -47,13 +47,12 @@ if ROOT not in sys.path:
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from current_setpoints.optimization import ModelAnalytical  # noqa: E402
-from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2  # noqa: E402
-from current_setpoints.simulation import Transform  # noqa: E402
+from current_setpoints.models.forward_model import ForwardModel  # noqa: E402
+from current_setpoints.models.machines import PMSM5Phase  # noqa: E402
 
 # Dynamic/Yepes/Static arms come from the shared Fourier-on-fault-map solver
-from dynamic import phase_voltage as pv  # noqa: E402
 from experiments.fourier import envelope_solver as es  # noqa: E402
+from experiments.fourier.phase_voltage import voltage_linear_maps  # noqa: E402
 
 # -- Fall constants (5-phase) -------------------------------------------
 D1_FALL = np.cos(2 * np.pi / 5) - np.cos(4 * np.pi / 5)  # ~1.118
@@ -97,20 +96,19 @@ def phase_to_amp_inv_dq(i_phase: np.ndarray, theta: np.ndarray) -> np.ndarray:
     return np.stack([i_d1, i_q1, i_d3, i_q3], axis=0)  # (4, T)
 
 
-def fall_arm_evaluate(i_d1_F: float, i_q1_F: float, theta: np.ndarray, model, transform, omega: float):
+def fall_arm_evaluate(i_d1_F: float, i_q1_F: float, theta: np.ndarray, drive, fwd: ForwardModel, omega: float):
     """
-    Evaluate Fall's reconfiguration for IEEEMachine2 at (i_d1_F, i_q1_F):
+    Evaluate Fall's reconfiguration for PMSM5Phase at (i_d1_F, i_q1_F):
     returns (T_array, v_phase_array, i_phase_array). Phase currents from
-    Eqs 16-19 (physical), torque + voltage from IEEEMachine2's full model
+    Eqs 16-19 (physical), torque + voltage from PMSM5Phase's full model
     on the amplitude-invariant dq projection. Voltage includes the EXACT
     di_dq/dtheta term via spectral derivative on the dense theta grid.
     """
-    transform._set_omega(omega)
-    dim = transform.dim
-    U = transform.mat_curr_dq_to_volt_dq
-    L = transform.machine.L_stat
-    flux_volt, _ = transform.flux.get_flux(omega, np.zeros(dim))
-    bemf_dq = omega * transform.machine.mat_crossc @ flux_volt  # (4,)
+    dim = drive.dim
+    zeros = np.zeros(dim)
+    U = drive.voltage_operator(omega, zeros)
+    L = drive.inductance(omega, zeros)
+    bemf_dq = drive.bemf_dq(omega, zeros)  # (4,)
 
     i_phase = fall_phase_currents_1f(i_d1_F, i_q1_F, theta)  # (5, T)
     i_dq = phase_to_amp_inv_dq(i_phase, theta)  # (4, T)
@@ -122,34 +120,23 @@ def fall_arm_evaluate(i_d1_F: float, i_q1_F: float, theta: np.ndarray, model, tr
     di_dq = np.real(np.fft.ifft(1j * k[None, :] * Xf, axis=1))  # (4, T)
 
     # Torque at every theta via the analytic quadratic model
-    T_per_theta = np.array([model.calculate_torque(omega, i_dq[:, t]) for t in range(n_t)])
+    T_per_theta = np.array([drive.torque(omega, i_dq[:, t]) for t in range(n_t)])
 
     # Phase voltage v_phase_k(theta) = h_k(theta) . (U.i + omega L di/dtheta + bemf)
     v_dq = U @ i_dq + omega * (L @ di_dq) + bemf_dq[:, None]  # (4, T)
-    # h_k(theta) via the amp-inv mat_dq_to_ph (which equals inv(C_full)[:5,:4] @ R(theta))
-    # Snap theta to transform.vec_theta indices
-    n_theta_tr = transform.vec_theta.size - 1
+    # h_k(theta) via the amp-inv dq->phase map (all 5 phases stored directly by ForwardModel)
+    # Snap theta to fwd.vec_theta indices
+    n_theta_tr = fwd.vec_theta.size - 1
     idx = (np.round(theta / (2 * np.pi) * n_theta_tr).astype(int)) % n_theta_tr
-    H_amp = _healthy_phase_basis(transform, idx)  # (5, T, 4): all 5 phases' dq->phase rows
+    H_amp = fwd._mat_dq_to_ph_all[idx].transpose(1, 0, 2)  # (5, T, dim): all 5 phases' dq->phase rows
     v_phase = np.einsum("ktj,jt->kt", H_amp, v_dq)  # (5, T)
 
     return T_per_theta, v_phase, i_phase
 
 
-def _healthy_phase_basis(transform, idx: np.ndarray) -> np.ndarray:
-    """
-    All 5 phases' (h_k(theta)) rows at sample indices idx. Shape (5, T, dim).
-    Phase 0 = mat_dq_to_ph[idx]; others rolled by phase_shift_samples.
-    """
-    shift = transform._phase_shift_samples
-    n_theta = transform.vec_theta.size - 1
-    rows = [transform.mat_dq_to_ph[(idx - k * shift) % n_theta] for k in range(transform.n_phases)]
-    return np.stack(rows, axis=0)  # (5, T, dim)
-
-
 def fall_max_torque(
-    model,
-    transform,
+    drive,
+    fwd: ForwardModel,
     omega: float,
     Imax: float,
     Vmax: float,
@@ -159,7 +146,7 @@ def fall_max_torque(
 ) -> tuple[float, dict]:
     """
     Faithful Fall arm: 2-DOF SLSQP over (i_d1_F, i_q1_F) maximising the
-    period-MEAN IEEEMachine2 torque under Fall's reconfiguration, subject
+    period-MEAN PMSM5Phase torque under Fall's reconfiguration, subject
     to per-phase peak current and (if use_voltage) per-phase peak voltage
     (incl. exact di/dtheta) over the surviving phases. Returns
     (T_max, diagnostics dict).
@@ -167,7 +154,7 @@ def fall_max_torque(
     theta = np.linspace(0.0, 2.0 * np.pi, n_theta_dense, endpoint=False)
 
     def eval_for_x(x):
-        Tarr, varr, iarr = fall_arm_evaluate(x[0], x[1], theta, model, transform, omega)
+        Tarr, varr, iarr = fall_arm_evaluate(x[0], x[1], theta, drive, fwd, omega)
         return Tarr, varr, iarr
 
     def neg_Tmean(x):
@@ -212,35 +199,33 @@ def fall_max_torque(
 
 
 def main() -> None:
-    machine = IEEEMachine2()
+    machine = PMSM5Phase()
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
-    transform = Transform(machine=machine, flux=Flux_IEEEMachine2(), add_volt_0=False, n_theta=700)
-    model = ModelAnalytical(machine=machine, flux=Flux_IEEEMachine2())
+    fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
     Imax, Vmax = machine.curr_max, machine.volt_max
     rms_max = Imax / np.sqrt(2.0)
 
     # Set up the maps once (depends on omega, but the open-phase fault map
     # is omega-independent for the Fourier arms; we recompute Gf, bemf per
     # omega inside the loop, same as envelope_solver).
-    Hf_all = es.fault_phase_map(transform.vec_theta, (0,))
-    n_t = transform.vec_theta.size - 1
+    Hf_all = es.fault_phase_map(fwd.vec_theta, (0,))
+    n_t = fwd.vec_theta.size - 1
     idx_s = (np.round(np.linspace(0, 2 * np.pi, es.N_CON, endpoint=False) / (2 * np.pi) * n_t).astype(int)) % n_t
-    theta_s = transform.vec_theta[idx_s]
+    theta_s = fwd.vec_theta[idx_s]
 
     rpm_list = np.array([100, 300, 500, 700, 900, 1100, 1300, 1500])
     arms = ["Dynamic", "Yepes", "Static", "Fall"]
     env = {a: [] for a in arms}
     diag_fall = []
 
-    from dynamic.fourier_optimizer import fourier_design  # noqa: E402
+    from dynamic.fourier_math import fourier_design  # noqa: E402
 
     for rpm in rpm_list:
         omega = rpm * (np.pi / 30.0) * machine.n_ppairs
-        transform._set_omega(omega)
         Hf_s = Hf_all[idx_s]  # reduced-Clarke CURRENT map (surviving phases 1..4)
         # inverse-Park VOLTAGE linear maps for the surviving physical phases.
         # voltage_linear_maps returns (phase, n, dim); solver wants (n, phase, dim).
-        gU_p, gL_p, bV_p = pv.voltage_linear_maps(transform, omega, idx_s, phases=(1, 2, 3, 4))
+        gU_p, gL_p, bV_p = voltage_linear_maps(fwd, omega, idx_s, phases=(1, 2, 3, 4))
         gU = gU_p.transpose(1, 0, 2)
         gL = gL_p.transpose(1, 0, 2)
         bV = bV_p.T
@@ -250,12 +235,12 @@ def main() -> None:
         maps_dc = (Hf_s, gU, gL, bV, Phi0, dPhi0)
 
         # Yepes / Dynamic / Static via envelope_solver's existing solver
-        T_dyn = es.max_torque(model, transform, omega, "Dynamic", maps_free, Imax, Vmax, rms_max)
-        T_yep = es.max_torque(model, transform, omega, "Yepes", maps_free, Imax, Vmax, rms_max)
-        T_sta = es.max_torque(model, transform, omega, "Static", maps_dc, Imax, Vmax, rms_max)
+        T_dyn = es.max_torque(machine, omega, "Dynamic", maps_free, Imax, Vmax, rms_max)
+        T_yep = es.max_torque(machine, omega, "Yepes", maps_free, Imax, Vmax, rms_max)
+        T_sta = es.max_torque(machine, omega, "Static", maps_dc, Imax, Vmax, rms_max)
 
         # Fall via the faithful arm
-        T_fall, fall_d = fall_max_torque(model, transform, omega, Imax, Vmax)
+        T_fall, fall_d = fall_max_torque(machine, fwd, omega, Imax, Vmax)
         diag_fall.append((rpm, fall_d))
 
         env["Dynamic"].append(T_dyn)

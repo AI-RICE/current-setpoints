@@ -34,7 +34,7 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set
+from current_setpoints.optimization import ActiveSetOptimizer
 from dynamic.iron_loss import iron_loss, low_pass_trajectory
 from experiments.chatter.common import chatter_amplitude, joule_loss, make_setup
 
@@ -51,22 +51,18 @@ def main() -> None:
     n_grid = 128
 
     print("Reference active-set run at rho=0, N=128 ...")
-    r = run_active_set(
-        model=setup.model,
-        transform=setup.transform,
-        omega=setup.omega_el,
-        torq_target=setup.torq_target,
-        curr_max=setup.machine.curr_max,
-        volt_max=setup.machine.volt_max,
+    optimizer = ActiveSetOptimizer(
+        setup.fwd,
         n_grid=n_grid,
         max_outer_iter=10,
         tol=1e-3,
         rho=0.0,
         scheme="forward",
     )
-    X_ref = r["curr_dq_grid"]
+    sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+    X_ref = sol.curr_dq
     J_ref = joule_loss(X_ref)
-    loss_ref = iron_loss(setup.transform, setup.omega_el, X_ref)
+    loss_ref = iron_loss(setup.fwd, setup.omega_el, X_ref)
     print(
         f"  reference J={J_ref:.3f}  P_eddy={loss_ref['eddy']:.3f}  "
         f"P_hyst={loss_ref['hysteresis']:.3f}  C={chatter_amplitude(X_ref, 7):.4f}\n"
@@ -81,7 +77,7 @@ def main() -> None:
     for hc in hcs:
         X_lp = low_pass_trajectory(X_ref, h_cutoff=hc)
         J = joule_loss(X_lp)
-        loss = iron_loss(setup.transform, setup.omega_el, X_lp)
+        loss = iron_loss(setup.fwd, setup.omega_el, X_lp)
         C = chatter_amplitude(X_lp, h_max=7)
         Js.append(J)
         Pe.append(loss["eddy"])

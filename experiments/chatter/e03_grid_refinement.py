@@ -31,7 +31,8 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import (
     chatter_amplitude,
     figs_dir,
@@ -55,34 +56,30 @@ def main() -> None:
 
     for N in n_grids:
         t0 = time.time()
-        result = run_active_set(
-            model=setup.model,
-            transform=setup.transform,
-            omega=setup.omega_el,
-            torq_target=setup.torq_target,
-            curr_max=setup.machine.curr_max,
-            volt_max=setup.machine.volt_max,
+        optimizer = ActiveSetOptimizer(
+            setup.fwd,
             n_grid=N,
             max_outer_iter=10,
             tol=1e-3,
             rho=0.0,
             scheme="forward",
         )
+        sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
         elapsed = time.time() - t0
-        X = result["curr_dq_grid"]
+        X = sol.curr_dq
         deltas.append(2 * np.pi / N)
         losses.append(joule_loss(X))
         chatters.append(chatter_amplitude(X, h_max=7))
         tails.append(tail_mass(X, h_max=7))
         r_dense, _ = voltage_residuals_dense(
-            setup.transform,
+            setup.fwd,
             setup.omega_el,
             X,
             setup.machine.volt_max,
         )
         residuals.append(r_dense)
         walls.append(elapsed)
-        convergeds.append(bool(result["converged"]))
+        convergeds.append(bool(sol.success))
         print(
             f"N={N:4d}  dtheta={deltas[-1]:.5f}  J={losses[-1]:.4f}  "
             f"C={chatters[-1]:.4f}  tail={tails[-1]:.4f}  "

@@ -30,8 +30,9 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
 from dynamic.iron_loss import iron_loss
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import (
     OPERATING_POINTS,
     chatter_amplitude,
@@ -73,13 +74,8 @@ def main() -> None:
         }
         for alpha in alphas:
             t0 = time.time()
-            r = run_active_set(
-                model=setup.model,
-                transform=setup.transform,
-                omega=setup.omega_el,
-                torq_target=setup.torq_target,
-                curr_max=setup.machine.curr_max,
-                volt_max=setup.machine.volt_max,
+            optimizer = ActiveSetOptimizer(
+                setup.fwd,
                 n_grid=n_grid,
                 max_outer_iter=10,
                 tol=1e-3,
@@ -87,12 +83,14 @@ def main() -> None:
                 scheme="forward",
                 iron_weight=float(alpha),
             )
-            X = r["curr_dq_grid"]
+            sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+            X = sol.curr_dq
+            active = sol.diagnostics.get("active", frozenset())
             J = joule_loss(X)
-            loss = iron_loss(setup.transform, setup.omega_el, X)
+            loss = iron_loss(setup.fwd, setup.omega_el, X)
             C = chatter_amplitude(X, h_max=7)
             res_dense, _ = voltage_residuals_dense(
-                setup.transform,
+                setup.fwd,
                 setup.omega_el,
                 X,
                 setup.machine.volt_max,
@@ -103,11 +101,11 @@ def main() -> None:
             cell_data["Ph"].append(loss["hysteresis"])
             cell_data["C"].append(C)
             cell_data["res"].append(res_dense)
-            cell_data["A_size"].append(len(r["active"]))
-            cell_data["converged"].append(bool(r["converged"]))
+            cell_data["A_size"].append(len(active))
+            cell_data["converged"].append(bool(sol.success))
             print(
                 f"  alpha={alpha:.1e}  J={J:8.3f}  P_e={loss['eddy']:8.3f}  "
-                f"C={C:.4f}  res={res_dense:+.4f}V  |A|={len(r['active']):3d}  "
+                f"C={C:.4f}  res={res_dense:+.4f}V  |A|={len(active):3d}  "
                 f"t={time.time() - t0:.1f}s"
             )
         results[tag] = cell_data

@@ -31,8 +31,9 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from current_setpoints.utils.plotting_dynamic import plot_dq_phase_combined
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
+from dynamic._waveforms import plot_dq_phase_combined
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import (
     chatter_amplitude,
     figs_dir,
@@ -48,22 +49,19 @@ def main() -> None:
 
     rows = []
     for scheme in ("forward", "central"):
-        result = run_active_set(
-            model=setup.model,
-            transform=setup.transform,
-            omega=setup.omega_el,
-            torq_target=setup.torq_target,
-            curr_max=setup.machine.curr_max,
-            volt_max=setup.machine.volt_max,
+        optimizer = ActiveSetOptimizer(
+            setup.fwd,
             n_grid=n_grid,
             max_outer_iter=10,
             tol=1e-3,
             rho=0.0,
             scheme=scheme,
         )
-        X = result["curr_dq_grid"]
+        sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+        X = sol.curr_dq
+        active = sol.diagnostics.get("active", frozenset())
         r_dense, _ = voltage_residuals_dense(
-            setup.transform,
+            setup.fwd,
             setup.omega_el,
             X,
             setup.machine.volt_max,
@@ -71,8 +69,8 @@ def main() -> None:
         rows.append(
             {
                 "scheme": scheme,
-                "converged": bool(result["converged"]),
-                "active_size": len(result["active"]),
+                "converged": bool(sol.success),
+                "active_size": len(active),
                 "J": joule_loss(X),
                 "C": chatter_amplitude(X, h_max=7),
                 "tail": tail_mass(X, h_max=7),
@@ -86,7 +84,7 @@ def main() -> None:
         )
 
         fig, _ = plot_dq_phase_combined(
-            setup.transform,
+            setup.fwd,
             setup.omega_el,
             X,
             curr_max=setup.machine.curr_max,

@@ -44,7 +44,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from dynamic.fourier_optimizer import extract_quadratic_torque, n_basis  # noqa: E402
+from dynamic.fourier_math import extract_quadratic_torque, n_basis  # noqa: E402
 
 H_FREE = tuple(range(11))  # {0..10} free-shaping basis for Yepes / Dynamic
 N_CON = 90  # collocation grid size
@@ -80,8 +80,7 @@ def fault_phase_map(vec_theta: np.ndarray, open_phases: tuple[int, ...]) -> np.n
 
 
 def solve_fault(
-    model,
-    transform,
+    drive,
     omega,
     T,
     harmonics,
@@ -104,11 +103,11 @@ def solve_fault(
         v_phase = gU . i_dq + omega * gL . di_dq + bV.
     """
     Hf_s, gU, gL, bV, Phi, dPhi = maps
-    dim = transform.dim
+    dim = drive.dim
     nb = n_basis(harmonics)
     n_con, n_surv = Hf_s.shape[0], Hf_s.shape[1]
     nvars = nb * dim
-    A_t, b_t, c_t = extract_quadratic_torque(model, omega, dim)
+    A_t, b_t, c_t = extract_quadratic_torque(drive, omega)
     wvec = np.repeat([1.0] + [0.5] * (nb - 1), dim)
 
     def as_C(c):
@@ -185,15 +184,14 @@ def solve_fault(
     return C, bool(res.success), maxI, maxV, rms
 
 
-def feasible(model, transform, omega, T, arm, maps, Imax, Vmax, rms_max, warm):
+def feasible(drive, omega, T, arm, maps, Imax, Vmax, rms_max, warm):
     """Is torque T feasible under this arm's constraint set?"""
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
     harmonics = (0,) if arm == "Static" else H_FREE
     use_voltage = arm in ("Static", "Dynamic")
     C, conv, maxI, maxV, rms = solve_fault(
-        model,
-        transform,
+        drive,
         omega,
         T,
         harmonics,
@@ -212,16 +210,16 @@ def feasible(model, transform, omega, T, arm, maps, Imax, Vmax, rms_max, warm):
     return ok, C
 
 
-def max_torque(model, transform, omega, arm, maps, Imax, Vmax, rms_max, T_hi=7.0):
+def max_torque(drive, omega, arm, maps, Imax, Vmax, rms_max, T_hi=7.0):
     """Bisect the max ripple-free torque feasible for this arm."""
     lo, hi = 0.0, T_hi
     warm = None
-    ok0, C0 = feasible(model, transform, omega, 0.5, arm, maps, Imax, Vmax, rms_max, None)
+    ok0, C0 = feasible(drive, omega, 0.5, arm, maps, Imax, Vmax, rms_max, None)
     if ok0:
         warm = C0
     for _ in range(8):
         mid = 0.5 * (lo + hi)
-        ok, C = feasible(model, transform, omega, mid, arm, maps, Imax, Vmax, rms_max, warm)
+        ok, C = feasible(drive, omega, mid, arm, maps, Imax, Vmax, rms_max, warm)
         if ok:
             lo = mid
             warm = C

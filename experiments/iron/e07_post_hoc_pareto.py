@@ -31,7 +31,7 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set
+from current_setpoints.optimization import ActiveSetOptimizer
 from dynamic.iron_loss import iron_loss
 from experiments.chatter.common import (
     chatter_amplitude,
@@ -59,22 +59,18 @@ def main() -> None:
     Ph: list[float] = []
     Cs: list[float] = []
     for rho in rhos:
-        r = run_active_set(
-            model=setup.model,
-            transform=setup.transform,
-            omega=setup.omega_el,
-            torq_target=setup.torq_target,
-            curr_max=setup.machine.curr_max,
-            volt_max=setup.machine.volt_max,
+        optimizer = ActiveSetOptimizer(
+            setup.fwd,
             n_grid=n_grid,
             max_outer_iter=10,
             tol=1e-3,
             rho=rho,
             scheme="forward",
         )
-        X = r["curr_dq_grid"]
+        sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+        X = sol.curr_dq
         J = joule_loss(X)
-        loss = iron_loss(setup.transform, setup.omega_el, X)
+        loss = iron_loss(setup.fwd, setup.omega_el, X)
         C = chatter_amplitude(X, h_max=7)
         Js.append(J)
         Pe.append(loss["eddy"])
@@ -111,22 +107,18 @@ def main() -> None:
     PhN: list[float] = []
     CsN: list[float] = []
     for N in Ns:
-        r = run_active_set(
-            model=setup.model,
-            transform=setup.transform,
-            omega=setup.omega_el,
-            torq_target=setup.torq_target,
-            curr_max=setup.machine.curr_max,
-            volt_max=setup.machine.volt_max,
+        optimizer = ActiveSetOptimizer(
+            setup.fwd,
             n_grid=N,
             max_outer_iter=10,
             tol=1e-3,
             rho=0.0,
             scheme="forward",
         )
-        X = r["curr_dq_grid"]
+        sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+        X = sol.curr_dq
         J = joule_loss(X)
-        loss = iron_loss(setup.transform, setup.omega_el, X)
+        loss = iron_loss(setup.fwd, setup.omega_el, X)
         C = chatter_amplitude(X, h_max=7)
         JsN.append(J)
         PeN.append(loss["eddy"])

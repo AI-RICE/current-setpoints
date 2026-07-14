@@ -26,18 +26,14 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from current_setpoints.optimization import ModelAnalytical
-from current_setpoints.optimization.models import BaseTorqueModel
-from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2
-from current_setpoints.simulation import Transform
+from current_setpoints.models.forward_model import ForwardModel
+from current_setpoints.models.machines import PMSM5Phase
 
 
 @dataclass
 class Setup:
-    machine: IEEEMachine2
-    flux: Flux_IEEEMachine2
-    transform: Transform
-    model: BaseTorqueModel
+    machine: PMSM5Phase
+    fwd: ForwardModel
     omega_el: float
     torq_target: float
 
@@ -60,17 +56,13 @@ def make_setup(n_mech_rpm: float = 1500.0, torq_target: float = 4.5, n_theta: in
     -- the "max V-residual corner" where active-set, iron loss, and
     current limits all interact.
     """
-    machine = IEEEMachine2()
+    machine = PMSM5Phase()
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
-    flux = Flux_IEEEMachine2()
-    transform = Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=n_theta)
-    model = ModelAnalytical(machine=machine, flux=flux)
+    fwd = ForwardModel(machine, add_volt_0=False, n_theta=n_theta)
     omega_el = n_mech_rpm * (np.pi / 30.0) * machine.n_ppairs
     return Setup(
         machine=machine,
-        flux=flux,
-        transform=transform,
-        model=model,
+        fwd=fwd,
         omega_el=omega_el,
         torq_target=torq_target,
     )

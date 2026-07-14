@@ -28,10 +28,7 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import (
-    _solve_joint,
-    run_active_set,
-)
+from current_setpoints.optimization import ActiveSetOptimizer
 from experiments.chatter.common import (
     chatter_amplitude,
     figs_dir,
@@ -61,42 +58,22 @@ def main() -> None:
     seed = 12345
 
     rng = np.random.default_rng(seed)
-    base = run_active_set(
-        model=setup.model,
-        transform=setup.transform,
-        omega=setup.omega_el,
-        torq_target=setup.torq_target,
-        curr_max=setup.machine.curr_max,
-        volt_max=setup.machine.volt_max,
-        n_grid=n_grid,
-        max_outer_iter=10,
-        tol=1e-3,
-    )
-    A = set(int(n) for n in base["active"])
-    X_ref = base["curr_dq_grid"]
+    optimizer = ActiveSetOptimizer(setup.fwd, n_grid=n_grid, max_outer_iter=10, tol=1e-3)
+    sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+    A = set(int(n) for n in sol.diagnostics.get("active", frozenset()))
+    X_ref = sol.curr_dq
     J_ref = joule_loss(X_ref)
-    print(f"reference run: J={J_ref:.6f}  |A|={len(A)}  converged={base['converged']}")
+    print(f"reference run: J={J_ref:.6f}  |A|={len(A)}  converged={sol.success}")
     print()
 
     losses: list[float] = []
     chatters: list[float] = []
     trajectories: list[np.ndarray] = []
 
+    maps = optimizer._precompute_maps(setup.omega_el)
     for k in range(n_restarts):
         X_init = _perturb(X_ref, eps, rng)
-        X, ok = _solve_joint(
-            setup.model,
-            setup.transform,
-            setup.omega_el,
-            setup.torq_target,
-            setup.machine.curr_max,
-            setup.machine.volt_max,
-            X_init,
-            A,
-            opts={"disp": False, "ftol": 1e-7, "maxiter": 1500, "eps": 1e-8},
-            rho=0.0,
-            scheme="forward",
-        )
+        X, ok = optimizer._solve_joint(maps, setup.omega_el, setup.torq_target, X_init, A)
         J = joule_loss(X)
         C = chatter_amplitude(X, h_max=7)
         losses.append(J)

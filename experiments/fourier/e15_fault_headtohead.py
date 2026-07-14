@@ -37,12 +37,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from current_setpoints.optimization import ModelAnalytical  # noqa: E402
-from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2  # noqa: E402
-from current_setpoints.simulation import Transform  # noqa: E402
-from current_setpoints.utils.plotting_dynamic import _evaluate_dq_on_grid  # noqa: E402
-from dynamic import phase_voltage as pv  # noqa: E402
-from dynamic.fourier_optimizer import extract_quadratic_torque, fourier_design, n_basis  # noqa: E402
+from current_setpoints.models.forward_model import ForwardModel  # noqa: E402
+from current_setpoints.models.machines import PMSM5Phase  # noqa: E402
+from dynamic._waveforms import evaluate_dq_on_grid  # noqa: E402
+from dynamic.fourier_math import extract_quadratic_torque, fourier_design, n_basis  # noqa: E402
+from experiments.fourier import phase_voltage as pv  # noqa: E402
 
 
 def _full_clarke_5phase() -> np.ndarray:
@@ -77,18 +76,18 @@ def fault_phase_map(vec_theta: np.ndarray, open_phases: tuple[int, ...]) -> tupl
     return np.einsum("ij,tjk->tik", T_inv, R), kept
 
 
-def joule_dense(transform: Transform, theta_grid: np.ndarray, X: np.ndarray) -> float:
-    Xd = _evaluate_dq_on_grid(theta_grid, X, transform.vec_theta[:-1])
+def joule_dense(fwd: ForwardModel, theta_grid: np.ndarray, X: np.ndarray) -> float:
+    Xd = evaluate_dq_on_grid(theta_grid, X, fwd.vec_theta[:-1])
     return float(np.mean(np.sum(Xd**2, axis=1)))
 
 
-def per_angle_optimum(model, transform, omega, T, Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, idx_grid):
+def per_angle_optimum(drive, omega, T, Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, idx_grid):
     """
     Full position-dependent optimum at a current-limited (voltage-slack)
     point: independent per-angle min ||x||^2 s.t. torque + surviving-phase
     current & voltage limits. Returns (theta_grid, X, ok, maxI, maxV).
     """
-    dim = transform.dim
+    dim = drive.dim
     n_grid = idx_grid.size
     X = np.full((n_grid, dim), np.nan)
     seed = np.array([1.0, 1.0, 0.0, 0.0])
@@ -97,7 +96,7 @@ def per_angle_optimum(model, transform, omega, T, Imax, Vmax, Hf_all, Gf_all, be
         Hrows = Hf_all[i]  # (n_surv, dim)
         Grows = Gf_all[i]
         bph = bemf_ph_all[i]
-        cons = [{"type": "eq", "fun": (lambda x, _T=T: model.calculate_torque(omega, x) - _T)}]
+        cons = [{"type": "eq", "fun": (lambda x, _T=T: drive.torque(omega, x) - _T)}]
         for k in range(Hrows.shape[0]):
             cons.append({"type": "ineq", "fun": (lambda x, h=Hrows[k]: Imax - h @ x)})
             cons.append({"type": "ineq", "fun": (lambda x, h=Hrows[k]: Imax + h @ x)})
@@ -115,18 +114,21 @@ def per_angle_optimum(model, transform, omega, T, Imax, Vmax, Hf_all, Gf_all, be
 
 
 def fourier_fault(
-    model, transform, omega, T, Imax, Vmax, harmonics, Hf_s, Pv_s, bemf_ph_s, Phi, dPhi, ripple_budget=1e-2, warm=None
+    drive, omega, T, Imax, Vmax, harmonics, Hf_s, Pv_s, bemf_ph_s, Phi, dPhi, ripple_budget=1e-2, warm=None
 ):
     """Fourier solve under fault at collocation angles.
 
     Current peaks use the reduced-Clarke map ``Hf_s`` (open phase carries no
     current); per-phase voltage uses the inverse-Park map ``Pv_s`` (the
-    machine's fault-independent voltage transform). See dynamic/phase_voltage.py.
+    machine's fault-independent voltage transform). See experiments/fourier/phase_voltage.py.
     """
-    dim = transform.dim
+    dim = drive.dim
     nb = n_basis(harmonics)
     n_con, n_surv = Hf_s.shape[0], Hf_s.shape[1]
-    A_t, b_t, c_t = extract_quadratic_torque(model, omega, dim)
+    A_t, b_t, c_t = extract_quadratic_torque(drive, omega)
+    zeros = np.zeros(dim)
+    U = drive.voltage_operator(omega, zeros)
+    L = drive.inductance(omega, zeros)
     w = [1.0] + [0.5] * (nb - 1)
     wvec = np.repeat(w, dim)
 
@@ -152,8 +154,8 @@ def fourier_fault(
             cons.append({"type": "ineq", "fun": (lambda c, a=ci: Imax - a @ c), "jac": (lambda c, a=ci: -a)})
             cons.append({"type": "ineq", "fun": (lambda c, a=ci: Imax + a @ c), "jac": (lambda c, a=ci: a)})
             pv_row = Pv_s[s, k]  # inverse-Park voltage row for surviving phase k
-            gU = transform.mat_curr_dq_to_volt_dq.T @ pv_row
-            gL = transform.machine.L_stat.T @ pv_row
+            gU = U.T @ pv_row
+            gL = L.T @ pv_row
             cv = (np.outer(Phi[s], gU) + omega * np.outer(dPhi[s], gL)).ravel()
             b = float(bemf_ph_s[s, k])
             cons.append({"type": "ineq", "fun": (lambda c, a=cv, d=b: Vmax - (a @ c + d)), "jac": (lambda c, a=cv: -a)})
@@ -177,26 +179,23 @@ def fourier_fault(
 
 
 def main() -> None:
-    machine = IEEEMachine2()
+    machine = PMSM5Phase()
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
-    flux = Flux_IEEEMachine2()
-    transform = Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=700)
-    model = ModelAnalytical(machine=machine, flux=flux)
+    fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
     Imax, Vmax = machine.curr_max, machine.volt_max
     rpm = 150.0
     omega = rpm * (np.pi / 30.0) * machine.n_ppairs
-    transform._set_omega(omega)
-    dim = transform.dim
+    dim = machine.dim
 
     # --- single-fault (phase 0 open) maps ---
     # CURRENT: reduced-Clarke map (open phase carries no current).
     # VOLTAGE: inverse-Park map (machine's fault-independent voltage transform).
-    Hf_all, kept = fault_phase_map(transform.vec_theta, (0,))  # (n_theta, 4, dim)
-    U = transform.mat_curr_dq_to_volt_dq
-    flux_volt, _ = transform.flux.get_flux(omega, np.zeros(dim))
-    bemf_dq = omega * machine.mat_crossc @ flux_volt
+    Hf_all, kept = fault_phase_map(fwd.vec_theta, (0,))  # (n_theta, 4, dim)
+    zeros = np.zeros(dim)
+    U = machine.voltage_operator(omega, zeros)
+    bemf_dq = machine.bemf_dq(omega, zeros)
     # inverse-Park rows P_k(theta) for surviving phases, (n_theta, n_surv, dim)
-    Pv_all = pv.phase_basis(transform, np.arange(transform.vec_theta.size), phases=kept).transpose(1, 0, 2)
+    Pv_all = pv.phase_basis(fwd, np.arange(fwd.vec_theta.size), phases=kept).transpose(1, 0, 2)
     Gf_all = np.einsum("tik,kj->tij", Pv_all, U)
     bemf_ph_all = np.einsum("tik,k->ti", Pv_all, bemf_dq)
     print(f"single open-phase fault (phase 0); surviving phases {kept}; {rpm:.0f} rpm")
@@ -206,9 +205,9 @@ def main() -> None:
         np.linspace(0, 2 * np.pi, n_grid, endpoint=False),
         (
             np.round(
-                np.linspace(0, 2 * np.pi, n_grid, endpoint=False) / (2 * np.pi) * (transform.vec_theta.size - 1)
+                np.linspace(0, 2 * np.pi, n_grid, endpoint=False) / (2 * np.pi) * (fwd.vec_theta.size - 1)
             ).astype(int)
-            % (transform.vec_theta.size - 1)
+            % (fwd.vec_theta.size - 1)
         ),
     )
 
@@ -216,7 +215,7 @@ def main() -> None:
     ceiling = None
     for T in np.arange(6.5, 2.0, -0.1):
         _, X, ok = per_angle_optimum(
-            model, transform, omega, float(T), Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, idx_grid
+            machine, omega, float(T), Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, idx_grid
         )
         if bool(np.all(ok)):
             ceiling = float(T)
@@ -227,7 +226,7 @@ def main() -> None:
     Hf_dense = Hf_all  # (n_theta, n_surv, dim)
 
     def neg_torque(x):
-        return -model.calculate_torque(omega, x)
+        return -machine.torque(omega, x)
 
     cons_static = []
     for k in range(Hf_dense.shape[1]):
@@ -249,11 +248,11 @@ def main() -> None:
     for frac, lab in [(0.80, "80% ceiling"), (0.95, "95% ceiling")]:
         T = round(frac * ceiling, 3)
         print(f"\n--- T*={T} Nm ({lab}) ---")
-        tg, Xfull, ok = per_angle_optimum(model, transform, omega, T, Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, idx_grid)
+        tg, Xfull, ok = per_angle_optimum(machine, omega, T, Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, idx_grid)
         if not bool(np.all(ok)):
             print("  full per-angle optimum infeasible at some node; skipping")
             continue
-        Jfull = joule_dense(transform, tg, Xfull)
+        Jfull = joule_dense(fwd, tg, Xfull)
         # surviving-phase peak current / voltage of full solution at grid nodes
         i_surv = np.einsum("nik,nk->ni", Hf_all[idx_grid], Xfull)  # (n_grid, n_surv)
         v_surv = np.einsum("nik,nk->ni", Gf_all[idx_grid], Xfull) + bemf_ph_all[idx_grid]
@@ -269,12 +268,12 @@ def main() -> None:
             np.linspace(0, 2 * np.pi, n_con, endpoint=False),
             (
                 np.round(
-                    np.linspace(0, 2 * np.pi, n_con, endpoint=False) / (2 * np.pi) * (transform.vec_theta.size - 1)
+                    np.linspace(0, 2 * np.pi, n_con, endpoint=False) / (2 * np.pi) * (fwd.vec_theta.size - 1)
                 ).astype(int)
-                % (transform.vec_theta.size - 1)
+                % (fwd.vec_theta.size - 1)
             ),
         )
-        theta_s = transform.vec_theta[idx_s]
+        theta_s = fwd.vec_theta[idx_s]
         Hf_s = Hf_all[idx_s]      # reduced-Clarke current map
         Pv_s = Pv_all[idx_s]      # inverse-Park voltage map
         bemf_ph_s = bemf_ph_all[idx_s]
@@ -286,8 +285,7 @@ def main() -> None:
         for H in [(0,), (0, 9, 11), tuple(range(8)), tuple(range(16))]:
             Phi, dPhi = fourier_design(theta_s, H)
             C, conv = fourier_fault(
-                model,
-                transform,
+                machine,
                 omega,
                 T,
                 Imax,
@@ -302,7 +300,7 @@ def main() -> None:
                 warm=warm,
             )
             Xo = fourier_design(theta_out, H)[0] @ C
-            Jf = joule_dense(transform, theta_out, Xo)
+            Jf = joule_dense(fwd, theta_out, Xo)
             # feasibility of this Fourier solution (surviving-phase current peak at collocation)
             i_chk = np.einsum("nik,nk->ni", Hf_all[idx_s], fourier_design(theta_s, H)[0] @ C)
             maxI_f = float(np.max(np.abs(i_chk)))

@@ -28,7 +28,8 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from dynamic.active_set_optimizer import run_active_set, voltage_residuals_dense
+from current_setpoints.optimization import ActiveSetOptimizer
+from dynamic.voltage_diagnostics import voltage_residuals_dense
 from experiments.chatter.common import (
     chatter_amplitude,
     figs_dir,
@@ -43,24 +44,15 @@ def main() -> None:
     setup = make_setup()
     n_grid = 128
 
-    result = run_active_set(
-        model=setup.model,
-        transform=setup.transform,
-        omega=setup.omega_el,
-        torq_target=setup.torq_target,
-        curr_max=setup.machine.curr_max,
-        volt_max=setup.machine.volt_max,
-        n_grid=n_grid,
-        max_outer_iter=8,
-        tol=1e-3,
-    )
-    X = result["curr_dq_grid"]
-    print(f"converged: {result['converged']}, |A| = {len(result['active'])}")
+    optimizer = ActiveSetOptimizer(setup.fwd, n_grid=n_grid, max_outer_iter=8, tol=1e-3)
+    sol = optimizer.minimize_current(setup.torq_target, setup.omega_el)
+    X = sol.curr_dq
+    print(f"converged: {sol.success}, |A| = {len(sol.diagnostics.get('active', frozenset()))}")
     print(f"joule_loss = {joule_loss(X):.6f}")
     print(f"chatter_amplitude (H=7) = {chatter_amplitude(X, h_max=7):.4f}")
     print(f"tail_mass (H=7)         = {tail_mass(X, h_max=7):.4f}")
     r_dense, _ = voltage_residuals_dense(
-        setup.transform,
+        setup.fwd,
         setup.omega_el,
         X,
         setup.machine.volt_max,
@@ -70,11 +62,11 @@ def main() -> None:
     h, mag = fourier_spectrum(X)
     labels = [
         rf"$i_{{d^{2 * i + 1}}}$" if j == 0 else rf"$i_{{q^{2 * i + 1}}}$"
-        for i in range(setup.transform.dim // 2)
+        for i in range(setup.machine.dim // 2)
         for j in range(2)
     ]
     fig, ax = plt.subplots(figsize=(10, 6))
-    for j in range(setup.transform.dim):
+    for j in range(setup.machine.dim):
         ax.semilogy(h, np.maximum(mag[:, j], 1e-10), marker="o", ms=4, label=labels[j], linewidth=1.2)
     ax.set_xlabel(r"harmonic number $h$")
     ax.set_ylabel(r"$|\hat{a}_h|$  [A]")

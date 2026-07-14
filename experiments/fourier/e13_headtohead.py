@@ -45,17 +45,11 @@ if ROOT not in sys.path:
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from current_setpoints.optimization import ModelAnalytical  # noqa: E402
-from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2  # noqa: E402
-from current_setpoints.simulation import Transform  # noqa: E402
-from current_setpoints.utils.plotting_dynamic import _evaluate_dq_on_grid  # noqa: E402
-from dynamic.active_set_optimizer import (  # noqa: E402
-    _grid_indices,
-    _phase_basis,
-    run_active_set,
-    voltage_residuals_dense,
-)
-from dynamic.fourier_optimizer import run_fourier  # noqa: E402
+from current_setpoints.models.forward_model import ForwardModel  # noqa: E402
+from current_setpoints.models.machines import PMSM5Phase  # noqa: E402
+from current_setpoints.optimization import ActiveSetOptimizer, FourierOptimizer  # noqa: E402
+from dynamic._waveforms import evaluate_dq_on_grid  # noqa: E402
+from dynamic.voltage_diagnostics import voltage_residuals_dense  # noqa: E402
 
 # Harmonic sets to sweep (each must include the DC term 0).
 HARMONIC_SETS: list[tuple[int, ...]] = [
@@ -78,13 +72,13 @@ def _figs_dir() -> str:
     return d
 
 
-def joule_dense(transform: Transform, theta_grid: np.ndarray, X: np.ndarray) -> float:
+def joule_dense(fwd: ForwardModel, theta_grid: np.ndarray, X: np.ndarray) -> float:
     """Period-mean Joule loss on the dense vec_theta grid (common metric)."""
-    Xd = _evaluate_dq_on_grid(theta_grid, X, transform.vec_theta[:-1])
+    Xd = evaluate_dq_on_grid(theta_grid, X, fwd.vec_theta[:-1])
     return float(np.mean(np.sum(Xd**2, axis=1)))
 
 
-def spectral_voltage_residual(transform: Transform, omega: float, X_grid: np.ndarray, volt_max: float) -> float:
+def spectral_voltage_residual(fwd: ForwardModel, omega: float, X_grid: np.ndarray, volt_max: float) -> float:
     """
     Worst per-phase voltage residual of a grid trajectory under the *exact*
     (spectral) derivative of its band-limited interpolation.
@@ -95,31 +89,32 @@ def spectral_voltage_residual(transform: Transform, omega: float, X_grid: np.nda
     A positive return means the grid solution violates V_max once the
     inductive term is computed faithfully.
     """
-    transform._set_omega(omega)
-    n_grid, dim = X_grid.shape
+    drive = fwd.drive
+    dim = drive.dim
+    n_grid, _ = X_grid.shape
     # spectral derivative on the coarse grid (band-limited interpolation)
     Xf = np.fft.fft(X_grid, axis=0)
     h = np.fft.fftfreq(n_grid, d=1.0 / n_grid)  # integer mode numbers
     dX = np.real(np.fft.ifft(1j * h[:, None] * Xf, axis=0))  # d/dtheta on [0,2pi)
 
-    U = transform.mat_curr_dq_to_volt_dq
-    L = transform.machine.L_stat
-    flux_volt, _ = transform.flux.get_flux(omega, np.zeros(dim))
-    bemf_dq = omega * transform.machine.mat_crossc @ flux_volt
+    zeros = np.zeros(dim)
+    U = drive.voltage_operator(omega, zeros)
+    L = drive.inductance(omega, zeros)
+    bemf_dq = drive.bemf_dq(omega, zeros)
     v_dq = X_grid @ U.T + omega * dX @ L.T + bemf_dq[None, :]  # (n_grid, dim)
 
-    _, idx = _grid_indices(transform, n_grid)
-    Hb = _phase_basis(transform, idx)  # (n_phases, n_grid, dim)
+    n_theta = fwd.vec_theta.size - 1
+    theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
+    idx = (np.round(theta_grid / (2 * np.pi) * n_theta).astype(int)) % n_theta
+    Hb = fwd._mat_dq_to_ph_all[idx].transpose(1, 0, 2)  # (n_phases, n_grid, dim)
     v_ph = np.einsum("knj,nj->kn", Hb, v_dq)
     return float(np.max(np.abs(v_ph)) - volt_max)
 
 
 def main() -> None:
-    machine = IEEEMachine2()
+    machine = PMSM5Phase()
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
-    flux = Flux_IEEEMachine2()
-    transform = Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=700)
-    model = ModelAnalytical(machine=machine, flux=flux)
+    fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
     Imax, Vmax = machine.curr_max, machine.volt_max
 
     n_grid = 128
@@ -134,20 +129,14 @@ def main() -> None:
         print(header)
         lines.append(header)
 
-        gr = run_active_set(
-            model=model,
-            transform=transform,
-            omega=omega,
-            torq_target=T,
-            curr_max=Imax,
-            volt_max=Vmax,
-            n_grid=n_grid,
-        )
-        Jg = joule_dense(transform, gr["theta_grid"], gr["curr_dq_grid"])
-        rv_fd, _ = voltage_residuals_dense(transform, omega, gr["curr_dq_grid"], Vmax)
-        rv_exact = spectral_voltage_residual(transform, omega, gr["curr_dq_grid"], Vmax)
+        active_opt = ActiveSetOptimizer(fwd, n_grid=n_grid)
+        sol_g = active_opt.minimize_current(T, omega)
+        theta_grid_g = sol_g.diagnostics["theta_grid"]
+        Jg = joule_dense(fwd, theta_grid_g, sol_g.curr_dq)
+        rv_fd, _ = voltage_residuals_dense(fwd, omega, sol_g.curr_dq, Vmax)
+        rv_exact = spectral_voltage_residual(fwd, omega, sol_g.curr_dq, Vmax)
         msg = (
-            f"GRID(N={n_grid}): J={Jg:.3f}  conv={gr['converged']}  "
+            f"GRID(N={n_grid}): J={Jg:.3f}  conv={sol_g.success}  "
             f"V-residual finite-diff={rv_fd:+.3f} V   exact-derivative={rv_exact:+.3f} V"
         )
         print(msg)
@@ -158,32 +147,24 @@ def main() -> None:
         warm = None
         J0 = None
         for H in HARMONIC_SETS:
-            fr = run_fourier(
-                model=model,
-                transform=transform,
-                omega=omega,
-                torq_target=T,
-                curr_max=Imax,
-                volt_max=Vmax,
-                harmonics=H,
-                n_con=n_con,
-                warm_coeffs=warm,
-            )
-            Jf = joule_dense(transform, fr["theta_grid"], fr["curr_dq_grid"])
+            fourier_opt = FourierOptimizer(fwd, n_grid=n_con, harmonics=H)
+            maps = fourier_opt._precompute_maps(omega)
+            fr = fourier_opt._solve(omega, maps, T, warm_coeffs=warm)
+            Jf = joule_dense(fwd, fr["theta_out"], fr["curr_dq_grid"])
             if H == (0,):
                 J0 = Jf
             closed = 100.0 * (J0 - Jf) / (J0 - Jg) if (J0 is not None and (J0 - Jg) > 1e-9) else float("nan")
             gap = 100.0 * (Jf - Jg) / Jg
             row = (
-                f"  Fourier H={str(H):22s} nb*dim={fr['coeffs'].size:3d}  J={Jf:8.3f}  "
-                f"gap_vs_grid={gap:+.2f}%  gap_closed={closed:5.1f}%  ripple={fr['torque_ripple']:.1e} Nm  conv={fr['converged']}"
+                f"  Fourier H={str(H):22s} nb*dim={fr['C'].size:3d}  J={Jf:8.3f}  "
+                f"gap_vs_grid={gap:+.2f}%  gap_closed={closed:5.1f}%  ripple={fr['torque_ripple']:.1e} Nm  conv={fr['success']}"
             )
             print(row)
             lines.append(row)
             Js.append(Jf)
             tags.append("{" + ",".join(map(str, H)) + "}")
             if H == (0, 9, 11):
-                warm = fr["coeffs"]  # warm-start richer sets from the {0,9,11} solution
+                warm = fr["C"]  # warm-start richer sets from the {0,9,11} solution
 
         ax = axes[0][col]
         x = np.arange(len(Js))

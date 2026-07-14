@@ -36,11 +36,9 @@ if ROOT not in sys.path:
 
 matplotlib.use("Agg")
 
-from current_setpoints.optimization import ModelAnalytical, MotorOptimizer
-from current_setpoints.parameters import Flux_IEEEMachine2, IEEEMachine2
-from current_setpoints.simulation import Transform
-from dynamic.active_set_optimizer import voltage_residuals
-from dynamic.independent_optimizer import run_independent_per_angle
+from current_setpoints.models.forward_model import ForwardModel
+from current_setpoints.models.machines import PMSM5Phase
+from current_setpoints.optimization import ActiveSetOptimizer, IndependentOptimizer, StaticOptimizer
 from dynamic.iron_loss import iron_loss
 from experiments.chatter.common import joule_loss
 
@@ -52,13 +50,11 @@ def _figs_dir() -> str:
 
 
 def main() -> None:
-    machine = IEEEMachine2()
+    machine = PMSM5Phase()
     machine.set_max_pars(curr_max=30.0, volt_max=13.0, omega_max=1800)
-    flux = Flux_IEEEMachine2()
-    transform = Transform(machine=machine, flux=flux, add_volt_0=False, n_theta=700)
-    model = ModelAnalytical(machine=machine, flux=flux)
-    optimizer = MotorOptimizer(
-        model=model,
+    fwd = ForwardModel(machine, add_volt_0=False, n_theta=700)
+    optimizer = StaticOptimizer(
+        fwd,
         opts={"disp": False, "ftol": 1e-8, "maxiter": 500, "eps": 1e-8},
     )
 
@@ -76,28 +72,26 @@ def main() -> None:
 
     print(f"Mesh: {len(torq_targets)} torques x {len(rpm_targets)} speeds, N={n_grid} R0 solver per cell.\n")
 
+    ind_opt = IndependentOptimizer(fwd, n_grid=n_grid)
+    active_opt = ActiveSetOptimizer(fwd, scheme="forward")
     for j, (omega_el, rpm) in enumerate(zip(omega_targets, rpm_targets, strict=True)):
-        _, t_cap, ok_top = optimizer.maximize_torque(omega=omega_el, transform=transform)
-        Tcap[j] = t_cap if ok_top else np.nan
+        sol_top = optimizer.maximize_torque(omega_el)
+        t_cap = sol_top.torque if sol_top.success else float("nan")
+        Tcap[j] = t_cap
         for i, T in enumerate(torq_targets):
-            if not (ok_top and t_cap > T):
+            if not (sol_top.success and t_cap > T):
                 continue
-            _, X, ok = run_independent_per_angle(
-                model=model,
-                transform=transform,
-                omega=omega_el,
-                torq_target=float(T),
-                curr_max=machine.curr_max,
-                volt_max=machine.volt_max,
-                n_grid=n_grid,
-            )
+            sol = ind_opt.minimize_current(float(T), omega_el)
+            X = sol.curr_dq
+            ok = sol.diagnostics["ok_grid"]
             if not bool(np.all(ok)):
                 continue
             feas[i, j] = True
             J[i, j] = joule_loss(X)
-            r, _ = voltage_residuals(transform, omega_el, X, machine.volt_max, scheme="forward")
+            maps = active_opt._precompute_maps(omega_el)
+            r, _ = active_opt.voltage_residuals(maps, omega_el, X)
             res[i, j] = float(np.max(r))
-            loss = iron_loss(transform, omega_el, X)
+            loss = iron_loss(fwd, omega_el, X)
             Pe[i, j] = loss["eddy"]
             Ph[i, j] = loss["hysteresis"]
             print(
