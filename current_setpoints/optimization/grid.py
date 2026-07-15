@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..models.forward_model import ForwardModel
+from ..models.forward_model import ForwardModel, count_peaks_at_limit
 from .optimizer import BaseOptimizer
 
 if TYPE_CHECKING:
@@ -29,6 +29,54 @@ def _init_grid_arrays(dim: int, n_torq: int, n_omega: int) -> dict[str, np.ndarr
     return grid
 
 
+def _trajectory_waveforms(
+    fwd: ForwardModel,
+    omega: float,
+    curr_dq_traj: np.ndarray,
+    rel_tol: float,
+) -> tuple[float, float, int, int]:
+    """Same diagnostics ForwardModel.peak_vals/count_peaks compute for a
+    constant current, but for a dynamic-mode per-angle trajectory
+    (curr_dq_traj shape (n_grid, dim)) -- reconstructed via each node's OWN
+    rotor angle and OWN current, rather than sweeping one constant current
+    over a full cycle. Static per-node voltage (no inter-node d/dtheta
+    coupling): exact for IndependentOptimizer/R0 results (that's what it
+    enforced); a slight underestimate for ActiveSetOptimizer trajectories,
+    whose own solve does account for that coupling even though this
+    diagnostic doesn't re-derive it."""
+    n_grid = curr_dq_traj.shape[0]
+    n_theta = fwd.vec_theta.size - 1
+    theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
+    idx_grid = np.round(theta_grid / (2 * np.pi) * n_theta).astype(int) % n_theta
+    kept = list(fwd.fault._kept)
+
+    n_curr_ph = fwd.phase_map_at_theta(0).shape[0]
+    curr_wave = np.full((n_curr_ph, n_grid), np.nan)
+    volt_wave = np.full((len(kept), n_grid), np.nan)
+
+    for n in range(n_grid):
+        i_n = curr_dq_traj[n]
+        if not np.all(np.isfinite(i_n)):
+            continue
+        theta_idx = int(idx_grid[n])
+        H = fwd.phase_map_at_theta(theta_idx)
+        curr_wave[:, n] = H @ i_n
+        gU, _, bV = fwd.volt_map_at_theta(theta_idx, omega)
+        volt_wave[:, n] = (gU @ i_n + bV)[kept]
+
+    # count_peaks_at_limit expects a trailing "wrap" sample (theta=2pi == theta=0,
+    # as the constant-current n_theta+1 sweep has); append the first column so
+    # the same peak-touching logic applies unchanged.
+    curr_wave_wrapped = np.concatenate([curr_wave, curr_wave[:, :1]], axis=1)
+    volt_wave_wrapped = np.concatenate([volt_wave, volt_wave[:, :1]], axis=1)
+
+    curr_peak = float(np.nanmax(np.abs(curr_wave)))
+    volt_peak = float(np.nanmax(np.abs(volt_wave)))
+    n_curr = count_peaks_at_limit(curr_wave_wrapped, fwd.drive.curr_max, rel_tol)
+    n_volt = count_peaks_at_limit(volt_wave_wrapped, fwd.drive.volt_max, rel_tol)
+    return curr_peak, volt_peak, n_curr, n_volt
+
+
 def _fill_grid_point(
     grid: dict[str, Any],
     fwd: ForwardModel,
@@ -36,11 +84,19 @@ def _fill_grid_point(
     curr_dq: np.ndarray,
     idx_torq: int,
     idx_omega: int,
+    rel_tol: float = 1e-3,
 ) -> None:
-    curr_peak, volt_peak = fwd.peak_vals(omega, curr_dq)
-    n_curr, n_volt = fwd.count_peaks(omega, curr_dq)
+    if curr_dq.ndim == 1:
+        curr_peak, volt_peak = fwd.peak_vals(omega, curr_dq)
+        n_curr, n_volt = fwd.count_peaks(omega, curr_dq, rel_tol)
+        grid["curr_dq_grid"][:, idx_torq, idx_omega] = curr_dq
+    else:
+        curr_peak, volt_peak, n_curr, n_volt = _trajectory_waveforms(fwd, omega, curr_dq, rel_tol)
+        # curr_dq_grid holds one representative current per cell; the full
+        # per-angle trajectory itself is discarded here (not needed for the
+        # peak/segment diagnostics plotted from this grid).
+        grid["curr_dq_grid"][:, idx_torq, idx_omega] = np.nanmean(curr_dq, axis=0)
 
-    grid["curr_dq_grid"][:, idx_torq, idx_omega] = curr_dq
     grid["grid_curr_peak"][idx_torq, idx_omega] = curr_peak
     grid["grid_volt_peak"][idx_torq, idx_omega] = volt_peak
     grid["grid_segments"][idx_torq, idx_omega] = 3 * n_volt + n_curr

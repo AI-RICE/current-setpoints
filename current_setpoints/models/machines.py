@@ -10,12 +10,7 @@ import numpy as np
 import torch
 from scipy.special import erf as _np_erf, expit as _np_sigmoid
 
-# Plain-numpy activations/derivatives for utils.neural_model.ACTIVATIONS, used
-# by NeuralFlux to evaluate its tiny (single-hidden-layer) network without
-# torch's per-op dispatch overhead — large relative to a network this size
-# called this many times during a grid/optimization sweep. Verified to match
-# the torch forward pass and torch.autograd.functional.jacobian to float
-# precision (~1e-9/1e-10).
+
 _NP_ACTIVATIONS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "relu": lambda z: np.maximum(z, 0.0),
     "gelu": lambda z: 0.5 * z * (1.0 + _np_erf(z / math.sqrt(2.0))),
@@ -87,13 +82,7 @@ class NeuralFlux(FluxModel):
         self.device = device
         self.L_stat = np.asarray(L_stat)
         self.cross_coupling = np.asarray(cross_coupling)
-        # Weights/scaler pulled once into plain numpy arrays: this network is
-        # tiny (single hidden layer, ~24 units) and evaluated hundreds of
-        # thousands of times per grid, so torch's per-op dispatch overhead
-        # (present even under no_grad()) dominates over the actual FLOPs.
-        # Forward pass and its analytic derivative are done in numpy instead
-        # — verified to match the torch versions to float precision
-        # (~1e-9/1e-10), not an approximation.
+
         with torch.no_grad():
             self._W1 = net.fc1.weight.cpu().numpy()
             self._b1 = net.fc1.bias.cpu().numpy()
@@ -103,11 +92,7 @@ class NeuralFlux(FluxModel):
         self._scale = scaler.scale_
         self._act = _NP_ACTIVATIONS[net.activation]
         self._act_deriv = _NP_ACTIVATION_DERIVATIVES[net.activation]
-        # Last-call caches: the optimizer's constraint functions (current limit,
-        # voltage limit, torque equality) each independently re-derive flux/
-        # inductance for the SAME (omega, curr_dq) within one SLSQP evaluation
-        # point. A single-slot cache turns that 3x redundancy into 1x without
-        # touching the shared optimizer/forward-model code.
+
         self._flux_cache: tuple[tuple[float, ...], np.ndarray] | None = None
         self._inductance_cache: tuple[tuple[float, ...], np.ndarray] | None = None
 
@@ -374,25 +359,6 @@ def neural_pmsm5phase(
     return machine
 
 
-def neural_flux_pmsm5phase(
-    net: Any,
-    scaler: Any,
-    device: torch.device,
-    *,
-    curr_max: float = 30.0,
-    volt_max: float = 13.0,
-    omega_max: float = 1800.0,
-) -> PMSMDrive:
-    """IEEE-Machine-2 with a neural flux model composed in place of the
-    default ``ConstantFlux``."""
-    params = ieee_machine2_params()
-    cross_coupling = _build_cross_coupling(2)
-    flux = NeuralFlux(net, scaler, device, params.L_stat, cross_coupling)
-    machine = PMSMDrive(params, flux=flux)
-    machine.set_max_pars(curr_max, volt_max, omega_max)
-    return machine
-
-
 # Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
 # "consistent-L training" section for how it was produced): a single-hidden-layer MLP,
 # hidden_size=24, GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output flux_pm (dim=4).
@@ -411,9 +377,8 @@ def ieee_machine2_trained_neural_flux(
     omega_max: float = 1800.0,
 ) -> PMSMDrive:
     """IEEE-Machine-2 with the trained neural flux model from ``weights/``
-    (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) loaded and composed in.
-    One-line equivalent of loading the net/scaler yourself and calling
-    ``neural_flux_pmsm5phase(net, scaler, device)``."""
+    (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) loaded and composed in place
+    of the default ``ConstantFlux``."""
     from ..utils.neural_model import load_neural_flux_model  # lazy — avoids circular import
 
     device = device if device is not None else torch.device("cpu")
@@ -426,7 +391,11 @@ def ieee_machine2_trained_neural_flux(
         device=device,
         activation=_FLUX_NN_ACTIVATION,
     )
-    return neural_flux_pmsm5phase(net, scaler, device, curr_max=curr_max, volt_max=volt_max, omega_max=omega_max)
+    params = ieee_machine2_params()
+    flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2))
+    machine = PMSMDrive(params, flux=flux)
+    machine.set_max_pars(curr_max, volt_max, omega_max)
+    return machine
 
 
 @dataclass

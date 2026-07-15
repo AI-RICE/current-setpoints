@@ -13,7 +13,6 @@ from .machines import (
     ieee_machine2_trained_neural_flux,
     im9_prototype,
     im9_prototype_params,
-    neural_flux_pmsm5phase,
     neural_pmsm5phase,
 )
 from .forward_model import Fault, ForwardModel
@@ -29,7 +28,6 @@ __all__ = [
     "ieee_machine2_params",
     "ieee_machine2",
     "neural_pmsm5phase",
-    "neural_flux_pmsm5phase",
     "ieee_machine2_trained_neural_flux",
     "IMParams",
     "InductionDrive",

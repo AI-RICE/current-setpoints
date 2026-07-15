@@ -25,7 +25,12 @@ def _null_space_row(C_red: np.ndarray) -> np.ndarray:
     return row / np.linalg.norm(row)
 
 
-def _count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float) -> int:
+def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e-3) -> int:
+    """How many times a reconstructed phase waveform touches ``limit`` (within
+    ``rel_tol``). Shared between ``ForwardModel.count_peaks`` (constant-current
+    case) and ``optimization.grid``'s dynamic-mode trajectory reconstruction —
+    both just need this applied to an (n_phases, n_samples) waveform array,
+    however it was produced."""
     if waveform.ndim == 1:
         waveform = waveform[np.newaxis, :]
     thresh = limit * (1.0 - rel_tol)
@@ -190,8 +195,8 @@ class ForwardModel:
         curr_ph = self.curr_ph(omega, curr_dq)
         volt_ph, _, _ = self.volt_ph(omega, curr_dq)
         volt_surviving = volt_ph[list(self.fault._kept), :]
-        n_curr = _count_peaks_at_limit(curr_ph, self.drive.curr_max, rel_tol)
-        n_volt = _count_peaks_at_limit(volt_surviving, self.drive.volt_max, rel_tol)
+        n_curr = count_peaks_at_limit(curr_ph, self.drive.curr_max, rel_tol)
+        n_volt = count_peaks_at_limit(volt_surviving, self.drive.volt_max, rel_tol)
         return n_curr, n_volt
 
     def phase_map_at_theta(self, theta_idx: int) -> np.ndarray:
