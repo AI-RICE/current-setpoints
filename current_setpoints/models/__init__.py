@@ -4,7 +4,7 @@ from .im_lut import (
     IMHarmonicParams,
     IMLUTParams,
     im5_async,
-    im5_async_saturated,
+    im5_tesla_gen1,
     im9_prototype,
 )
 from .machines import (
@@ -23,7 +23,7 @@ __all__ = [
     "IMHarmonicParams",
     "IMLUTParams",
     "im5_async",
-    "im5_async_saturated",
+    "im5_tesla_gen1",
     "im9_prototype",
     "FluxModel",
     "ConstantFlux",

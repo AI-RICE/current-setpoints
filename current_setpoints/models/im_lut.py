@@ -53,6 +53,13 @@ class IMLUTParams:
     volt_max: float
     k_v: float = 0.0
     k_h: float = 0.0
+    # fixed rotor constants for the slip relation omega_r =
+    # (R_r/L_r)(i_sd1/i_sq1); when None the plane-1 values (with the
+    # saturation-dependent L_mu) are used. FEM characterizations typically
+    # prescribe slip with FIXED no-load constants — set these to reproduce
+    # that convention exactly.
+    slip_R_r: float | None = None
+    slip_L_r: float | None = None
 
 
 class IMDriveLUT(DriveModel):
@@ -115,8 +122,12 @@ class IMDriveLUT(DriveModel):
         if abs(i_sq_1) < eps:
             return 0.0
         p1 = self.params.harmonics[0]
-        L_r_1 = self._plane_L_mu(0, curr_dq) + p1.L_r_sigma
-        return (p1.R_r / L_r_1) * (i_sd_1 / i_sq_1)
+        R_r_1 = self.params.slip_R_r if self.params.slip_R_r is not None else p1.R_r
+        if self.params.slip_L_r is not None:
+            L_r_1 = self.params.slip_L_r
+        else:
+            L_r_1 = self._plane_L_mu(0, curr_dq) + p1.L_r_sigma
+        return (R_r_1 / L_r_1) * (i_sd_1 / i_sq_1)
 
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         return self.R_stat + omega * self._cross_coupling @ self.inductance(omega, curr_dq)
@@ -195,40 +206,70 @@ def im5_async(curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
     return IMDriveLUT(params)
 
 
-# Fundamental-plane saturation of the im5_async machine, derived from the FEM
-# sweep I_combs_Results_correct_wr_definition.xlsx (Ansys, 357 points; slice
-# Id3=Iq3=0, lowest available Iq1 per Id1). The FEM model is wound with a
-# different turns count: N^2 = (L_mu1 + L_s_sigma1)/(lambda_d1/Id1)|_{40A}
-# = 0.37423/0.0020630 = 181.397, N = 13.468 (pending confirmation by the FEM
-# author). Winding coordinates: i = Id1_FEM/N, L_mu = (lambda_d1/Id1)*N^2
-# - L_s_sigma1. The 0 A point extends the first measured value flat.
-_IM5_SAT_I_MAG = np.array([0.0, 2.9699, 5.9398, 8.9098, 11.8797])  # A
-_IM5_SAT_L_MU = np.array([367.0, 367.0, 267.137, 189.135, 142.084]) * 1e-3  # H
+# Five-phase IM modelled on the first-generation Tesla car drive (FEM sweep
+# I_combs_Results_correct_wr_definition.xlsx, Ansys, 357 points; native
+# machine coordinates). Total stator inductance lambda_d1/Id1 measured on the
+# slice Id3=Iq3=0, lowest available Iq1 per Id1; the 0 A point extends the
+# first measured value flat. L_mu = lambda/i - L_s_sigma1 is peeled off in
+# the factory so the assumed leakage stays a single visible number.
+_TESLA5F_I_MAG = np.array([0.0, 40.0, 80.0, 120.0, 160.0])  # A
+_TESLA5F_L_TOTAL = np.array([2.0630, 2.0630, 1.5125, 1.0825, 0.8231]) * 1e-3  # H
+
+# FEM-author no-load constants (fixed) for the slip relation — the "correct
+# wr definition" the sweep was driven with.
+_TESLA5F_R_R1 = 0.0062  # Ohm
+_TESLA5F_L_R1 = 0.00242  # H
 
 
-def im5_async_saturated(curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
-    """`im5_async` with the measured fundamental-plane magnetizing
-    saturation: at the paper's own I_max = 13.5 A the table gives
-    L_mu = 142 mH — 39 % of the linear model's 367 mH. The h=3 plane stays
-    linear (the sweep's third-harmonic slice is too sparse; its scaled value
-    31.6 mH agrees with the paper's 36.1 mH within 12 %)."""
+def im5_tesla_gen1(
+    curr_max: float = 200.0,
+    volt_max: float = 230.0,
+    L_s_sigma1: float = 0.15e-3,
+    L_s_sigma3: float = 0.15e-3,
+    R_r3: float = _TESLA5F_R_R1,
+    n_ppairs: int = 2,
+) -> IMDriveLUT:
+    """Five-phase IM modelled on the first-generation Tesla car drive, with
+    the FEM-measured fundamental-plane saturation in native coordinates
+    (L_s,total: 2.06 mH @ 40 A -> 0.82 mH @ 160 A).
+
+    Known from the FEM author: R_s = 0.022 Ohm, phase-voltage amplitude
+    230 V, and the fixed no-load slip constants R_r1 = 6.2 mOhm,
+    L_r1 = 2.42 mH (used verbatim via slip_R_r/slip_L_r, matching the
+    sweep's wr definition). ASSUMED, pending identification: the leakage
+    split (L_s_sigma1 default 0.15 mH; L_r_sigma1 then follows from
+    L_r1 = L_mu1 + L_r_sigma1 for consistency with the no-load constants),
+    the h=3 rotor parameters (default: reuse plane-1 values), the pole-pair
+    count (Tesla gen-1 is a 4-pole machine -> p_p = 2), and curr_max
+    (default: the sweep's 200 A bound)."""
+    L_mu1_unsat = float(_TESLA5F_L_TOTAL[0]) - L_s_sigma1
+    L_r_sigma1 = _TESLA5F_L_R1 - L_mu1_unsat  # consistency with L_r1 no-load
+    # h=3 plane: FEM mean lambda_d3/Id3 = 0.224 mH at Id1=40 (sparse slice)
+    L_mu3 = 0.224e-3 - L_s_sigma3
     params = IMLUTParams(
         n_phases=5,
-        n_ppairs=2,
-        R_s=0.74,
+        n_ppairs=n_ppairs,
+        R_s=0.022,
         harmonics=[
             IMHarmonicParams(
-                R_r=0.61,
-                L_mu=367.0e-3,
-                L_s_sigma=7.23e-3,
-                L_r_sigma=5.07e-3,
-                i_mag_table=_IM5_SAT_I_MAG.copy(),
-                L_mu_table=_IM5_SAT_L_MU.copy(),
+                R_r=_TESLA5F_R_R1,
+                L_mu=L_mu1_unsat,
+                L_s_sigma=L_s_sigma1,
+                L_r_sigma=L_r_sigma1,
+                i_mag_table=_TESLA5F_I_MAG.copy(),
+                L_mu_table=_TESLA5F_L_TOTAL - L_s_sigma1,
             ),
-            IMHarmonicParams(R_r=0.48, L_mu=36.1e-3, L_s_sigma=8.94e-3, L_r_sigma=3.22e-3),
+            IMHarmonicParams(
+                R_r=R_r3,
+                L_mu=L_mu3,
+                L_s_sigma=L_s_sigma3,
+                L_r_sigma=L_r_sigma1,
+            ),
         ],
         curr_max=curr_max,
         volt_max=volt_max,
+        slip_R_r=_TESLA5F_R_R1,
+        slip_L_r=_TESLA5F_L_R1,
     )
     return IMDriveLUT(params)
 

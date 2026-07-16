@@ -167,29 +167,35 @@ def test_im5_async_paper_values():
     assert m.torque(100.0, np.array([3.0, 8.0, 0.0, 0.0])) > 0
 
 
-def test_im5_saturated_matches_linear_at_low_current():
-    from current_setpoints.models.im_lut import im5_async, im5_async_saturated
+def test_im5_tesla_gen1_known_values():
+    from current_setpoints.models.im_lut import im5_tesla_gen1
 
-    lin, sat = im5_async(), im5_async_saturated()
-    x_lo = np.array([1.0, 4.0, 0.0, 0.0])  # below the first table knot: some interp already
-    # at i_mag -> 0 the table equals the paper value exactly
-    assert sat.params.harmonics[0].L_mu_at(0.0) == pytest.approx(367.0e-3)
-    assert sat.params.harmonics[0].L_mu_at(2.0) == pytest.approx(367.0e-3)  # flat first segment
-    np.testing.assert_allclose(
-        sat.inductance(100.0, x_lo * 0 + np.array([2.0, 0.0, 0.0, 0.0])),
-        lin.inductance(100.0, np.array([2.0, 0.0, 0.0, 0.0])),
-        rtol=1e-12,
-    )
+    m = im5_tesla_gen1()
+    assert (m.n_phases, m.n_ppairs, m.dim) == (5, 2, 4)
+    assert m.params.R_s == 0.022
+    assert (m.curr_max, m.volt_max) == (200.0, 230.0)
+    p1 = m.params.harmonics[0]
+    # native-coordinate saturation: L_s,total = L_mu + L_s_sigma reproduces FEM
+    assert p1.L_mu_at(40.0) + p1.L_s_sigma == pytest.approx(2.0630e-3, rel=1e-9)
+    assert p1.L_mu_at(160.0) + p1.L_s_sigma == pytest.approx(0.8231e-3, rel=1e-9)
+    # leakage split consistent with the no-load L_r1 = 2.42 mH
+    assert p1.L_mu + p1.L_r_sigma == pytest.approx(0.00242, rel=1e-12)
 
 
-def test_im5_saturation_at_rated_current():
-    from current_setpoints.models.im_lut import im5_async, im5_async_saturated
+def test_im5_tesla_slip_uses_fixed_no_load_constants():
+    from current_setpoints.models.im_lut import im5_tesla_gen1
 
-    lin, sat = im5_async(), im5_async_saturated()
-    p1 = sat.params.harmonics[0]
-    # at the paper's I_max the measured L_mu is ~39 % of the linear value
-    assert p1.L_mu_at(13.5) == pytest.approx(142.084e-3, rel=1e-6)
-    assert p1.L_mu_at(13.5) / 367.0e-3 == pytest.approx(0.387, abs=0.005)
-    # saturation reduces torque at a high-magnetization operating point
-    x = np.array([10.0, 8.0, 0.0, 0.0])
-    assert sat.torque(100.0, x) < lin.torque(100.0, x)
+    m = im5_tesla_gen1()
+    x = np.array([120.0, 80.0, 0.0, 0.0])  # deep in saturation
+    # slip must follow the FIXED no-load constants (the FEM wr definition),
+    # unaffected by the saturation state
+    assert m.slip_from_dq_foc(x) == pytest.approx((0.0062 / 0.00242) * (120.0 / 80.0), rel=1e-12)
+
+
+def test_im5_tesla_saturation_direction():
+    from current_setpoints.models.im_lut import im5_tesla_gen1
+
+    m = im5_tesla_gen1()
+    L_lo = m.inductance(100.0, np.array([40.0, 40.0, 0.0, 0.0]))
+    L_hi = m.inductance(100.0, np.array([160.0, 40.0, 0.0, 0.0]))
+    assert L_hi[0, 0] < L_lo[0, 0]
