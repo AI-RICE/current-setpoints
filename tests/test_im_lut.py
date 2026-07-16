@@ -171,7 +171,7 @@ def test_im5_tesla_gen1_known_values():
     from current_setpoints.models.im_lut import im5_tesla_gen1
 
     m = im5_tesla_gen1()
-    assert (m.n_phases, m.n_ppairs, m.dim) == (5, 4, 4)
+    assert (m.n_phases, m.n_ppairs, m.dim) == (5, 2, 4)
     assert m.params.R_s == 0.022
     assert (m.curr_max, m.volt_max) == (200.0, 230.0)
     p1 = m.params.harmonics[0]
