@@ -40,7 +40,10 @@ class IMHarmonicParams:
 @dataclass
 class IMLUTParams:
     """Complete machine description: identity, electrical data per harmonic
-    plane, and operating limits. One instance == one physical machine."""
+    plane, and the converter's current/voltage limits. One instance == one
+    physical machine + converter. Deliberately NOT here: the speed horizon
+    of a setpoint map (opts["omega_max"] at grid time) — that is a property
+    of the optimization run, not of the drive."""
 
     n_phases: int
     n_ppairs: int
@@ -48,7 +51,6 @@ class IMLUTParams:
     harmonics: list[IMHarmonicParams]  # index i <-> harmonic h = 2 i + 1
     curr_max: float
     volt_max: float
-    omega_max: float
     k_v: float = 0.0
     k_h: float = 0.0
 
@@ -73,7 +75,8 @@ class IMDriveLUT(DriveModel):
         self.R_stat = params.R_s * np.eye(self.dim)
         self.k_v = params.k_v
         self.k_h = params.k_h
-        self.set_max_pars(params.curr_max, params.volt_max, params.omega_max)
+        self.curr_max = params.curr_max
+        self.volt_max = params.volt_max
 
         self._cross_coupling = _build_cross_coupling(self.n_harmonics)
 
@@ -171,13 +174,13 @@ class IMDriveLUT(DriveModel):
         return P_stator + P_rotor
 
 
-def im5_async(omega_max: float, curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
+def im5_async(curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
     """The five-phase IM of the 2025-5f-async paper (IM_5f.tex,
     tab:machine_parameters), linear magnetics: m=5, p_p=2, R_s=0.74;
     per-harmonic (h=1, h=3): R_r=0.61/0.48, L_mu=367/36.1 mH,
     L_s_sigma=7.23/8.94 mH, L_r_sigma=5.07/3.22 mH. Default limits are the
-    paper's I_max=13.5 A, V_max=325 V; omega_max is a drive rating the paper
-    does not state, so it must be supplied."""
+    paper's I_max=13.5 A, V_max=325 V. The setpoint-map speed horizon is
+    supplied at grid time (opts["omega_max"]), not here."""
     params = IMLUTParams(
         n_phases=5,
         n_ppairs=2,
@@ -188,7 +191,6 @@ def im5_async(omega_max: float, curr_max: float = 13.5, volt_max: float = 325.0)
         ],
         curr_max=curr_max,
         volt_max=volt_max,
-        omega_max=omega_max,
     )
     return IMDriveLUT(params)
 
@@ -204,7 +206,7 @@ _IM5_SAT_I_MAG = np.array([0.0, 2.9699, 5.9398, 8.9098, 11.8797])  # A
 _IM5_SAT_L_MU = np.array([367.0, 367.0, 267.137, 189.135, 142.084]) * 1e-3  # H
 
 
-def im5_async_saturated(omega_max: float, curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
+def im5_async_saturated(curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
     """`im5_async` with the measured fundamental-plane magnetizing
     saturation: at the paper's own I_max = 13.5 A the table gives
     L_mu = 142 mH — 39 % of the linear model's 367 mH. The h=3 plane stays
@@ -227,19 +229,14 @@ def im5_async_saturated(omega_max: float, curr_max: float = 13.5, volt_max: floa
         ],
         curr_max=curr_max,
         volt_max=volt_max,
-        omega_max=omega_max,
     )
     return IMDriveLUT(params)
 
 
-def im9_prototype(
-    curr_max: float = 20.0,
-    volt_max: float = 200.0,
-    omega_max: float = 1500.0,
-) -> IMDriveLUT:
+def im9_prototype(curr_max: float = 20.0, volt_max: float = 200.0) -> IMDriveLUT:
     """The 9-phase induction prototype, as an instance: identical numbers to
-    `IM9Phase.__init__` (identified on the lab machine); limits default to
-    the values used across the test suite."""
+    `IM9Phase.__init__` (identified on the lab machine); converter limits
+    default to the values used across the test suite."""
     params = IMLUTParams(
         n_phases=9,
         n_ppairs=2,
@@ -250,6 +247,5 @@ def im9_prototype(
         ],
         curr_max=curr_max,
         volt_max=volt_max,
-        omega_max=omega_max,
     )
     return IMDriveLUT(params)

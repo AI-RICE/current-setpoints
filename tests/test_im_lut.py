@@ -49,7 +49,8 @@ def test_identity_attributes(ref, lut):
     assert lut.dim == ref.dim
     assert lut.n_ppairs == ref.n_ppairs
     assert lut.k_phase == ref.k_phase
-    assert (lut.curr_max, lut.volt_max, lut.omega_max) == (CURR_MAX, VOLT_MAX, OMEGA_MAX)
+    assert (lut.curr_max, lut.volt_max) == (CURR_MAX, VOLT_MAX)
+    assert not hasattr(lut, "omega_max")  # map horizon is a grid-time opt, not machine data
     np.testing.assert_array_equal(lut.R_stat, ref.R_stat)
 
 
@@ -112,7 +113,6 @@ def _saturating_prototype() -> IMDriveLUT:
             harmonics=[sat, base.params.harmonics[1]],
             curr_max=CURR_MAX,
             volt_max=VOLT_MAX,
-            omega_max=OMEGA_MAX,
         )
     )
 
@@ -156,13 +156,13 @@ def test_table_validation():
 def test_im5_async_paper_values():
     from current_setpoints.models.im_lut import im5_async
 
-    m = im5_async(omega_max=1000.0)
+    m = im5_async()
     assert (m.n_phases, m.n_ppairs, m.dim, m.k_phase) == (5, 2, 4, 2.5)
     assert m.params.R_s == 0.74
     p1, p3 = m.params.harmonics
     assert (p1.R_r, p1.L_mu, p1.L_s_sigma, p1.L_r_sigma) == (0.61, 367.0e-3, 7.23e-3, 5.07e-3)
     assert (p3.R_r, p3.L_mu, p3.L_s_sigma, p3.L_r_sigma) == (0.48, 36.1e-3, 8.94e-3, 3.22e-3)
-    assert (m.curr_max, m.volt_max, m.omega_max) == (13.5, 325.0, 1000.0)
+    assert (m.curr_max, m.volt_max) == (13.5, 325.0)
     # motoring point produces positive torque
     assert m.torque(100.0, np.array([3.0, 8.0, 0.0, 0.0])) > 0
 
@@ -170,7 +170,7 @@ def test_im5_async_paper_values():
 def test_im5_saturated_matches_linear_at_low_current():
     from current_setpoints.models.im_lut import im5_async, im5_async_saturated
 
-    lin, sat = im5_async(omega_max=1000.0), im5_async_saturated(omega_max=1000.0)
+    lin, sat = im5_async(), im5_async_saturated()
     x_lo = np.array([1.0, 4.0, 0.0, 0.0])  # below the first table knot: some interp already
     # at i_mag -> 0 the table equals the paper value exactly
     assert sat.params.harmonics[0].L_mu_at(0.0) == pytest.approx(367.0e-3)
@@ -185,7 +185,7 @@ def test_im5_saturated_matches_linear_at_low_current():
 def test_im5_saturation_at_rated_current():
     from current_setpoints.models.im_lut import im5_async, im5_async_saturated
 
-    lin, sat = im5_async(omega_max=1000.0), im5_async_saturated(omega_max=1000.0)
+    lin, sat = im5_async(), im5_async_saturated()
     p1 = sat.params.harmonics[0]
     # at the paper's I_max the measured L_mu is ~39 % of the linear value
     assert p1.L_mu_at(13.5) == pytest.approx(142.084e-3, rel=1e-6)
