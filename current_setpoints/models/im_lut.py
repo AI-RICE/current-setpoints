@@ -227,7 +227,7 @@ def im5_tesla_gen1(
     L_s_sigma1: float = 0.15e-3,
     L_s_sigma3: float = 0.15e-3,
     R_r3: float = _TESLA5F_R_R1,
-    n_ppairs: int = 2,
+    n_ppairs: int = 4,
 ) -> IMDriveLUT:
     """Five-phase IM modelled on the first-generation Tesla car drive, with
     the FEM-measured fundamental-plane saturation in native coordinates
@@ -239,9 +239,11 @@ def im5_tesla_gen1(
     sweep's wr definition). ASSUMED, pending identification: the leakage
     split (L_s_sigma1 default 0.15 mH; L_r_sigma1 then follows from
     L_r1 = L_mu1 + L_r_sigma1 for consistency with the no-load constants),
-    the h=3 rotor parameters (default: reuse plane-1 values), the pole-pair
-    count (Tesla gen-1 is a 4-pole machine -> p_p = 2), and curr_max
-    (default: the sweep's 200 A bound)."""
+    the h=3 rotor parameters (default: reuse plane-1 values) and curr_max
+    (default: the sweep's 200 A bound). p_p = 4 is MEASURED from the sweep's
+    torque column: T_FEM/T_model(p_p=2) = 2.01 on the saturation-clean
+    subset (Id1 = 40 A, no third harmonic) — the FEM redesign is 8-pole,
+    unlike the 4-pole gen-1 Tesla original."""
     L_mu1_unsat = float(_TESLA5F_L_TOTAL[0]) - L_s_sigma1
     L_r_sigma1 = _TESLA5F_L_R1 - L_mu1_unsat  # consistency with L_r1 no-load
     # h=3 plane: FEM mean lambda_d3/Id3 = 0.224 mH at Id1=40 (sparse slice)
