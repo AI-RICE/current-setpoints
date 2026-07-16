@@ -171,6 +171,67 @@ class IMDriveLUT(DriveModel):
         return P_stator + P_rotor
 
 
+def im5_async(omega_max: float, curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
+    """The five-phase IM of the 2025-5f-async paper (IM_5f.tex,
+    tab:machine_parameters), linear magnetics: m=5, p_p=2, R_s=0.74;
+    per-harmonic (h=1, h=3): R_r=0.61/0.48, L_mu=367/36.1 mH,
+    L_s_sigma=7.23/8.94 mH, L_r_sigma=5.07/3.22 mH. Default limits are the
+    paper's I_max=13.5 A, V_max=325 V; omega_max is a drive rating the paper
+    does not state, so it must be supplied."""
+    params = IMLUTParams(
+        n_phases=5,
+        n_ppairs=2,
+        R_s=0.74,
+        harmonics=[
+            IMHarmonicParams(R_r=0.61, L_mu=367.0e-3, L_s_sigma=7.23e-3, L_r_sigma=5.07e-3),
+            IMHarmonicParams(R_r=0.48, L_mu=36.1e-3, L_s_sigma=8.94e-3, L_r_sigma=3.22e-3),
+        ],
+        curr_max=curr_max,
+        volt_max=volt_max,
+        omega_max=omega_max,
+    )
+    return IMDriveLUT(params)
+
+
+# Fundamental-plane saturation of the im5_async machine, derived from the FEM
+# sweep I_combs_Results_correct_wr_definition.xlsx (Ansys, 357 points; slice
+# Id3=Iq3=0, lowest available Iq1 per Id1). The FEM model is wound with a
+# different turns count: N^2 = (L_mu1 + L_s_sigma1)/(lambda_d1/Id1)|_{40A}
+# = 0.37423/0.0020630 = 181.397, N = 13.468 (pending confirmation by the FEM
+# author). Winding coordinates: i = Id1_FEM/N, L_mu = (lambda_d1/Id1)*N^2
+# - L_s_sigma1. The 0 A point extends the first measured value flat.
+_IM5_SAT_I_MAG = np.array([0.0, 2.9699, 5.9398, 8.9098, 11.8797])  # A
+_IM5_SAT_L_MU = np.array([367.0, 367.0, 267.137, 189.135, 142.084]) * 1e-3  # H
+
+
+def im5_async_saturated(omega_max: float, curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
+    """`im5_async` with the measured fundamental-plane magnetizing
+    saturation: at the paper's own I_max = 13.5 A the table gives
+    L_mu = 142 mH — 39 % of the linear model's 367 mH. The h=3 plane stays
+    linear (the sweep's third-harmonic slice is too sparse; its scaled value
+    31.6 mH agrees with the paper's 36.1 mH within 12 %)."""
+    params = IMLUTParams(
+        n_phases=5,
+        n_ppairs=2,
+        R_s=0.74,
+        harmonics=[
+            IMHarmonicParams(
+                R_r=0.61,
+                L_mu=367.0e-3,
+                L_s_sigma=7.23e-3,
+                L_r_sigma=5.07e-3,
+                i_mag_table=_IM5_SAT_I_MAG.copy(),
+                L_mu_table=_IM5_SAT_L_MU.copy(),
+            ),
+            IMHarmonicParams(R_r=0.48, L_mu=36.1e-3, L_s_sigma=8.94e-3, L_r_sigma=3.22e-3),
+        ],
+        curr_max=curr_max,
+        volt_max=volt_max,
+        omega_max=omega_max,
+    )
+    return IMDriveLUT(params)
+
+
 def im9_prototype(
     curr_max: float = 20.0,
     volt_max: float = 200.0,

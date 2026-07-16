@@ -148,3 +148,48 @@ def test_table_validation():
             i_mag_table=np.array([1.0, 0.0]),
             L_mu_table=np.array([0.5, 0.4]),
         )
+
+
+# ── five-phase async-paper machine (IM_5f.tex + FEM saturation) ──────────────
+
+
+def test_im5_async_paper_values():
+    from current_setpoints.models.im_lut import im5_async
+
+    m = im5_async(omega_max=1000.0)
+    assert (m.n_phases, m.n_ppairs, m.dim, m.k_phase) == (5, 2, 4, 2.5)
+    assert m.params.R_s == 0.74
+    p1, p3 = m.params.harmonics
+    assert (p1.R_r, p1.L_mu, p1.L_s_sigma, p1.L_r_sigma) == (0.61, 367.0e-3, 7.23e-3, 5.07e-3)
+    assert (p3.R_r, p3.L_mu, p3.L_s_sigma, p3.L_r_sigma) == (0.48, 36.1e-3, 8.94e-3, 3.22e-3)
+    assert (m.curr_max, m.volt_max, m.omega_max) == (13.5, 325.0, 1000.0)
+    # motoring point produces positive torque
+    assert m.torque(100.0, np.array([3.0, 8.0, 0.0, 0.0])) > 0
+
+
+def test_im5_saturated_matches_linear_at_low_current():
+    from current_setpoints.models.im_lut import im5_async, im5_async_saturated
+
+    lin, sat = im5_async(omega_max=1000.0), im5_async_saturated(omega_max=1000.0)
+    x_lo = np.array([1.0, 4.0, 0.0, 0.0])  # below the first table knot: some interp already
+    # at i_mag -> 0 the table equals the paper value exactly
+    assert sat.params.harmonics[0].L_mu_at(0.0) == pytest.approx(367.0e-3)
+    assert sat.params.harmonics[0].L_mu_at(2.0) == pytest.approx(367.0e-3)  # flat first segment
+    np.testing.assert_allclose(
+        sat.inductance(100.0, x_lo * 0 + np.array([2.0, 0.0, 0.0, 0.0])),
+        lin.inductance(100.0, np.array([2.0, 0.0, 0.0, 0.0])),
+        rtol=1e-12,
+    )
+
+
+def test_im5_saturation_at_rated_current():
+    from current_setpoints.models.im_lut import im5_async, im5_async_saturated
+
+    lin, sat = im5_async(omega_max=1000.0), im5_async_saturated(omega_max=1000.0)
+    p1 = sat.params.harmonics[0]
+    # at the paper's I_max the measured L_mu is ~39 % of the linear value
+    assert p1.L_mu_at(13.5) == pytest.approx(142.084e-3, rel=1e-6)
+    assert p1.L_mu_at(13.5) / 367.0e-3 == pytest.approx(0.387, abs=0.005)
+    # saturation reduces torque at a high-magnetization operating point
+    x = np.array([10.0, 8.0, 0.0, 0.0])
+    assert sat.torque(100.0, x) < lin.torque(100.0, x)

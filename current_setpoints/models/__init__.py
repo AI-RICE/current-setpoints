@@ -1,5 +1,12 @@
 from .forward_model import Fault, ForwardModel
-from .im_lut import IMDriveLUT, IMHarmonicParams, IMLUTParams, im9_prototype
+from .im_lut import (
+    IMDriveLUT,
+    IMHarmonicParams,
+    IMLUTParams,
+    im5_async,
+    im5_async_saturated,
+    im9_prototype,
+)
 from .machines import (
     ConstantFlux,
     DriveModel,
@@ -15,6 +22,8 @@ __all__ = [
     "IMDriveLUT",
     "IMHarmonicParams",
     "IMLUTParams",
+    "im5_async",
+    "im5_async_saturated",
     "im9_prototype",
     "FluxModel",
     "ConstantFlux",
