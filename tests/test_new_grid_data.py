@@ -23,12 +23,12 @@ SLSQP_OPTS = {"disp": False, "ftol": 1e-8, "maxiter": 300}
 
 @pytest.fixture(scope="module")
 def pmsm():
-    return ieee_machine2(curr_max=30.0, volt_max=13.0, omega_max=1800)
+    return ieee_machine2(curr_max=30.0, volt_max=13.0)
 
 
 @pytest.fixture(scope="module")
 def im():
-    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
+    return im9_prototype(curr_max=20.0, volt_max=200.0)
 
 
 @pytest.fixture(scope="module")
@@ -56,6 +56,7 @@ GRID_OPTS_SMALL = {
     "n_omega": 2,
     "torq_min": 0.0,
     "omega_min": 0.0,
+    "omega_max": 1800.0,
 }
 
 
@@ -66,7 +67,7 @@ def grid_pmsm(static_opt, fwd):
 
 @pytest.fixture(scope="module")
 def grid_im(static_opt_im, fwd_im):
-    opts = {**GRID_OPTS_SMALL, "omega_probe": 50.0}
+    opts = {**GRID_OPTS_SMALL, "omega_probe": 50.0, "omega_max": 1500.0}
     return calculate_grid(static_opt_im, fwd_im, opts=opts, mode="standard")
 
 
@@ -148,7 +149,7 @@ def test_grid_invalid_mode_raises(static_opt, fwd):
 # ── calculate_grid — 3×3 grid with more coverage ─────────────────────────────
 
 def test_grid_3x3_shape(static_opt, fwd):
-    opts = {"n_torq": 3, "n_omega": 3, "torq_min": 0.0, "omega_min": 0.0}
+    opts = {"n_torq": 3, "n_omega": 3, "torq_min": 0.0, "omega_min": 0.0, "omega_max": 1800.0}
     grid = calculate_grid(static_opt, fwd, opts=opts, mode="standard")
     assert grid["curr_dq_grid"].shape == (4, 3, 3)
     assert grid["grid_curr_peak"].shape == (3, 3)

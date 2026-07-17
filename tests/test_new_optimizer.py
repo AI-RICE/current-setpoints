@@ -20,7 +20,6 @@ from current_setpoints.optimization import (
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0
-OMEGA_MAX = 1800
 
 SLSQP_OPTS = {"disp": False, "ftol": 1e-8, "maxiter": 500}
 
@@ -35,12 +34,12 @@ OMEGA_HIGH = to_elec(1500, 8)
 
 @pytest.fixture(scope="module")
 def pmsm():
-    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=OMEGA_MAX)
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX)
 
 
 @pytest.fixture(scope="module")
 def im():
-    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
+    return im9_prototype(curr_max=20.0, volt_max=200.0)
 
 
 @pytest.fixture(scope="module")

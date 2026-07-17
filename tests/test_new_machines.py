@@ -15,19 +15,18 @@ from current_setpoints.models.machines import (
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0
-OMEGA_MAX = 1800
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
 def pmsm():
-    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=OMEGA_MAX)
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX)
 
 
 @pytest.fixture(scope="module")
 def im():
-    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
+    return im9_prototype(curr_max=20.0, volt_max=200.0)
 
 
 # ── Cross-coupling matrix ─────────────────────────────────────────────────────
@@ -152,10 +151,9 @@ def test_pmsm_torque_quadratic_approximation(pmsm):
         np.testing.assert_allclose(T_approx, T_exact, atol=1.0, rtol=0.1)
 
 
-def test_pmsm_set_max_pars(pmsm):
+def test_pmsm_converter_limits(pmsm):
     assert pmsm.curr_max == CURR_MAX
     assert pmsm.volt_max == VOLT_MAX
-    assert pmsm.omega_max == OMEGA_MAX
 
 
 def test_pmsm_seeds_returns_list_of_arrays(pmsm):

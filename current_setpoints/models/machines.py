@@ -163,10 +163,13 @@ class DriveModel(ABC):
     n_ppairs: int
     k_phase: float  # = n_phases / 2
 
-    # limits
+    # converter limits. Deliberately NOT here: the speed horizon of a
+    # setpoint map (opts["omega_max"] at grid time, see optimization/grid.py)
+    # -- that is a property of the optimization run, not of the drive (an IM
+    # has no electromagnetic speed ceiling; even for a PMSM the map horizon
+    # is a run choice).
     curr_max: float
     volt_max: float
-    omega_max: float
 
     # electrical
     R_stat: np.ndarray  # (dim, dim) stator resistance in dq frame
@@ -221,22 +224,20 @@ class DriveModel(ABC):
         f_v, f_h = substitution_loss_features(omega, volt_dq, self.n_ppairs)
         return float(self.k_v * f_v + self.k_h * f_h)
 
-    def set_max_pars(self, curr_max: float, volt_max: float, omega_max: float) -> None:
-        self.curr_max = curr_max
-        self.volt_max = volt_max
-        self.omega_max = omega_max
-
 
 @dataclass
 class PMSMParams:
     """Data for one concrete 5-phase PMSM prototype — everything a
-    ``PMSMDrive`` needs that isn't structural physics."""
+    ``PMSMDrive`` needs that isn't structural physics. Deliberately NOT here:
+    the speed horizon of a setpoint map — see ``DriveModel``."""
 
     n_phases: int
     n_ppairs: int
     R_stat: np.ndarray
     L_stat: np.ndarray
     flux_pm: np.ndarray
+    curr_max: float
+    volt_max: float
     k_v: float = 0.0
     k_h: float = 0.0
 
@@ -260,6 +261,8 @@ class PMSMDrive(DriveModel):
         self.k_phase = self.n_phases / 2
 
         self.R_stat = params.R_stat
+        self.curr_max = params.curr_max
+        self.volt_max = params.volt_max
         self.k_v = params.k_v
         self.k_h = params.k_h
 
@@ -308,11 +311,15 @@ class PMSMDrive(DriveModel):
         return candidates
 
 
-def ieee_machine2_params() -> PMSMParams:
+def ieee_machine2_params(*, curr_max: float = 30.0, volt_max: float = 13.0) -> PMSMParams:
     """Parameters for the 5-phase IEEE-Machine-2 prototype. R_stat, L_stat,
     flux_pm identified by ``utils.flux_fit.fit_pm_flux`` via joint least
     squares against measured voltage and torque in
-    ``data/aggregated_file_means.csv``."""
+    ``data/aggregated_file_means.csv``. ``curr_max``/``volt_max`` are
+    converter limits, not machine physics, but travel with the params
+    instance so ``PMSMDrive`` is fully constructed in one call; the
+    setpoint-map speed horizon is a run parameter, not here (see
+    ``optimization.grid.calculate_grid``'s ``opts["omega_max"]``)."""
     return PMSMParams(
         n_phases=5,
         n_ppairs=8,
@@ -327,21 +334,14 @@ def ieee_machine2_params() -> PMSMParams:
             ]
         ),
         flux_pm=np.array([1.13438169e-02, 1.71999345e-03, 1.57771228e-05, 1.56271556e-05]),
+        curr_max=curr_max,
+        volt_max=volt_max,
     )
 
 
-def ieee_machine2(
-    *,
-    curr_max: float = 30.0,
-    volt_max: float = 13.0,
-    omega_max: float = 1800.0,
-) -> PMSMDrive:
-    """5-phase IEEE-Machine-2 prototype. ``curr_max``/``volt_max``/``omega_max``
-    are converter/controller limits, not machine physics, so they're
-    overridable here rather than baked into ``PMSMParams``."""
-    machine = PMSMDrive(ieee_machine2_params())
-    machine.set_max_pars(curr_max, volt_max, omega_max)
-    return machine
+def ieee_machine2(*, curr_max: float = 30.0, volt_max: float = 13.0) -> PMSMDrive:
+    """5-phase IEEE-Machine-2 prototype."""
+    return PMSMDrive(ieee_machine2_params(curr_max=curr_max, volt_max=volt_max))
 
 
 def neural_pmsm5phase(
@@ -351,12 +351,12 @@ def neural_pmsm5phase(
     *,
     curr_max: float = 30.0,
     volt_max: float = 13.0,
-    omega_max: float = 1800.0,
 ) -> PMSMDrive:
     """IEEE-Machine-2 with a neural torque residual composed in."""
-    machine = PMSMDrive(ieee_machine2_params(), torque_residual=NeuralTorqueResidual(net, scaler, device))
-    machine.set_max_pars(curr_max, volt_max, omega_max)
-    return machine
+    return PMSMDrive(
+        ieee_machine2_params(curr_max=curr_max, volt_max=volt_max),
+        torque_residual=NeuralTorqueResidual(net, scaler, device),
+    )
 
 
 # Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
@@ -374,7 +374,6 @@ def ieee_machine2_trained_neural_flux(
     device: torch.device | None = None,
     curr_max: float = 30.0,
     volt_max: float = 13.0,
-    omega_max: float = 1800.0,
 ) -> PMSMDrive:
     """IEEE-Machine-2 with the trained neural flux model from ``weights/``
     (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) loaded and composed in place
@@ -391,16 +390,15 @@ def ieee_machine2_trained_neural_flux(
         device=device,
         activation=_FLUX_NN_ACTIVATION,
     )
-    params = ieee_machine2_params()
+    params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
     flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2))
-    machine = PMSMDrive(params, flux=flux)
-    machine.set_max_pars(curr_max, volt_max, omega_max)
-    return machine
+    return PMSMDrive(params, flux=flux)
 
 
 @dataclass
 class IMParams:
-    """Data for one concrete 9-phase induction-motor prototype."""
+    """Data for one concrete 9-phase induction-motor prototype. Deliberately
+    NOT here: the speed horizon of a setpoint map — see ``DriveModel``."""
 
     n_phases: int
     n_ppairs: int
@@ -409,6 +407,8 @@ class IMParams:
     L_mu: np.ndarray
     L_s_sigma: np.ndarray
     L_r_sigma: np.ndarray
+    curr_max: float
+    volt_max: float
     k_v: float = 0.0
     k_h: float = 0.0
 
@@ -425,6 +425,8 @@ class InductionDrive(DriveModel):
         self.k_phase = self.n_phases / 2
 
         self.R_stat = params.R_s * np.eye(self.dim)
+        self.curr_max = params.curr_max
+        self.volt_max = params.volt_max
         self.k_v = params.k_v
         self.k_h = params.k_h
 
@@ -519,8 +521,11 @@ class InductionDrive(DriveModel):
         return P_stator + P_rotor
 
 
-def im9_prototype_params() -> IMParams:
-    """Parameters for the 9-phase induction-motor prototype."""
+def im9_prototype_params(*, curr_max: float = 20.0, volt_max: float = 200.0) -> IMParams:
+    """Parameters for the 9-phase induction-motor prototype. The setpoint-map
+    speed horizon is a run parameter, not here (see
+    ``optimization.grid.calculate_grid``'s ``opts["omega_max"]``) -- an IM
+    has no electromagnetic speed ceiling in the first place."""
     return IMParams(
         n_phases=9,
         n_ppairs=2,
@@ -529,15 +534,10 @@ def im9_prototype_params() -> IMParams:
         L_mu=1e-3 * np.diag([496.0, 496.0, 58.2, 58.2]),
         L_s_sigma=1e-3 * np.diag([15.1, 15.1, 13.6, 13.6]),
         L_r_sigma=1e-3 * np.diag([53.3, 53.3, 33.4, 33.4]),
+        curr_max=curr_max,
+        volt_max=volt_max,
     )
 
 
-def im9_prototype(
-    *,
-    curr_max: float = 20.0,
-    volt_max: float = 200.0,
-    omega_max: float = 1500.0,
-) -> InductionDrive:
-    machine = InductionDrive(im9_prototype_params())
-    machine.set_max_pars(curr_max, volt_max, omega_max)
-    return machine
+def im9_prototype(*, curr_max: float = 20.0, volt_max: float = 200.0) -> InductionDrive:
+    return InductionDrive(im9_prototype_params(curr_max=curr_max, volt_max=volt_max))

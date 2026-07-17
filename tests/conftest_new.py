@@ -16,7 +16,6 @@ from current_setpoints.optimization.optimizer import StaticOptimizer
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0
-OMEGA_MAX = 1800  # mechanical RPM
 
 SLSQP_OPTS = {"disp": False, "ftol": 1e-9, "maxiter": 500}
 
@@ -27,12 +26,12 @@ OMEGA_HIGH = 1500.0 * (np.pi / 30) * 8
 
 @pytest.fixture(scope="session")
 def pmsm() -> PMSMDrive:
-    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=OMEGA_MAX)
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX)
 
 
 @pytest.fixture(scope="session")
 def im() -> InductionDrive:
-    return im9_prototype(curr_max=20.0, volt_max=200.0, omega_max=1500)
+    return im9_prototype(curr_max=20.0, volt_max=200.0)
 
 
 @pytest.fixture(scope="session")

@@ -133,11 +133,19 @@ def calculate_grid(
                 )
             torq_max_global = sol.torque
 
+        # The speed horizon is a property of the map being computed, not of
+        # the machine; opts["omega_max"] is preferred, drive.omega_max is the
+        # legacy fallback for drives that still carry it.
+        if "omega_max" in opts and opts["omega_max"] is not None:
+            omega_max_grid = float(opts["omega_max"])
+        else:
+            omega_max_grid = drive.omega_max
+
         n_torq, n_omega = opts["n_torq"], opts["n_omega"]
         grid["vec_torq"] = np.linspace(opts["torq_min"], torq_max_global, n_torq)
         grid["vec_omega"] = np.linspace(
             opts["omega_min"] / const_mech_speed,
-            drive.omega_max / const_mech_speed,
+            omega_max_grid / const_mech_speed,
             n_omega,
         )
         grid_torq_targets = None

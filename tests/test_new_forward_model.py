@@ -18,7 +18,7 @@ VOLT_MAX = 13.0
 
 @pytest.fixture(scope="module")
 def pmsm():
-    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=1800)
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX)
 
 
 @pytest.fixture(scope="module")

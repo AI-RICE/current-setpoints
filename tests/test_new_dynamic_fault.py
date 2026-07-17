@@ -22,7 +22,6 @@ from current_setpoints.optimization import StaticOptimizer, IndependentOptimizer
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0
-OMEGA_MAX = 1800
 
 SLSQP_OPTS = {"disp": False, "ftol": 1e-8, "maxiter": 300}
 
@@ -42,7 +41,7 @@ OMEGA_LOW = to_elec(300, 8)
 
 @pytest.fixture(scope="module")
 def pmsm():
-    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX, omega_max=OMEGA_MAX)
+    return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX)
 
 
 def _ind_opt(pmsm, open_phases):
