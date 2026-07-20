@@ -8,13 +8,19 @@ from .machines import DriveModel
 
 
 def _build_clarke_5phase() -> np.ndarray:
+    """Static (theta-independent) Clarke/Concordia matrix at the 5 fixed
+    phase positions a_p = p*2pi/5: harmonic 1 (rows 0-1) and harmonic 2
+    (rows 2-3, per the reference formulation's Eq.(1) -- NOT harmonic 3;
+    the rotation rate used to reconstruct time-domain quantities from this
+    static projection is a separate, genuinely different harmonic (3), see
+    _build_dq_to_phase_map)."""
     C = np.zeros((5, 5))
     for p in range(5):
         a = p * 2 * np.pi / 5
         C[0, p] = np.cos(a)
         C[1, p] = np.sin(a)
-        C[2, p] = np.cos(3 * a)
-        C[3, p] = np.sin(3 * a)
+        C[2, p] = np.cos(2 * a)
+        C[3, p] = np.sin(2 * a)
         C[4, p] = 0.5
     return C * (2.0 / 5.0)
 
@@ -23,6 +29,55 @@ def _null_space_row(C_red: np.ndarray) -> np.ndarray:
     _, _, vh = np.linalg.svd(C_red.T)
     row = vh[-1]
     return row / np.linalg.norm(row)
+
+
+def _build_dq_to_phase_map(
+    kept: tuple[int, ...], vec_theta: np.ndarray
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """The reference formulation's two-step reconstruction (Eq.(2)/Eq.(12)):
+    invert the static, theta-independent Clarke matrix once (built with
+    harmonic 1 and 2), then rotate by a separate, theta-dependent R(theta)
+    that uses harmonic 1 and **3** for the second block -- a genuinely
+    different harmonic from the static matrix's, not a relabeling of it.
+    Used identically for the always-5-phase voltage map (kept = all 5
+    phases) and the fault-reduced current map (kept = surviving phases).
+
+    Returns (map, null_space_row): map has shape (n_t, len(kept), dim);
+    null_space_row is None unless len(kept) < dim (i.e. a 2-open-phase
+    fault), in which case not every dq state is physically achievable by
+    the surviving phases and callers must enforce N @ i == 0.
+    """
+    dim = 4
+    C_full = _build_clarke_5phase()
+    C_red = C_full[:4, :][:, list(kept)]  # (dim, n_kept)
+
+    if C_red.shape[1] >= dim:
+        # As many (or more) surviving phases as dq dimensions: every dq
+        # state is exactly achievable -- zero-sequence freedom soaks up any
+        # extra phase DOF (healthy, n_kept=5) or the map is exactly square
+        # (1-fault, n_kept=4). No achievability constraint either way.
+        T_inv = np.linalg.pinv(C_red) if C_red.shape[1] > dim else np.linalg.inv(C_red)
+        null_row = None
+    else:
+        # Fewer surviving phases than dq dimensions (2-fault, n_kept=3):
+        # only a (n_kept)-dim subspace of dq is physically achievable.
+        T_inv = np.linalg.pinv(C_red)
+        null_row = _null_space_row(C_red)
+
+    n_t = vec_theta.size
+    c1, s1 = np.cos(vec_theta), np.sin(vec_theta)
+    c3, s3 = np.cos(3 * vec_theta), np.sin(3 * vec_theta)
+    R = np.zeros((n_t, dim, dim))
+    R[:, 0, 0] = c1
+    R[:, 0, 1] = -s1
+    R[:, 1, 0] = s1
+    R[:, 1, 1] = c1
+    R[:, 2, 2] = c3
+    R[:, 2, 3] = -s3
+    R[:, 3, 2] = s3
+    R[:, 3, 3] = c3
+
+    return np.einsum("ij, tjk -> tik", T_inv, R), null_row
 
 
 def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e-3) -> int:
@@ -73,30 +128,9 @@ class Fault:
         return 5 - self.n_open
 
     def _build_reduced_map(self, vec_theta: np.ndarray) -> np.ndarray:
-        C_full = _build_clarke_5phase()
-        C_red = C_full[:4, :][:, list(self._kept)]
-
-        if C_red.shape[0] == C_red.shape[1]:
-            T_inv = np.linalg.inv(C_red)
-            self._N = None
-        else:
-            T_inv = np.linalg.pinv(C_red)
-            self._N = _null_space_row(C_red)
-
-        n_t = vec_theta.size
-        c1, s1 = np.cos(vec_theta), np.sin(vec_theta)
-        c3, s3 = np.cos(3 * vec_theta), np.sin(3 * vec_theta)
-        R = np.zeros((n_t, 4, 4))
-        R[:, 0, 0] = c1
-        R[:, 0, 1] = -s1
-        R[:, 1, 0] = s1
-        R[:, 1, 1] = c1
-        R[:, 2, 2] = c3
-        R[:, 2, 3] = -s3
-        R[:, 3, 2] = s3
-        R[:, 3, 3] = c3
-
-        return np.einsum("ij, tjk -> tik", T_inv, R)  # (n_t, n_surviving, dim)
+        mat, null_row = _build_dq_to_phase_map(self._kept, vec_theta)
+        self._N = null_row
+        return mat  # (n_t, n_surviving, dim)
 
     def extra_constraints(self) -> list[dict[str, Any]]:
         if self._N is None:
@@ -149,16 +183,25 @@ class ForwardModel:
         # Full inverse-Park (n_theta+1, n_phases, dim) — fault-independent.
         # Entry [t, p, :] maps curr_dq to the instantaneous contribution of
         # harmonic content to physical phase p at rotor angle vec_theta[t].
-        # Convention: cos(h·θ - h·p·φ), φ = 2π/n_phases.
-        phi = 2 * np.pi / n_phases
         n_t = self.vec_theta.size
-        mat_all = np.zeros((n_t, n_phases, dim))
-        for i in range(n_harmonics):
-            h = 2 * i + 1
-            for p in range(n_phases):
-                theta_arg = h * self.vec_theta - h * p * phi
-                mat_all[:, p, 2 * i] = np.cos(theta_arg)
-                mat_all[:, p, 2 * i + 1] = -np.sin(theta_arg)
+        if n_phases == 5:
+            # Two-step reconstruction matching the reference formulation's
+            # Eq.(2)/Eq.(12): invert the static (harmonic 1, 2) Clarke matrix
+            # once, then rotate by harmonic (1, 3) R(theta) -- a genuinely
+            # different harmonic from the static one, not a relabeling.
+            mat_all, _ = _build_dq_to_phase_map(tuple(range(5)), self.vec_theta)
+        else:
+            # Generic n-phase construction (used by the induction-motor
+            # drives): no fault support, no reference formulation to match,
+            # single combined harmonic convention throughout.
+            phi = 2 * np.pi / n_phases
+            mat_all = np.zeros((n_t, n_phases, dim))
+            for i in range(n_harmonics):
+                h = 2 * i + 1
+                for p in range(n_phases):
+                    theta_arg = h * self.vec_theta - h * p * phi
+                    mat_all[:, p, 2 * i] = np.cos(theta_arg)
+                    mat_all[:, p, 2 * i + 1] = -np.sin(theta_arg)
         self._mat_dq_to_ph_all: np.ndarray = mat_all
 
         # Current map — equals full inverse-Park for healthy machines;
