@@ -56,12 +56,12 @@ def _build_dq_to_phase_map(
         # state is exactly achievable -- zero-sequence freedom soaks up any
         # extra phase DOF (healthy, n_kept=5) or the map is exactly square
         # (1-fault, n_kept=4). No achievability constraint either way.
-        T_inv = np.linalg.pinv(C_red) if C_red.shape[1] > dim else np.linalg.inv(C_red)
+        C_inv = np.linalg.pinv(C_red) if C_red.shape[1] > dim else np.linalg.inv(C_red)
         null_row = None
     else:
         # Fewer surviving phases than dq dimensions (2-fault, n_kept=3):
         # only a (n_kept)-dim subspace of dq is physically achievable.
-        T_inv = np.linalg.pinv(C_red)
+        C_inv = np.linalg.pinv(C_red)
         null_row = _null_space_row(C_red)
 
     n_t = vec_theta.size
@@ -77,7 +77,7 @@ def _build_dq_to_phase_map(
     R[:, 3, 2] = s3
     R[:, 3, 3] = c3
 
-    return np.einsum("ij, tjk -> tik", T_inv, R), null_row
+    return np.einsum("ij, tjk -> tik", C_inv, R), null_row
 
 
 def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e-3) -> int:
@@ -85,19 +85,30 @@ def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e
     ``rel_tol``). Shared between ``ForwardModel.count_peaks`` (constant-current
     case) and ``optimization.grid``'s dynamic-mode trajectory reconstruction —
     both just need this applied to an (n_phases, n_samples) waveform array,
-    however it was produced."""
+    however it was produced.
+
+    The waveform is treated as circular (theta=0 and theta=2pi are the same
+    physical point) via np.roll, so a peak sitting exactly at the array
+    boundary is not silently invisible to the search. A plateau of equal
+    values at a peak counts once, not once per sample: a point only starts
+    a new peak if it's strictly greater than its predecessor (>=1 sample
+    into the rise) and at least as large as its successor (still at or
+    past the top), so only the plateau's leading edge is flagged.
+    """
     if waveform.ndim == 1:
         waveform = waveform[np.newaxis, :]
     thresh = limit * (1.0 - rel_tol)
     n_max = 0
     for ph in range(waveform.shape[0]):
-        w = waveform[ph, :-1]  # drop the wrap sample
+        w = waveform[ph, :-1]  # drop the wrap sample; the array is circular
         if w.size < 3:
             continue
-        is_pmax = (w[1:-1] > w[:-2]) & (w[1:-1] > w[2:]) & (w[1:-1] > 0)
-        n_pos = int(np.sum(w[1:-1][is_pmax] >= thresh))
-        is_nmin = (w[1:-1] < w[:-2]) & (w[1:-1] < w[2:]) & (w[1:-1] < 0)
-        n_neg = int(np.sum(-w[1:-1][is_nmin] >= thresh))
+        prev = np.roll(w, 1)
+        nxt = np.roll(w, -1)
+        is_pmax = (w > prev) & (w >= nxt) & (w > 0)
+        n_pos = int(np.sum(w[is_pmax] >= thresh))
+        is_nmin = (w < prev) & (w <= nxt) & (w < 0)
+        n_neg = int(np.sum(-w[is_nmin] >= thresh))
         n_max = max(n_max, n_pos, n_neg)
     return min(n_max, 2)
 

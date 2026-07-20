@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from current_setpoints.models.machines import ieee_machine2
-from current_setpoints.models.forward_model import Fault, ForwardModel
+from current_setpoints.models.forward_model import Fault, ForwardModel, count_peaks_at_limit
 
 CURR_MAX = 30.0
 VOLT_MAX = 13.0
@@ -308,6 +308,28 @@ def test_count_peaks_returns_int_pair(fwd):
     n_c, n_v = fwd.count_peaks(100.0, curr)
     assert isinstance(n_c, int) and isinstance(n_v, int)
     assert n_c in (0, 1, 2) and n_v in (0, 1, 2)
+
+
+def test_count_peaks_at_limit_detects_endpoint_peak():
+    """Regression: a peak sitting exactly at theta=0 (the array boundary) must
+    not be invisible just because the search only checked interior points --
+    the waveform is circular, theta=0 and theta=2pi are the same point."""
+    n = 20
+    theta = np.linspace(0, 2 * np.pi, n + 1)
+    c = np.cos(theta)
+    # positive excursion peaks at theta=0 and touches the limit; negative
+    # excursion is damped well below it, so it's the only extremum that matters.
+    w = np.where(c > 0, c, 0.3 * c)
+    assert count_peaks_at_limit(w, limit=1.0, rel_tol=1e-3) == 1
+
+
+def test_count_peaks_at_limit_plateau_counts_once():
+    """Regression: a flat-top plateau of several samples at the peak value
+    is one peak, not one per sample (strict inequality alone would miss
+    every plateau sample; this checks the fix doesn't over-count instead)."""
+    w = np.array([0.0, 0.3, 0.6, 1.0, 1.0, 1.0, 0.6, 0.3, 0.0, -0.3, -0.6, -0.3, 0.0, 0.3, 0.6])
+    w_wrapped = np.concatenate([w, w[:1]])
+    assert count_peaks_at_limit(w_wrapped, limit=1.0, rel_tol=1e-3) == 1
 
 
 # ── Fault constraints ─────────────────────────────────────────────────────────
