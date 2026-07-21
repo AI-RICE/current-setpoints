@@ -41,9 +41,11 @@ def _trajectory_waveforms(
     rotor angle and OWN current, rather than sweeping one constant current
     over a full cycle. Static per-node voltage (no inter-node d/dtheta
     coupling): exact for IndependentOptimizer/R0 results (that's what it
-    enforced); a slight underestimate for ActiveSetOptimizer trajectories,
-    whose own solve does account for that coupling even though this
-    diagnostic doesn't re-derive it."""
+    enforced, and voltage_operator/inductance/bemf_dq are evaluated at each
+    node's own current, not a fixed linearization point -- exact for any
+    drive); a slight underestimate for ActiveSetOptimizer trajectories,
+    whose own solve does account for the inter-node d/dtheta coupling even
+    though this diagnostic doesn't re-derive it."""
     n_grid = curr_dq_traj.shape[0]
     n_theta = fwd.vec_theta.size - 1
     theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
@@ -61,7 +63,7 @@ def _trajectory_waveforms(
         theta_idx = int(idx_grid[n])
         H = fwd.phase_map_at_theta(theta_idx)
         curr_wave[:, n] = H @ i_n
-        gU, _, bV = fwd.volt_map_at_theta(theta_idx, omega)
+        gU, _, bV = fwd.volt_map_at_theta(theta_idx, omega, i_n)
         volt_wave[:, n] = (gU @ i_n + bV)[kept]
 
     # count_peaks_at_limit expects a trailing "wrap" sample (theta=2pi == theta=0,

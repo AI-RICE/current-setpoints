@@ -215,8 +215,9 @@ class ActiveSetOptimizer(IndependentOptimizer):
                         constraints.append(_lin(c, volt_max - sign * b_n))
 
         # Fault null-space: per-angle dynamic form, lifted to full X_flat
+        idx_grid = maps["idx_grid"]  # extra_constraints_at_theta indexes fwd.vec_theta, not the coarse n_grid
         for n in range(n_grid):
-            for fc in fwd.extra_constraints_at_theta(n):
+            for fc in fwd.extra_constraints_at_theta(int(idx_grid[n])):
                 _n = n
                 _f = fc["fun"]
 
@@ -243,6 +244,9 @@ class ActiveSetOptimizer(IndependentOptimizer):
     ) -> Solution:
         maps = self._precompute_maps(omega)
 
+        # R0 itself is exact regardless of this linearization -- IndependentOptimizer's
+        # per-node constraints evaluate voltage at the actual candidate current, not
+        # through maps["G_volt"]/["L_proj"]/["bemf_ph"].
         r0_grid, ok0 = self._run_per_angle(omega, maps, torq_target)
         if not bool(np.all(ok0)):
             return Solution(
@@ -255,6 +259,15 @@ class ActiveSetOptimizer(IndependentOptimizer):
                     "fail_reason": "R0 failed at some nodes",
                 },
             )
+
+        # The joint solve's linear voltage constraints (_solve_joint,
+        # voltage_residuals) genuinely need to stay linear-in-current for
+        # tractability, unlike R0's per-node solve -- re-linearize them
+        # around R0's own per-node current (a real, physically motivated
+        # operating point) instead of the zeros default. Exact for
+        # ConstantFlux either way; a much closer approximation than zero
+        # for a current-dependent flux model (NeuralFlux).
+        maps = self._precompute_maps(omega, lin_curr=r0_grid)
 
         X = r0_grid.copy()
         active: frozenset[int] = frozenset()

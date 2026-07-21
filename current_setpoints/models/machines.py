@@ -320,19 +320,24 @@ def ieee_machine2_params(*, curr_max: float = 30.0, volt_max: float = 13.0) -> P
     instance so ``PMSMDrive`` is fully constructed in one call; the
     setpoint-map speed horizon is a run parameter, not here (see
     ``optimization.grid.calculate_grid``'s ``opts["omega_max"]``)."""
+    # As directly identified, this matrix is NOT symmetric (max asymmetry
+    # ~86% of its own largest entry -- verified 2026-07-21) -- but a real
+    # inductance matrix must be symmetric (energy reciprocity, not a
+    # modeling choice). Symmetrized below; the raw identified matrix is
+    # kept here for provenance.
+    L_stat_raw = 1e-3 * np.array(
+        [
+            [0.0920, -0.0286, -0.0141, 0.0010],
+            [-0.0133, 0.1090, -0.0008, -0.0092],
+            [-0.0088, 0.0037, 0.0725, -0.0466],
+            [-0.0041, -0.0053, 0.0475, 0.0722],
+        ]
+    )
     return PMSMParams(
         n_phases=5,
         n_ppairs=8,
         R_stat=np.diag([0.0191, 0.0514, 0.0805, 0.0801]),
-        L_stat=1e-3
-        * np.array(
-            [
-                [0.0920, -0.0286, -0.0141, 0.0010],
-                [-0.0133, 0.1090, -0.0008, -0.0092],
-                [-0.0088, 0.0037, 0.0725, -0.0466],
-                [-0.0041, -0.0053, 0.0475, 0.0722],
-            ]
-        ),
+        L_stat=0.5 * (L_stat_raw + L_stat_raw.T),
         flux_pm=np.array([1.13438169e-02, 1.71999345e-03, 1.57771228e-05, 1.56271556e-05]),
         curr_max=curr_max,
         volt_max=volt_max,

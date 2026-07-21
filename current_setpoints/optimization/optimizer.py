@@ -23,12 +23,24 @@ def _run_slsqp(
     constraints: list[dict[str, Any]],
     candidates: list[np.ndarray],
     opts: dict[str, Any],
+    bounds: list[tuple[float, float]] | None = None,
 ) -> tuple[np.ndarray, float, bool]:
+    # Rank-deficient fault maps (e.g. 2-open-phase: 3 surviving phases from a
+    # 4-dim dq current) have a genuine null direction invisible to the
+    # curr/volt inequality constraints. SLSQP's absolute constraint tolerance
+    # can let a huge (~1e8) current along that null direction pass as
+    # "feasible" while the torque quadratic form diverges -- an unbounded-QP
+    # numerical artifact, not a physical solution. Bounding dq current
+    # magnitude closes that escape route without affecting any genuine
+    # (bounded) optimum, since real solutions never approach this scale.
+    if bounds is None:
+        bounds = [(-1e4, 1e4)] * candidates[0].size
+
     best_x: np.ndarray | None = None
     best_val = float("inf")
 
     for x0 in candidates:
-        res = minimize(objective, x0, method="SLSQP", constraints=constraints, options=opts)
+        res = minimize(objective, x0, method="SLSQP", constraints=constraints, bounds=bounds, options=opts)
         if res.success and res.fun < best_val:
             best_val = res.fun
             best_x = res.x

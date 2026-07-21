@@ -153,8 +153,9 @@ class FourierOptimizer(DynamicOptimizer):
                 constraints.append(_lin(coef_v, volt_max + b_kn))
 
         # Fault null-space: N·R(θ_s)·i(θ_s) = 0, lifted to Fourier coefficients
+        idx_grid = maps["idx_grid"]  # extra_constraints_at_theta indexes fwd.vec_theta, not the coarse n_grid
         for s in range(n_con):
-            for fc in fwd.extra_constraints_at_theta(s):
+            for fc in fwd.extra_constraints_at_theta(int(idx_grid[s])):
                 _phi_s = Phi[s]
                 _f = fc["fun"]
 

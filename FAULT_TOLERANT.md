@@ -1,5 +1,39 @@
 # Fault-tolerant mode — findings so far
 
+> **STALE as of 2026-07-20**: every number below was computed *before* the
+> phase-reconstruction fix (`ForwardModel._mat_dq_to_ph_all` used one
+> combined harmonic for both the static Clarke projection and the theta
+> rotation; the correct construction, matching a reference formulation's
+> Eq.(1)/(2), uses two genuinely different harmonics — see the commit
+> "Fix phase reconstruction..." on `integration/unified-library`). That bug
+> affected every voltage calculation and every current calculation whenever
+> the machine is healthy (not just fault cases) for phases other than 'a'.
+> Single-fault T_max is confirmed **no longer exactly phase-invariant**
+> under the corrected physics — that was an artifact of the bug. All
+> healthy/1-fault/2-fault comparisons, the constant-flux-vs-neural-flux
+> cross-check, and the "which geometric quantity predicts T_max" negative
+> result below need to be recomputed before being trusted. Not yet done.
+
+> **Also STALE as of 2026-07-21, and by a larger margin**: at the user's
+> explicit direction, `ForwardModel.volt_ph`/`volt_map_at_theta` were changed
+> to reuse the fault-reduced current map for voltage too (literal
+> `v_k = h_k(theta) v_s`, Eq.(18)/(29)/(40) of the reference paper), replacing
+> the fault-independent inverse-Park map that was there before. **This
+> reintroduces a bug this exact research line already found and fixed**:
+> `docs/sota.md` §3 (in the `AI-RICE/MultiphaseControl` coordination repo)
+> documents that conflating the current and voltage maps this way
+> over-counts surviving-phase voltage by ~60% at speed, and states the
+> fault-independent map as "the line's key methodological finding." I also
+> derived, directly from the paper's own Eq.(22), that its literal
+> theta-independent null-space constraint (`N i_s = 0`, Eq.(23)/(34)) is
+> inconsistent with Eq.(22) itself unless rotated by `R(theta)` too --
+> verified numerically that `N` is not an eigenvector of `R(theta)` at any
+> nonzero angle, so the two don't coincide. Both concerns were raised
+> explicitly (twice) before implementing; the user confirmed they want the
+> literal-paper version regardless. No results below (or in any of the
+> "corrected" reruns from 2026-07-20) reflect this second change -- all of
+> them, plus anything computed since, need re-verification once more.
+
 Machine: `ieee_machine2()` (5-phase PMSM, `curr_max=30A`, `volt_max=13V`,
 identified `R_stat`/`L_stat`/`flux_pm` from real measured data — **not**
 electromagnetically isotropic in dq-space). `Fault(open_phases)` supports 0-2

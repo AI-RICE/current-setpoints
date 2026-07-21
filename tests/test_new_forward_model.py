@@ -338,28 +338,38 @@ def test_extra_constraints_empty_healthy(fwd):
     assert fwd.extra_constraints() == []
 
 
-def test_extra_constraints_empty_single_fault(fwd_f1):
-    # Need to trigger _build_reduced_map first (done during __init__)
-    assert fwd_f1.extra_constraints() == []
-
-
-def test_extra_constraints_nonempty_two_fault(fwd_f2):
-    cons = fwd_f2.extra_constraints()
+def test_extra_constraints_nonempty_single_fault(fwd_f1):
+    # One open phase => one equality constraint (that phase's current is
+    # physically zero, checked via the full 5-phase map's own open-phase row).
+    cons = fwd_f1.extra_constraints()
     assert len(cons) == 1
     assert cons[0]["type"] == "eq"
 
 
-def test_null_space_constraint_satisfied(fwd_f2):
-    """N @ curr_dq = 0 must be satisfied for some curr_dq on the null space boundary."""
+def test_extra_constraints_nonempty_two_fault(fwd_f2):
+    # Two open phases => two independent equality constraints, one per phase.
     cons = fwd_f2.extra_constraints()
-    fun = cons[0]["fun"]
-    N = fwd_f2.fault._N
-    # A vector orthogonal to N satisfies the constraint
-    # Construct a vector in the null space of N (perpendicular to N)
-    rng = np.random.default_rng(0)
-    v = rng.normal(size=4)
-    v = v - N * (N @ v)   # project out the N component
-    np.testing.assert_allclose(fun(v), 0.0, atol=1e-12)
+    assert len(cons) == 2
+    assert all(c["type"] == "eq" for c in cons)
+
+
+def test_extra_constraints_at_theta_matches_full_map(fwd_f2):
+    """The achievability constraint at a given theta must be exactly the open
+    phases' rows of the fault-independent full map at that theta -- i.e. a
+    curr_dq satisfying it reconstructs exactly zero current there."""
+    theta_idx = 37
+    cons = fwd_f2.extra_constraints_at_theta(theta_idx)
+    assert len(cons) == 2
+    H_full = fwd_f2._mat_dq_to_ph_all[theta_idx]
+    open_rows = H_full[list(fwd_f2.fault.open_phases)]
+    # Construct curr_dq in the null space of both open-phase rows.
+    _, _, vh = np.linalg.svd(open_rows)
+    v = vh[-1]
+    for c in cons:
+        np.testing.assert_allclose(c["fun"](v), 0.0, atol=1e-10)
+    recon = H_full @ v
+    for p in fwd_f2.fault.open_phases:
+        np.testing.assert_allclose(recon[p], 0.0, atol=1e-10)
 
 
 # ── volt_map_at_theta / phase_map_at_theta ────────────────────────────────────
