@@ -35,6 +35,8 @@ class PlotConfig:
 
     @classmethod
     def get_labels(cls) -> dict[int, str]:
+        # index = 3*n_volt + n_curr (grid.py's grid_segments), n_volt/n_curr
+        # each capped at 2 by count_peaks_at_limit -- 9 combinations, 0-8.
         return {
             0: r"MTPA$_{0}$",
             1: r"MTPA$_{1}$",
@@ -44,6 +46,7 @@ class PlotConfig:
             5: r"FW$_{I,2}$",
             6: r"FW$_{II,0}$",
             7: r"FW$_{II,1}$",
+            8: r"FW$_{II,2}$",
         }
 
     @classmethod

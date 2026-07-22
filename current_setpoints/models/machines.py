@@ -26,6 +26,20 @@ _NP_ACTIVATION_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "tanh": lambda z: 1.0 - np.tanh(z) ** 2,
     "leaky_relu": lambda z: np.where(z > 0, 1.0, 0.01),
 }
+# Second derivatives -- needed for NeuralFlux's Hessian-based inductance (see
+# below): a single-hidden-layer MLP's Hessian w.r.t. its input is
+# W1.T @ diag(w2 * act''(z)) @ W1, symmetric by construction regardless of
+# the trained weights, which is exactly what guarantees a symmetric
+# inductance matrix (Maxwell reciprocity) without having to hope training
+# happens to produce one. relu/leaky_relu are piecewise-linear (zero
+# second derivative a.e.; the kink at 0 is measure-zero and ignored).
+_NP_ACTIVATION_SECOND_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "relu": lambda z: np.zeros_like(z),
+    "gelu": lambda z: (2.0 - z * z) * np.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
+    "silu": lambda z: _np_sigmoid(z) * (1.0 - _np_sigmoid(z)) * (2.0 + z * (1.0 - 2.0 * _np_sigmoid(z))),
+    "tanh": lambda z: -2.0 * np.tanh(z) * (1.0 - np.tanh(z) ** 2),
+    "leaky_relu": lambda z: np.zeros_like(z),
+}
 
 
 def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
@@ -69,29 +83,59 @@ class ConstantFlux(FluxModel):
 
 
 class NeuralFlux(FluxModel):
+    """Neural correction to the analytic ConstantFlux model, not a from-
+    scratch flux predictor. The network outputs a single SCALAR magnetic
+    co-energy residual W_res(omega, i); flux and inductance are then its
+    gradient and Hessian w.r.t. i, ADDED to the analytic baseline:
+
+        flux(omega, i)       = flux_pm + L_stat @ i + d(W_res)/di
+        inductance(omega, i) = L_stat + d^2(W_res)/di^2
+
+    Two deliberate properties, both by construction rather than by hoping
+    training gets there:
+      - inductance is symmetric: a Hessian of a scalar function is always
+        symmetric (W1.T @ diag(w2 * act''(z)) @ W1 is symmetric regardless
+        of the trained weights), unlike differentiating a raw 4-vector
+        network output, which has no such guarantee.
+      - flux/inductance degrade gracefully far outside the training data:
+        with the network's own contribution near zero (e.g. if training
+        regularizes the residual toward zero away from data, or simply by
+        the network's limited capacity to extrapolate strongly), both
+        reduce to the analytic ConstantFlux values -- which are well-
+        behaved everywhere -- rather than to an ungrounded raw MLP output.
+        This mirrors NeuralTorqueResidual's existing additive-correction
+        pattern (see machines.py's neural_pmsm5phase), which never showed
+        the same failure mode this replaces (see FAULT_TOLERANT.md).
+
+    See notebooks/flux_nn_trainer.ipynb ("co-energy residual" section) for
+    how the shipped weights were trained to be consistent with this.
+    """
+
     def __init__(
         self,
-        net: Any,  # NeuralFluxPredictor
+        net: Any,  # NeuralFluxPredictor, output_size == 1 (scalar co-energy residual)
         scaler: Any,  # sklearn StandardScaler
         device: torch.device,
         L_stat: np.ndarray,
         cross_coupling: np.ndarray,
+        flux_pm: np.ndarray,
     ) -> None:
         self.net = net
         self.scaler = scaler
         self.device = device
         self.L_stat = np.asarray(L_stat)
         self.cross_coupling = np.asarray(cross_coupling)
+        self.flux_pm = np.asarray(flux_pm)
 
         with torch.no_grad():
-            self._W1 = net.fc1.weight.cpu().numpy()
-            self._b1 = net.fc1.bias.cpu().numpy()
-            self._W2 = net.fc2.weight.cpu().numpy()
-            self._b2 = net.fc2.bias.cpu().numpy()
+            self._W1 = net.fc1.weight.cpu().numpy()  # (hidden, 5)
+            self._b1 = net.fc1.bias.cpu().numpy()  # (hidden,)
+            self._w2 = net.fc2.weight.cpu().numpy().reshape(-1)  # (hidden,) -- output_size == 1
+            self._b2 = float(net.fc2.bias.cpu().numpy().reshape(-1)[0])
         self._mean = scaler.mean_
         self._scale = scaler.scale_
-        self._act = _NP_ACTIVATIONS[net.activation]
         self._act_deriv = _NP_ACTIVATION_DERIVATIVES[net.activation]
+        self._act_second_deriv = _NP_ACTIVATION_SECOND_DERIVATIVES[net.activation]
 
         self._flux_cache: tuple[tuple[float, ...], np.ndarray] | None = None
         self._inductance_cache: tuple[tuple[float, ...], np.ndarray] | None = None
@@ -102,20 +146,20 @@ class NeuralFlux(FluxModel):
             return self._flux_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        z = self._W1 @ x_normed + self._b1
-        a = self._act(z)
-        result = self._W2 @ a + self._b2
+        z = self._W1 @ x_normed + self._b1  # (hidden,)
+        d_act_dz = self._act_deriv(z)  # (hidden,)
+        grad_normed = (self._w2 * d_act_dz) @ self._W1  # (5,) -- d(W_res)/d(x_normed)
+        grad_x = grad_normed / self._scale  # d(W_res)/d(x_raw)
+        d_wres_d_i = grad_x[1:]  # (dim,) -- drop the omega component
+        result = self.flux_pm + self.L_stat @ curr_dq + d_wres_d_i
         self._flux_cache = (key, result)
         return result
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
-        """
-        L = L_stat + d(flux)/d(i), where the derivative is computed directly
-        from the network's weights (single hidden layer: fc1 -> act -> fc2)
-        via the chain rule: d(out)/d(x) = W2 @ diag(act'(z)) @ W1 / scale.
-        Exact (not an approximation) — verified to match
-        ``torch.autograd.functional.jacobian`` to float precision.
-        """
+        """L = L_stat + d^2(W_res)/di^2, the Hessian of the network's scalar
+        co-energy residual w.r.t. current -- symmetric by construction (see
+        class docstring), computed directly from the network's weights via
+        W1.T @ diag(w2 * act''(z)) @ W1, exact (not an approximation)."""
         if curr_dq is None:
             curr_dq = np.zeros(self.L_stat.shape[0])
         key = (float(omega), *(float(v) for v in curr_dq))
@@ -123,12 +167,13 @@ class NeuralFlux(FluxModel):
             return self._inductance_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        z = self._W1 @ x_normed + self._b1
-        d_act_dz = self._act_deriv(z)
-        d_out_d_xnormed = self._W2 @ (d_act_dz[:, None] * self._W1)  # (dim, 1 + dim)
-        d_out_d_x = d_out_d_xnormed / self._scale
-        d_flux_d_i = d_out_d_x[:, 1:]
-        result = self.L_stat + d_flux_d_i
+        z = self._W1 @ x_normed + self._b1  # (hidden,)
+        d2_act_dz2 = self._act_second_deriv(z)  # (hidden,)
+        weighted_W1 = (self._w2 * d2_act_dz2)[:, None] * self._W1  # (hidden, 5)
+        hess_normed = self._W1.T @ weighted_W1  # (5, 5), symmetric by construction
+        hess_x = hess_normed / np.outer(self._scale, self._scale)
+        hess_i = hess_x[1:, 1:]  # (dim, dim)
+        result = self.L_stat + hess_i
         self._inductance_cache = (key, result)
         return result
 
@@ -242,6 +287,14 @@ class PMSMParams:
     k_h: float = 0.0
 
 
+# Fixed, reproducible sample of the (dim=4) current hypercube [-1,1]^4, used
+# as additional SLSQP restart directions in PMSMDrive.seeds() (scaled by
+# curr_max there). Generated once via a fixed-seed RNG so results stay
+# deterministic across runs -- NOT reseeded per call, which would just
+# repeat the same directions rather than exploring new ones.
+_RANDOM_SEED_DIRECTIONS = np.random.default_rng(20260721).uniform(-1.0, 1.0, size=(8, 4))
+
+
 class PMSMDrive(DriveModel):
     """Parameter-free PMSM physics. Concrete machines are built via a named
     factory (e.g. ``ieee_machine2()``) returning a configured instance;
@@ -295,6 +348,7 @@ class PMSMDrive(DriveModel):
 
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
         dim = self.dim
+        I = self.curr_max
         candidates: list[np.ndarray] = []
         default = np.zeros(dim)
         default[0] = 1.0
@@ -302,12 +356,52 @@ class PMSMDrive(DriveModel):
         if guess is not None:
             candidates.append(guess.copy())
         g_mtpa = np.zeros(dim)
-        g_mtpa[1] = self.curr_max * 0.95
+        g_mtpa[1] = I * 0.95
         candidates.append(g_mtpa)
         g_fw = np.zeros(dim)
-        g_fw[0] = -self.curr_max * 0.9
-        g_fw[1] = self.curr_max * 0.1
+        g_fw[0] = -I * 0.9
+        g_fw[1] = I * 0.1
         candidates.append(g_fw)
+
+        # The four seeds above all have id3=iq3=0 -- blind to any operating
+        # point whose torque optimum genuinely needs third-harmonic current
+        # (common under fault, and for machines with real 3rd-harmonic
+        # torque content) and to field-weakening deeper than -0.9*curr_max.
+        if dim >= 4:
+            for sign1, sign3 in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                c = np.zeros(dim)
+                c[1] = sign1 * I * 0.5
+                c[3] = sign3 * I * 0.5
+                candidates.append(c)
+        for frac in (0.5, 0.7, 0.99):
+            c = np.zeros(dim)
+            c[0] = -I * frac
+            c[1] = I * (1.0 - frac) * 0.5 + I * 0.05
+            candidates.append(c)
+
+        # Hand-picked directions above still leave real gaps: verified
+        # empirically that fixing one grid node's bad local optimum this way
+        # just exposes a different node as the new bottleneck, at a
+        # comparably bad value (down to a spurious negative "success" once,
+        # on the fault-tolerant, high-speed field-weakening corner). Broad
+        # random coverage is what actually closes the gap -- a cheap
+        # pre-screen to avoid paying for every random seed's full SLSQP
+        # solve was tried and does NOT work reliably (see optimizer._run_
+        # slsqp's docstring: the seed that actually converges to the true
+        # optimum can rank outside any cheap heuristic's top candidates
+        # before ever being polished), so every one of these is genuinely
+        # polished by the caller. Neither SLSQP tolerance (ftol down to
+        # 1e-12) nor finite-difference step size (eps from 1e-10 to 1e-3)
+        # changes the outcome at all from a fixed starting point -- this is
+        # a genuine basin-of-attraction problem, not a numerical-precision
+        # one, so more restarts (not tighter tolerances) is the only lever
+        # that actually helps. 8 rows (2x the 4 empirically found sufficient
+        # to fix the two known bottleneck nodes, as a margin for other
+        # operating points) -- going to 16 gave identical results on the
+        # cases tested, i.e. pure added cost.
+        if dim >= 4:
+            for row in _RANDOM_SEED_DIRECTIONS:
+                candidates.append(row * I)
         return candidates
 
 
@@ -365,13 +459,17 @@ def neural_pmsm5phase(
 
 
 # Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
-# "consistent-L training" section for how it was produced): a single-hidden-layer MLP,
-# hidden_size=24, GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output flux_pm (dim=4).
+# "co-energy residual" section for how it was produced): a single-hidden-layer
+# MLP, hidden_size=24, GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output a
+# SCALAR magnetic co-energy residual (dim=1) -- NeuralFlux takes its gradient
+# and Hessian w.r.t. current, added to the analytic ConstantFlux baseline
+# (flux_pm, L_stat), rather than treating the network's output as the whole
+# flux vector from scratch (see NeuralFlux's docstring for why).
 _WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
 _FLUX_NN_HIDDEN_SIZE = 24
 _FLUX_NN_ACTIVATION = "gelu"
 _FLUX_NN_INPUT_SIZE = 5
-_FLUX_NN_OUTPUT_SIZE = 4
+_FLUX_NN_OUTPUT_SIZE = 1
 
 
 def ieee_machine2_trained_neural_flux(
@@ -380,9 +478,10 @@ def ieee_machine2_trained_neural_flux(
     curr_max: float = 30.0,
     volt_max: float = 13.0,
 ) -> PMSMDrive:
-    """IEEE-Machine-2 with the trained neural flux model from ``weights/``
-    (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) loaded and composed in place
-    of the default ``ConstantFlux``."""
+    """IEEE-Machine-2 with the trained neural flux co-energy residual from
+    ``weights/`` (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) composed in as
+    a correction on top of the analytic ``ConstantFlux`` baseline (see
+    ``NeuralFlux``)."""
     from ..utils.neural_model import load_neural_flux_model  # lazy — avoids circular import
 
     device = device if device is not None else torch.device("cpu")
@@ -396,7 +495,7 @@ def ieee_machine2_trained_neural_flux(
         activation=_FLUX_NN_ACTIVATION,
     )
     params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
-    flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2))
+    flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2), params.flux_pm)
     return PMSMDrive(params, flux=flux)
 
 

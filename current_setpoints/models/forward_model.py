@@ -25,6 +25,18 @@ def _build_clarke_5phase() -> np.ndarray:
     return C * (2.0 / 5.0)
 
 
+def _null_space_row(C_red: np.ndarray) -> np.ndarray:
+    """Row vector N such that N @ C_red == 0 (left null space of C_red, i.e.
+    N is orthogonal to Range(C_red)). Used ONLY for the paper's static
+    achievability constraint (Eq. 31/42: N @ i_s = 0, never rotated,
+    checked once for a single constant i_s) -- NOT for the per-angle
+    trajectory optimizers, which need a genuinely different, theta-
+    dependent condition (see Fault.extra_constraints_at_theta)."""
+    _, _, vh = np.linalg.svd(C_red.T)
+    row = vh[-1]
+    return row / np.linalg.norm(row)
+
+
 def _build_dq_to_phase_map(kept: tuple[int, ...], vec_theta: np.ndarray) -> np.ndarray:
     """The reference formulation's two-step reconstruction (Eq.(2)/Eq.(12)):
     invert the static, theta-independent Clarke matrix once (built with
@@ -110,6 +122,7 @@ class Fault:
             raise ValueError("open_phases must be two distinct indices.")
         self.open_phases: tuple[int, ...] = open_phases
         self._kept: tuple[int, ...] = tuple(p for p in range(5) if p not in open_phases)
+        self._N: np.ndarray | None = None  # static null-space row; set by _build_reduced_map
 
     @property
     def is_healthy(self) -> bool:
@@ -124,18 +137,39 @@ class Fault:
         return 5 - self.n_open
 
     def _build_reduced_map(self, vec_theta: np.ndarray) -> np.ndarray:
+        dim = 4
+        C_full = _build_clarke_5phase()
+        C_red = C_full[:4, :][:, list(self._kept)]  # (dim, n_kept)
+        self._N = _null_space_row(C_red) if C_red.shape[1] < dim else None
         return _build_dq_to_phase_map(self._kept, vec_theta)  # (n_t, n_surviving, dim)
 
+    def static_constraints(self) -> list[dict[str, Any]]:
+        """The paper's own achievability constraint (Eq. 31/42): a single,
+        NEVER-rotated N @ i_s = 0, for a genuinely constant i_s used across
+        the whole cycle (StaticOptimizer only -- current/voltage limits are
+        separately checked across the full theta range by the caller). Only
+        meaningful for a 2-open-phase fault (N is None otherwise: healthy and
+        single-fault have no redundant dq direction to constrain)."""
+        if self._N is None:
+            return []
+        N = self._N
+        return [{"type": "eq", "fun": lambda i, N=N: float(N @ i)}]
+
     def extra_constraints_at_theta(self, theta_idx: int, mat_dq_to_ph_all: np.ndarray) -> list[dict[str, Any]]:
-        """An open phase carries physically zero current at every instant --
-        the correct achievability constraint is simply that open phase's own
-        row of the full (fault-independent) dq-to-phase map, evaluated at
-        this theta, dotted with i_dq. One constraint per open phase (an
-        earlier version derived a single constraint from a static-Clarke
-        null vector and rotated it, which does not actually zero the open
-        phase's current when checked against the true theta-dependent map --
-        verified empirically nonzero, e.g. ~0.3-0.5A residual on a unit-norm
-        test current)."""
+        """Per-angle achievability for the trajectory-based optimizers (a
+        genuinely different i_s(theta) is solved at each grid node, so the
+        constraint only needs to hold AT that node's theta, not globally):
+        an open phase carries physically zero current at every instant, so
+        the constraint is simply that open phase's own row of the full
+        (fault-independent) dq-to-phase map, evaluated at this theta, dotted
+        with i_dq. One constraint per open phase. This is NOT the same
+        object as static_constraints()'s N -- rotating that static N by
+        R(theta) does not actually zero the open phase's current when
+        checked against the true theta-dependent map (verified empirically:
+        ~0.3-0.5A residual on a unit-norm test current), because it mixes
+        the static harmonic-2 block with a harmonic-3 rotation in a way that
+        only cancels for a genuinely theta-VARYING i_s(theta), not a fixed
+        one rotated after the fact."""
         if not self.open_phases:
             return []
         rows = mat_dq_to_ph_all[theta_idx][list(self.open_phases)]  # (n_open, dim)
@@ -258,13 +292,12 @@ class ForwardModel:
         return H_ph @ U, H_ph @ L, H_ph @ bemf_dq
 
     def extra_constraints(self) -> list[dict[str, Any]]:
-        # Known limitation: a single fixed i_dq cannot make an open phase's
-        # instantaneous current zero at every theta (only a theta-dependent
-        # trajectory can) -- this checks the constraint at theta=0 only, a
-        # crude snapshot. StaticOptimizer is the only caller; the per-angle
-        # optimizers use extra_constraints_at_theta, which is correct at
-        # every node.
-        return self.extra_constraints_at_theta(0)
+        # The paper's own static achievability constraint (Eq. 31/42): a
+        # single, never-rotated N @ i_s = 0 for a genuinely constant i_s.
+        # StaticOptimizer is the only caller; it separately checks current
+        # and voltage limits across the full theta range (peak_vals/
+        # count_peaks already scan the whole waveform, not a snapshot).
+        return self.fault.static_constraints()
 
     def extra_constraints_at_theta(self, theta_idx: int) -> list[dict[str, Any]]:
         return self.fault.extra_constraints_at_theta(theta_idx, self._mat_dq_to_ph_all)

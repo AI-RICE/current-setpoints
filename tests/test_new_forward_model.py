@@ -338,19 +338,31 @@ def test_extra_constraints_empty_healthy(fwd):
     assert fwd.extra_constraints() == []
 
 
-def test_extra_constraints_nonempty_single_fault(fwd_f1):
-    # One open phase => one equality constraint (that phase's current is
-    # physically zero, checked via the full 5-phase map's own open-phase row).
-    cons = fwd_f1.extra_constraints()
+def test_extra_constraints_empty_single_fault(fwd_f1):
+    # Single fault's reduced map is exactly square (4 kept phases <-> 4 dq
+    # dims) -- no redundant direction, so the paper doesn't define a static
+    # achievability constraint for this case (Eq. 31/42 are both 2-open-
+    # phase only).
+    assert fwd_f1.extra_constraints() == []
+
+
+def test_extra_constraints_nonempty_two_fault(fwd_f2):
+    # The paper's static achievability constraint (Eq. 31/42): a single,
+    # never-rotated N @ i_s = 0 for the whole cycle's constant i_s.
+    cons = fwd_f2.extra_constraints()
     assert len(cons) == 1
     assert cons[0]["type"] == "eq"
 
 
-def test_extra_constraints_nonempty_two_fault(fwd_f2):
-    # Two open phases => two independent equality constraints, one per phase.
-    cons = fwd_f2.extra_constraints()
-    assert len(cons) == 2
-    assert all(c["type"] == "eq" for c in cons)
+def test_static_constraint_matches_null_space_of_reduced_clarke(fwd_f2):
+    """N must satisfy N @ C_red = 0 (left null space of the STATIC reduced
+    Clarke matrix), exactly as the paper defines it -- never rotated."""
+    from current_setpoints.models.forward_model import _build_clarke_5phase
+
+    N = fwd_f2.fault._N
+    C_full = _build_clarke_5phase()
+    C_red = C_full[:4, :][:, list(fwd_f2.fault._kept)]
+    np.testing.assert_allclose(N @ C_red, 0.0, atol=1e-10)
 
 
 def test_extra_constraints_at_theta_matches_full_map(fwd_f2):
