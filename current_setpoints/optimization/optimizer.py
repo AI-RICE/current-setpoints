@@ -110,6 +110,23 @@ class StaticOptimizer(BaseOptimizer):
         return Solution(curr_dq=best_i, torque=torque, success=success)
 
 
+class HullConstrainedOptimizer(StaticOptimizer):
+    """StaticOptimizer that additionally confines every setpoint (and the
+    T_max probe) to the drive's sampled-current convex hull via
+    `drive.hull_margins`. For LUT / MLP flux models this guarantees the flux
+    map is only ever interpolated, never extrapolated: cells whose optimum
+    would leave the hull come back infeasible (honest holes) instead of
+    returning extrapolated — and, as seen for the Tesla5f MLP, physically
+    wrong — torque. No-op for drives without `hull_margins`."""
+
+    def _base_constraints(self, omega: float) -> list[dict[str, Any]]:
+        cons = super()._base_constraints(omega)
+        drive = self.fwd.drive
+        if hasattr(drive, "hull_margins"):
+            cons.append({"type": "ineq", "fun": drive.hull_margins})
+        return cons
+
+
 def _positive_harmonics(harmonics: tuple[int, ...]) -> list[int]:
     return [int(h) for h in sorted(set(harmonics)) if int(h) > 0]
 

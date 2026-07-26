@@ -1,4 +1,11 @@
 from .forward_model import Fault, ForwardModel
+from .im_flux_lut import (
+    CoreLossLUT,
+    IMFluxLUT,
+    IronLossModel,
+    SteinmetzIronLoss,
+    im5_tesla_gen1_fluxlut,
+)
 from .im_lut import (
     IMDriveLUT,
     IMHarmonicParams,
@@ -25,6 +32,11 @@ __all__ = [
     "im5_async",
     "im5_tesla_gen1",
     "im9_prototype",
+    "IMFluxLUT",
+    "im5_tesla_gen1_fluxlut",
+    "IronLossModel",
+    "SteinmetzIronLoss",
+    "CoreLossLUT",
     "FluxModel",
     "ConstantFlux",
     "NeuralFlux",

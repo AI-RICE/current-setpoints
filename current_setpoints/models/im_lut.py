@@ -206,75 +206,114 @@ def im5_async(curr_max: float = 13.5, volt_max: float = 325.0) -> IMDriveLUT:
     return IMDriveLUT(params)
 
 
-# Five-phase IM modelled on the first-generation Tesla car drive (FEM sweep
-# I_combs_Results_correct_wr_definition.xlsx, Ansys, 357 points; native
-# machine coordinates). Total stator inductance lambda_d1/Id1 measured on the
-# slice Id3=Iq3=0, lowest available Iq1 per Id1; the 0 A point extends the
-# first measured value flat. L_mu = lambda/i - L_s_sigma1 is peeled off in
-# the factory so the assumed leakage stays a single visible number.
-_TESLA5F_I_MAG = np.array([0.0, 40.0, 80.0, 120.0, 160.0])  # A
-_TESLA5F_L_TOTAL = np.array([2.0630, 2.0630, 1.5125, 1.0825, 0.8231]) * 1e-3  # H
+# Five-phase, Tesla1-class induction machine (150 kW eMobility design; the
+# 5-phase variant of the motor used in the first-generation Tesla drive).
+#
+# Equivalent-circuit parameters COMPUTED (not estimated) from the Ansys FEM
+# model by J. Laksar, e-mail "Parametry 5fazoveho asynchronniho stroje z
+# Ansysu" (2026-07-20), workbook e5_eMobility_IM_150kW_mod_5ph_h3_linear.xlsx.
+# Source uses the Czech machine convention: subscript 1 = stator, 2' = rotor;
+# L_1 = L_mu + L_1sigma (total stator), L_2' = L_mu + L_2sigma' (total rotor).
+# m = 5, p_p = 3 — so the h=3 plane sees 3*p_p = 9 pole pairs, which is the
+# "p = 9" printed on the workbook's `momentovka` (torque-slip) sheet.
+#
+# These are single-operating-point (lightly saturated) LINEAR parameters. The
+# leakages drift with saturation, but for h=1 they are small so the error is
+# minor (Laksar). Validated against the 357-point Ansys torque sweep
+# I_combs_Results_correct_wr_definition.xlsx, clean slice Id1 = 40 A, no 3rd
+# harmonic: T_model matches T_FEM to 0-2 % at rated load (Iq1 >= 160 A). At low
+# load the FEM torque runs ~20 % below the linear model — the FEM torque/Iq1
+# ratio *rises* with current (a cross-saturation feature a linear model cannot
+# capture), consistent with Laksar's own observation on the sweep.
+_TESLA5F_R_S = 0.02194121  # Ohm, stator (shared by both planes)
+# fundamental plane (h = 1)
+_TESLA5F_H1_R_R = 0.006191796  # Ohm, rotor
+_TESLA5F_H1_L_MU = 2.193562e-3  # H, magnetizing
+_TESLA5F_H1_L_SS = 5.913e-5  # H, stator leakage
+_TESLA5F_H1_L_RS = 6.851e-5  # H, rotor leakage
+# third-harmonic plane (h = 3)
+_TESLA5F_H3_R_R = 0.004503021  # Ohm
+_TESLA5F_H3_L_MU = 0.202479e-3  # H
+_TESLA5F_H3_L_SS = 6.465e-5  # H
+_TESLA5F_H3_L_RS = 5.166e-5  # H
 
-# FEM-author no-load constants (fixed) for the slip relation — the "correct
-# wr definition" the sweep was driven with.
-_TESLA5F_R_R1 = 0.0062  # Ohm
-_TESLA5F_L_R1 = 0.00242  # H
+# Fundamental-plane magnetizing saturation, keyed on the d-axis (magnetizing)
+# current Id1. Fröhlich-type law L_mu1(Id1) = L0 / (1 + (Id1/i_sat)^p), the
+# 3-parameter "Route B" form identified by least-squares against the full
+# 357-point Ansys torque sweep (I_combs_Results_correct_wr_definition.xlsx).
+# It cuts clean-slice torque RMS from 154 Nm (linear) to 10.8 Nm; L0 recovers
+# the computed unsaturated EC at low current (L_mu1(40 A) = 2.17 mH ~ 2.19 mH).
+# Chosen over the material B(H) curve and the FEM-measured lambda_d1/Id1 table
+# (both ~18 Nm RMS) because those anchor to the *unloaded* magnetizing curve;
+# the residual is genuine 2-D cross-saturation. See ADR 0003.
+_TESLA5F_H1_SAT_L0 = 2.475684e-3  # H, unsaturated magnetizing inductance
+_TESLA5F_H1_SAT_ISAT = 94.7304  # A, saturation knee
+_TESLA5F_H1_SAT_P = 2.27219  # -, saturation sharpness
+# d-axis current knots at which the law is sampled into the plane's lookup
+# table (np.interp clamps flat beyond the top knot).
+_TESLA5F_SAT_I_MAG = np.arange(0.0, 300.0 + 1.0, 10.0)  # A
+
+
+def _tesla5f_h1_L_mu_table() -> np.ndarray:
+    i = _TESLA5F_SAT_I_MAG
+    return _TESLA5F_H1_SAT_L0 / (1.0 + (i / _TESLA5F_H1_SAT_ISAT) ** _TESLA5F_H1_SAT_P)
 
 
 def im5_tesla_gen1(
-    curr_max: float = 200.0,
-    volt_max: float = 230.0,
-    L_s_sigma1: float = 0.15e-3,
-    L_s_sigma3: float = 0.15e-3,
-    R_r3: float = _TESLA5F_R_R1,
-    n_ppairs: int = 2,
+    curr_max: float = 200.0, volt_max: float = 230.0, saturating: bool = True
 ) -> IMDriveLUT:
-    """Five-phase IM modelled on the first-generation Tesla car drive, with
-    the FEM-measured fundamental-plane saturation in native coordinates
-    (L_s,total: 2.06 mH @ 40 A -> 0.82 mH @ 160 A).
+    """Five-phase, Tesla1-class 150 kW induction machine — equivalent circuit
+    computed from the Ansys FEM model (Laksar, 2026-07-20).
 
-    Known from the FEM author: R_s = 0.022 Ohm, phase-voltage amplitude
-    230 V, and the fixed no-load slip constants R_r1 = 6.2 mOhm,
-    L_r1 = 2.42 mH (used verbatim via slip_R_r/slip_L_r, matching the
-    sweep's wr definition). ASSUMED, pending identification: the leakage
-    split (L_s_sigma1 default 0.15 mH; L_r_sigma1 then follows from
-    L_r1 = L_mu1 + L_r_sigma1 for consistency with the no-load constants),
-    the h=3 rotor parameters (default: reuse plane-1 values) and curr_max
-    (default: the sweep's 200 A bound). p_p = 2 follows the public gen-1
-    Tesla spec (4-pole). UNRESOLVED x2: the FEM torque column is exactly
-    2.01x this model's torque on the saturation-clean subset — either the
-    FEM redesign is 8-pole (then pass n_ppairs=4), or the library's IM
-    torque expression carries a x2 convention error, or the sweep's wr
-    definition differs. One question to the FEM author (pole count)
-    decides; until then torque SCALE is unverified (map shape unaffected)."""
-    L_mu1_unsat = float(_TESLA5F_L_TOTAL[0]) - L_s_sigma1
-    L_r_sigma1 = _TESLA5F_L_R1 - L_mu1_unsat  # consistency with L_r1 no-load
-    # h=3 plane: FEM mean lambda_d3/Id3 = 0.224 mH at Id1=40 (sparse slice)
-    L_mu3 = 0.224e-3 - L_s_sigma3
+    m = 5, p_p = 3, R_s = 21.94 mOhm. Per harmonic plane (h=1 / h=3):
+    R_r = 6.19 / 4.50 mOhm, L_mu = 2.194 / 0.2025 mH, L_s_sigma = 59.1 / 64.7
+    uH, L_r_sigma = 68.5 / 51.7 uH. Converter limits default to the FEM
+    sweep's I_max = 200 A (a sweep bound, not a thermal rating) and
+    phase-voltage amplitude V_max = 230 V.
+
+    saturating (default True): give the fundamental plane the identified
+    magnetizing-saturation law L_mu1(Id1) (Route B; see ADR 0003), which
+    tracks the 357-point Ansys torque sweep to ~11 Nm RMS. This machine's
+    iron is materially saturated over the sweep, so the linear form overshoots
+    torque by up to ~3x at high Id1 (RMS 154 Nm) — it is kept (saturating=False)
+    only for the small-signal / low-Id1 regime. The h=3 plane stays linear in
+    both modes (its saturation is not yet identified).
+
+    The slip relation uses the fundamental no-load constants R_r1 and
+    L_r1 = L_mu1 + L_r_sigma1 = 2.262 mH, matching the FEM's omega_r
+    definition (held fixed, unaffected by the saturation state). Unlike the
+    earlier assumed set, the h=3 plane's small L_r_sigma3 (< L_mu3) gives a
+    strong rotor coupling, so this machine supports meaningful 3rd-harmonic
+    torque."""
+    L_r1 = _TESLA5F_H1_L_MU + _TESLA5F_H1_L_RS  # no-load rotor inductance
+    h1_sat = (
+        dict(i_mag_table=_TESLA5F_SAT_I_MAG, L_mu_table=_tesla5f_h1_L_mu_table())
+        if saturating
+        else {}
+    )
     params = IMLUTParams(
         n_phases=5,
-        n_ppairs=n_ppairs,
-        R_s=0.022,
+        n_ppairs=3,
+        R_s=_TESLA5F_R_S,
         harmonics=[
             IMHarmonicParams(
-                R_r=_TESLA5F_R_R1,
-                L_mu=L_mu1_unsat,
-                L_s_sigma=L_s_sigma1,
-                L_r_sigma=L_r_sigma1,
-                i_mag_table=_TESLA5F_I_MAG.copy(),
-                L_mu_table=_TESLA5F_L_TOTAL - L_s_sigma1,
+                R_r=_TESLA5F_H1_R_R,
+                L_mu=_TESLA5F_H1_SAT_L0 if saturating else _TESLA5F_H1_L_MU,
+                L_s_sigma=_TESLA5F_H1_L_SS,
+                L_r_sigma=_TESLA5F_H1_L_RS,
+                **h1_sat,
             ),
             IMHarmonicParams(
-                R_r=R_r3,
-                L_mu=L_mu3,
-                L_s_sigma=L_s_sigma3,
-                L_r_sigma=L_r_sigma1,
+                R_r=_TESLA5F_H3_R_R,
+                L_mu=_TESLA5F_H3_L_MU,
+                L_s_sigma=_TESLA5F_H3_L_SS,
+                L_r_sigma=_TESLA5F_H3_L_RS,
             ),
         ],
         curr_max=curr_max,
         volt_max=volt_max,
-        slip_R_r=_TESLA5F_R_R1,
-        slip_L_r=_TESLA5F_L_R1,
+        slip_R_r=_TESLA5F_H1_R_R,
+        slip_L_r=L_r1,
     )
     return IMDriveLUT(params)
 
