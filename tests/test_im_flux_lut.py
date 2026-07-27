@@ -167,3 +167,24 @@ def test_steinmetz_speed_scaling_and_lut_guard():
     lut = CoreLossLUT(d[:, 0:4], d[:, 9], omega_ref=2000.0)
     with pytest.warns(UserWarning):
         lut.loss(5000.0, d[0, 0:4], d[0, 4:8])
+
+
+def test_optimizer_hysteresis_option_runs_clean():
+    """`hysteresis` in opts drives warm-start continuity and must be stripped
+    before reaching scipy (no unknown-option warning), still returning a valid
+    in-hull solution."""
+    import warnings
+
+    from current_setpoints.models.forward_model import ForwardModel
+    from current_setpoints.optimization.optimizer import HullConstrainedOptimizer
+
+    d = im5_tesla_gen1_fluxlut(flux_backend="mlp")
+    d.set_max_pars(170.0, 230.0, 12000.0)
+    fwd = ForwardModel(d, n_theta=180)
+    om = 3000.0 / (30.0 / (np.pi * d.n_ppairs))
+    opt = HullConstrainedOptimizer(fwd, opts={"ftol": 1e-9, "maxiter": 500, "hysteresis": 0.01})
+    guess = np.array([80.0, 120.0, 10.0, -5.0])
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message=".*[Uu]nknown solver option.*")
+        s = opt.minimize_current(80.0, om, guess=guess)
+    assert s.success and np.all(d.hull_margins(s.curr_dq) >= -1e-6)

@@ -23,6 +23,8 @@ def _run_slsqp(
     constraints: list[dict[str, Any]],
     candidates: list[np.ndarray],
     opts: dict[str, Any],
+    warm: np.ndarray | None = None,
+    hysteresis: float = 0.0,
 ) -> tuple[np.ndarray, float, bool]:
     best_x: np.ndarray | None = None
     best_val = float("inf")
@@ -33,9 +35,19 @@ def _run_slsqp(
             best_val = res.fun
             best_x = res.x
 
-    if best_x is not None:
-        return best_x, best_val, True
-    return np.full_like(candidates[0], np.nan), float("inf"), False
+    if best_x is None:
+        return np.full_like(candidates[0], np.nan), float("inf"), False
+
+    # Continuity: when a warm-start (a neighbouring grid cell's solution) is
+    # given, keep its branch if its objective is within `hysteresis` (relative)
+    # of the best restart. Prevents label jitter between near-degenerate optima
+    # in adjacent cells (the "salt-and-pepper" at regime junctions). hysteresis
+    # = 0 (default) reproduces the plain global-best behaviour exactly.
+    if warm is not None and hysteresis > 0.0:
+        rw = minimize(objective, warm, method="SLSQP", constraints=constraints, options=opts)
+        if rw.success and rw.fun <= best_val + hysteresis * (abs(best_val) + 1e-9):
+            return rw.x, rw.fun, True
+    return best_x, best_val, True
 
 
 class BaseOptimizer(ABC):
@@ -91,7 +103,12 @@ class StaticOptimizer(BaseOptimizer):
                 "fun": lambda i: fwd.drive.torque(omega, i) - torq_target,
             }
         )
-        best_i, _, success = _run_slsqp(lambda i: float(np.sum(i**2)), constraints, candidates, self.opts)
+        hyst = self.opts.get("hysteresis", 0.0)
+        scipy_opts = {k: v for k, v in self.opts.items() if k != "hysteresis"}
+        best_i, _, success = _run_slsqp(
+            lambda i: float(np.sum(i**2)), constraints, candidates, scipy_opts,
+            warm=guess, hysteresis=hyst,
+        )
         torque = float(fwd.drive.torque(omega, best_i)) if success else float("nan")
         return Solution(curr_dq=best_i, torque=torque, success=success)
 
@@ -103,8 +120,11 @@ class StaticOptimizer(BaseOptimizer):
         fwd = self.fwd
         candidates = fwd.drive.seeds(guess)
         constraints = self._base_constraints(omega)
+        hyst = self.opts.get("hysteresis", 0.0)
+        scipy_opts = {k: v for k, v in self.opts.items() if k != "hysteresis"}
         best_i, best_val, success = _run_slsqp(
-            lambda i: -fwd.drive.torque(omega, i), constraints, candidates, self.opts
+            lambda i: -fwd.drive.torque(omega, i), constraints, candidates, scipy_opts,
+            warm=guess, hysteresis=hyst,
         )
         torque = float(-best_val) if success else float("nan")
         return Solution(curr_dq=best_i, torque=torque, success=success)
