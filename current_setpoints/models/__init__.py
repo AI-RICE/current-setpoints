@@ -15,6 +15,8 @@ from .machines import (
     im9_prototype_params,
     neural_pmsm5phase,
 )
+from .flux_map_drive import FluxMapDrive, im5_tesla_gen1_fluxmap
+from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
 from .forward_model import Fault, ForwardModel
 
 __all__ = [
@@ -33,6 +35,11 @@ __all__ = [
     "InductionDrive",
     "im9_prototype_params",
     "im9_prototype",
+    "FluxMapDrive",
+    "im5_tesla_gen1_fluxmap",
+    "IronLossModel",
+    "SteinmetzIronLoss",
+    "CoreLossLUT",
     "Fault",
     "ForwardModel",
 ]

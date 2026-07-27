@@ -1,0 +1,162 @@
+"""Machine-agnostic direct flux-map drive.
+
+Given any sampled current->flux-linkage map psi(i), this model gives torque and
+terminal voltage straight from the co-energy relations, independent of an
+equivalent circuit:
+
+    T = (m*p_p/2) * i . J . psi        (J = cross-coupling, embeds harmonic h)
+    v = R_s*i + omega * J . psi
+
+It works for IM or PMSM alike (it only needs a flux map). For the Tesla1-class
+5f IM it reproduces the 357-point Ansys torque sweep to ~0.6 Nm RMS.
+
+Scope: valid inside the convex hull of the sampled currents. `hull_margins`
+exposes the facet inequalities so `HullConstrainedOptimizer` can keep setpoints
+inside the FEM envelope (no extrapolation). Odd symmetry psi(-i) = -psi(i) is
+imposed (`_canon`), so only the positive-Id1 half of the data is needed.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.spatial import ConvexHull
+
+from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
+from .machines import DriveModel, _build_cross_coupling
+
+_DATA = Path(__file__).parent / "data" / "tesla5f_fluxmap.csv"
+
+# Tesla1-class 5f iron-loss coefficients (P = k1|psi1|^2 + k3|psi3|^2), fit to
+# the FEM CoreLoss column (R^2=0.994, LOO 2.5%). See ADR 0003.
+_TESLA5F_IRON_K1 = 4.75427e4  # W / Wb^2
+_TESLA5F_IRON_K3 = 1.353636e6  # W / Wb^2
+
+
+class FluxMapDrive(DriveModel):
+    """Drive defined by a sampled flux-linkage map (Delaunay-linear backend)."""
+
+    def __init__(
+        self,
+        currents: np.ndarray,
+        flux: np.ndarray,
+        n_phases: int,
+        n_ppairs: int,
+        R_s: float,
+        curr_max: float,
+        volt_max: float,
+        iron_loss_model: IronLossModel | None = None,
+    ) -> None:
+        self.n_phases = n_phases
+        self.n_harmonics = 2
+        self.dim = 4
+        self.n_ppairs = n_ppairs
+        self.k_phase = n_phases / 2
+        self.R_stat = R_s * np.eye(self.dim)
+        self.k_v = 0.0
+        self.k_h = 0.0
+        self.curr_max = curr_max
+        self.volt_max = volt_max
+        self.iron_loss_model = iron_loss_model
+        self._J = _build_cross_coupling(self.n_harmonics)
+        # origin-anchored so low-current queries stay inside the hull
+        pts = np.vstack([np.zeros((1, 4)), np.asarray(currents, float)])
+        val = np.vstack([np.zeros((1, 4)), np.asarray(flux, float)])
+        self._lin = LinearNDInterpolator(pts, val)
+        self._near = NearestNDInterpolator(pts, val)
+        self._hull_eq = ConvexHull(pts).equations
+
+    @staticmethod
+    def _canon(curr_dq: np.ndarray) -> tuple[float, np.ndarray]:
+        c = np.asarray(curr_dq, float)
+        return (-1.0, -c) if c[0] < 0 else (1.0, c)
+
+    def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        s, cc = self._canon(curr_dq)
+        q = cc.reshape(1, 4)
+        psi = self._lin(q)[0]
+        if np.any(np.isnan(psi)):
+            psi = self._near(q)[0]
+        return s * psi
+
+    def in_hull(self, curr_dq: np.ndarray) -> bool:
+        _, cc = self._canon(curr_dq)
+        return not np.any(np.isnan(self._lin(cc.reshape(1, 4))[0]))
+
+    def hull_margins(self, curr_dq: np.ndarray) -> np.ndarray:
+        """Signed facet distances of the sampled-current hull; all >= 0 iff
+        inside. Used by HullConstrainedOptimizer to forbid extrapolation."""
+        x = np.asarray(curr_dq, float)
+        return -(self._hull_eq[:, :-1] @ x + self._hull_eq[:, -1])
+
+    def torque(self, omega: float, curr_dq: np.ndarray) -> float:
+        psi = self.flux(omega, curr_dq)
+        return float(self.n_phases * self.n_ppairs / 2.0 * curr_dq @ self._J @ psi)
+
+    def bemf_dq(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        return omega * self._J @ self.flux(omega, curr_dq)
+
+    def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        # v = R_stat @ i + bemf_dq; the flux-induced part lives in bemf_dq
+        return self.R_stat
+
+    def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
+        if curr_dq is None:
+            return np.zeros((self.dim, self.dim))
+        psi = self.flux(omega, curr_dq)
+        L = np.zeros((self.dim, self.dim))
+        for i in range(self.n_harmonics):
+            sl = slice(2 * i, 2 * i + 2)
+            n = float(np.hypot(curr_dq[2 * i], curr_dq[2 * i + 1]))
+            if n > 1e-9:
+                L[sl, sl] = float(np.hypot(psi[2 * i], psi[2 * i + 1])) / n * np.eye(2)
+        return L
+
+    def copper_loss(self, omega: float, curr_dq: np.ndarray) -> float:
+        """Stator copper loss only (rotor current is not in a flux map)."""
+        return self.k_phase * self.R_stat[0, 0] * float(curr_dq @ curr_dq)
+
+    def iron_loss_at(self, omega: float, curr_dq: np.ndarray) -> float:
+        if self.iron_loss_model is None:
+            raise ValueError("no iron_loss_model set on this drive")
+        return self.iron_loss_model.loss(omega, curr_dq, self.flux(omega, curr_dq))
+
+    def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
+        i_max = self.curr_max
+        c: list[np.ndarray] = []
+        if guess is not None:
+            c.append(np.asarray(guess, float).copy())
+        c.append(np.array([0.1, 0.1, 0.0, 0.0]))
+        for amp in (0.3, 0.5, 0.7):
+            c.append(np.array([i_max * amp, i_max * amp, 0.0, 0.0]))
+        c.append(np.array([i_max * 0.85, i_max * 0.30, 0.0, 0.0]))
+        c.append(np.array([i_max * 0.7, i_max * 0.7, i_max * 0.1, -i_max * 0.1]))
+        return c
+
+
+def im5_tesla_gen1_fluxmap(
+    curr_max: float = 200.0,
+    volt_max: float = 230.0,
+    iron_loss: str | None = "steinmetz",
+) -> FluxMapDrive:
+    """Tesla1-class five-phase IM as a direct FEM flux-map drive.
+
+    Data: 357-point Ansys sweep (`data/tesla5f_fluxmap.csv`, columns
+    Flux_d1/q1/d3/q3 + CoreLoss). m=5, p_p=3, R_s=21.94 mOhm (computed EC; ADR
+    0003). `iron_loss`: "steinmetz" (default), "lut", or None."""
+    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    currents, flux, p_core = d[:, 0:4], d[:, 4:8], d[:, 9]
+    if iron_loss == "steinmetz":
+        ilm: IronLossModel | None = SteinmetzIronLoss(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3)
+    elif iron_loss == "lut":
+        ilm = CoreLossLUT(currents, p_core)
+    elif iron_loss is None:
+        ilm = None
+    else:
+        raise ValueError(f"iron_loss must be 'steinmetz', 'lut' or None, got {iron_loss!r}")
+    return FluxMapDrive(
+        currents=currents, flux=flux, n_phases=5, n_ppairs=3, R_s=0.02194121,
+        curr_max=curr_max, volt_max=volt_max, iron_loss_model=ilm,
+    )

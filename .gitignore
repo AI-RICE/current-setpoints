@@ -42,6 +42,11 @@ htmlcov/
 *.csv
 *.mat
 
+# Committed package data (FEM maps etc.) — exempt from the scratch-file
+# ignores above; these ship with the package (see pyproject package-data).
+!current_setpoints/models/data/*.csv
+!current_setpoints/models/data/*.npy
+
 # Experiment / figure outputs (regenerable from the drivers)
 dynamic/figs/
 experiments/**/figs/
