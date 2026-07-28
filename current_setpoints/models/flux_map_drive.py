@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator, RBFInterpolator
 from scipy.spatial import ConvexHull
 
 from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
@@ -48,6 +48,7 @@ class FluxMapDrive(DriveModel):
         curr_max: float,
         volt_max: float,
         iron_loss_model: IronLossModel | None = None,
+        flux_backend: str = "smooth",
     ) -> None:
         self.n_phases = n_phases
         self.n_harmonics = 2
@@ -60,13 +61,23 @@ class FluxMapDrive(DriveModel):
         self.curr_max = curr_max
         self.volt_max = volt_max
         self.iron_loss_model = iron_loss_model
+        self.flux_backend = flux_backend
         self._J = _build_cross_coupling(self.n_harmonics)
         # origin-anchored so low-current queries stay inside the hull
         pts = np.vstack([np.zeros((1, 4)), np.asarray(currents, float)])
         val = np.vstack([np.zeros((1, 4)), np.asarray(flux, float)])
-        self._lin = LinearNDInterpolator(pts, val)
-        self._near = NearestNDInterpolator(pts, val)
         self._hull_eq = ConvexHull(pts).equations
+        if flux_backend == "smooth":
+            # C-infinity thin-plate-spline: unbiased at the curved peak-torque
+            # edge where Delaunay-linear reads ~5% low (see ADR 0003).
+            self._rbf = RBFInterpolator(pts, val, kernel="thin_plate_spline")
+        elif flux_backend == "linear":
+            self._lin = LinearNDInterpolator(pts, val)
+            self._near = NearestNDInterpolator(pts, val)
+        else:
+            raise ValueError(f"flux_backend must be 'smooth' or 'linear', got {flux_backend!r}")
+        # a Delaunay membership test for `in_hull`, regardless of backend
+        self._member = LinearNDInterpolator(pts, val[:, :1])
 
     @staticmethod
     def _canon(curr_dq: np.ndarray) -> tuple[float, np.ndarray]:
@@ -76,6 +87,8 @@ class FluxMapDrive(DriveModel):
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         s, cc = self._canon(curr_dq)
         q = cc.reshape(1, 4)
+        if self.flux_backend == "smooth":
+            return s * self._rbf(q)[0]
         psi = self._lin(q)[0]
         if np.any(np.isnan(psi)):
             psi = self._near(q)[0]
@@ -83,7 +96,7 @@ class FluxMapDrive(DriveModel):
 
     def in_hull(self, curr_dq: np.ndarray) -> bool:
         _, cc = self._canon(curr_dq)
-        return not np.any(np.isnan(self._lin(cc.reshape(1, 4))[0]))
+        return not np.any(np.isnan(self._member(cc.reshape(1, 4))[0]))
 
     def hull_margins(self, curr_dq: np.ndarray) -> np.ndarray:
         """Signed facet distances of the sampled-current hull; all >= 0 iff
@@ -140,6 +153,7 @@ def im5_tesla_gen1_fluxmap(
     curr_max: float = 200.0,
     volt_max: float = 230.0,
     iron_loss: str | None = "steinmetz",
+    flux_backend: str = "smooth",
 ) -> FluxMapDrive:
     """Tesla1-class five-phase IM as a direct FEM flux-map drive.
 
@@ -158,5 +172,5 @@ def im5_tesla_gen1_fluxmap(
         raise ValueError(f"iron_loss must be 'steinmetz', 'lut' or None, got {iron_loss!r}")
     return FluxMapDrive(
         currents=currents, flux=flux, n_phases=5, n_ppairs=3, R_s=0.02194121,
-        curr_max=curr_max, volt_max=volt_max, iron_loss_model=ilm,
+        curr_max=curr_max, volt_max=volt_max, iron_loss_model=ilm, flux_backend=flux_backend,
     )
