@@ -37,7 +37,7 @@ from scipy.spatial import ConvexHull
 
 from .machines import DriveModel, _build_cross_coupling
 
-_DATA = Path(__file__).parent / "data" / "tesla5f_fluxmap.csv"
+_DATA = Path(__file__).parent / "data" / "tesla5f_fluxmap.npz"
 
 # Electrical fundamental frequency [rad/s] at which the Ansys sweep was run.
 # UNCONFIRMED — the sweep carries no speed/frequency column and every point is
@@ -91,22 +91,22 @@ class _FluxMLP:
 
 
 def train_flux_mlp(
-    csv: Path = _DATA,
+    data: Path = _DATA,
     out: Path = _MLP_WEIGHTS,
     seed: int = 0,
     epochs: int = 6000,
     lr: float = 2e-3,
     weight_decay: float = 1e-5,
 ) -> Path:
-    """(Re)fit the flux-map MLP from `csv` and save weights to `out`. Run this
-    ONLY when a new FEM sweep arrives (new xlsx -> regenerated CSV); normal use
+    """(Re)fit the flux-map MLP from `data` (npz with a `raw` array) and save
+    weights to `out`. Run this ONLY when a new FEM sweep arrives; normal use
     loads the committed weights. Deterministic for a given seed. Uses torch for
     training only; inference (`_FluxMLP`) is numpy."""
     import torch
     import torch.nn as nn
 
     torch.manual_seed(seed)
-    d = np.loadtxt(csv, delimiter=",", skiprows=1)
+    d = np.load(data)["raw"]
     X, Y = d[:, 0:4].astype(np.float32), d[:, 4:8].astype(np.float32)
     xm, xs, ym, ys = X.mean(0), X.std(0), Y.mean(0), Y.std(0)
     net = nn.Sequential(
@@ -340,7 +340,7 @@ def im5_tesla_gen1_fluxlut(
     """Tesla1-class five-phase IM as a direct FEM flux-linkage LUT.
 
     Data: the 357-point Ansys sweep I_combs_Results_correct_wr_definition.xlsx
-    (columns Flux_d1/q1/d3/q3, CoreLoss), archived as `data/tesla5f_fluxmap.csv`.
+    (columns Flux_d1/q1/d3/q3, CoreLoss), archived as `data/tesla5f_fluxmap.npz`.
     m = 5, p_p = 3, R_s = 21.94 mOhm (the computed EC value; ADR 0003).
     Reproduces the FEM torque sweep to ~0.6 Nm RMS. See module docstring for
     scope limits.
@@ -352,7 +352,7 @@ def im5_tesla_gen1_fluxlut(
       "lut" — interpolate the FEM CoreLoss column directly (~4.8% LOO), the
           raw at-speed reference;
       None — no iron-loss model (`iron_loss_at` then raises)."""
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     currents = d[:, 0:4]  # Id1, Iq1, Id3, Iq3
     flux = d[:, 4:8]  # psi_d1, psi_q1, psi_d3, psi_q3
     p_core = d[:, 9]  # W

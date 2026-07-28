@@ -22,7 +22,7 @@ def test_fluxlut_reproduces_fem_torque():
     """The whole point: torque from the interpolated flux map matches the
     357-point Ansys sweep to <1 Nm RMS (co-energy formula, p_p = 3)."""
     m = im5_tesla_gen1_fluxlut()
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     err = np.array([m.torque(0.0, row[0:4]) - row[8] for row in d])
     assert np.sqrt(np.mean(err**2)) < 1.0
     assert np.abs(err).max() < 3.0
@@ -31,7 +31,7 @@ def test_fluxlut_reproduces_fem_torque():
 def test_fluxlut_flux_is_returned_and_interpolates():
     m = im5_tesla_gen1_fluxlut()
     # at a sampled node the flux equals the FEM value
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     node = d[100]
     assert m.flux(0.0, node[0:4]) == pytest.approx(node[4:8], rel=1e-6, abs=1e-9)
     # an interior midpoint interpolates to something finite and in range
@@ -75,7 +75,7 @@ def test_iron_loss_steinmetz_fits_fem_column():
     """Steinmetz model P = k1|psi1|^2 + k3|psi3|^2 reproduces the FEM CoreLoss
     column to R^2 > 0.99 (the physical B^2 validation)."""
     m = im5_tesla_gen1_fluxlut(iron_loss="steinmetz")
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     pred = np.array([m.iron_loss_at(0.0, row[0:4]) for row in d])
     P = d[:, 9]
     r2 = 1.0 - np.sum((P - pred) ** 2) / np.sum((P - P.mean()) ** 2)
@@ -85,7 +85,7 @@ def test_iron_loss_steinmetz_fits_fem_column():
 
 def test_iron_loss_lut_reproduces_nodes():
     m = im5_tesla_gen1_fluxlut(iron_loss="lut")
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     # at a sampled node the LUT returns the FEM CoreLoss value
     node = d[123]
     assert m.iron_loss_at(0.0, node[0:4]) == pytest.approx(node[9], rel=1e-6)
@@ -110,7 +110,7 @@ def test_flux_mlp_backend_matches_fem_torque():
     """The committed MLP surrogate (numpy inference) reproduces FEM torque to
     <1 Nm RMS, on par with the raw interpolant but C-infinity smooth."""
     m = im5_tesla_gen1_fluxlut(flux_backend="mlp")
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     err = np.array([m.torque(0.0, row[0:4]) - row[8] for row in d])
     assert np.sqrt(np.mean(err**2)) < 1.0
 
@@ -163,7 +163,7 @@ def test_steinmetz_speed_scaling_and_lut_guard():
     p_2x = s.loss(4000.0, np.zeros(4), flux)
     assert p_2x == pytest.approx(4.0 * p_ref, rel=1e-9)
     # CoreLossLUT warns when queried far from its reference speed
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
+    d = np.load(_DATA)["raw"]
     lut = CoreLossLUT(d[:, 0:4], d[:, 9], omega_ref=2000.0)
     with pytest.warns(UserWarning):
         lut.loss(5000.0, d[0, 0:4], d[0, 4:8])
