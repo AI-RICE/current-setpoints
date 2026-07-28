@@ -7,8 +7,8 @@ from current_setpoints.models.flux_map_drive import _DATA
 
 def test_fluxmap_reproduces_fem_torque():
     d = im5_tesla_gen1_fluxmap(curr_max=170.0)
-    data = np.loadtxt(_DATA, delimiter=",", skiprows=1)
-    err = np.array([d.torque(0.0, r[0:4]) - r[8] for r in data])
+    z = np.load(_DATA)
+    err = np.array([d.torque(0.0, c) - t for c, t in zip(z["currents"], z["T_fem"])])
     assert np.sqrt(np.mean(err**2)) < 1.0
 
 
@@ -23,9 +23,9 @@ def test_fluxmap_odd_symmetry_and_hull():
 
 def test_fluxmap_iron_loss_and_none():
     d = im5_tesla_gen1_fluxmap(iron_loss="steinmetz")
-    data = np.loadtxt(_DATA, delimiter=",", skiprows=1)
-    pred = np.array([d.iron_loss_at(0.0, r[0:4]) for r in data])
-    P = data[:, 9]
+    z = np.load(_DATA)
+    pred = np.array([d.iron_loss_at(0.0, c) for c in z["currents"]])
+    P = z["P_core"]
     r2 = 1.0 - np.sum((P - pred) ** 2) / np.sum((P - P.mean()) ** 2)
     assert r2 > 0.99
     with pytest.raises(ValueError):

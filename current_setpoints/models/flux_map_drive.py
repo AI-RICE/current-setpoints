@@ -27,7 +27,7 @@ from scipy.spatial import ConvexHull
 from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
 from .machines import DriveModel, _build_cross_coupling
 
-_DATA = Path(__file__).parent / "data" / "tesla5f_fluxmap.csv"
+_DATA = Path(__file__).parent / "data" / "tesla5f_fluxmap.npz"
 
 # Tesla1-class 5f iron-loss coefficients (P = k1|psi1|^2 + k3|psi3|^2), fit to
 # the FEM CoreLoss column (R^2=0.994, LOO 2.5%). See ADR 0003.
@@ -157,11 +157,11 @@ def im5_tesla_gen1_fluxmap(
 ) -> FluxMapDrive:
     """Tesla1-class five-phase IM as a direct FEM flux-map drive.
 
-    Data: 357-point Ansys sweep (`data/tesla5f_fluxmap.csv`, columns
-    Flux_d1/q1/d3/q3 + CoreLoss). m=5, p_p=3, R_s=21.94 mOhm (computed EC; ADR
-    0003). `iron_loss`: "steinmetz" (default), "lut", or None."""
-    d = np.loadtxt(_DATA, delimiter=",", skiprows=1)
-    currents, flux, p_core = d[:, 0:4], d[:, 4:8], d[:, 9]
+    Data: 357-point Ansys sweep (`data/tesla5f_fluxmap.npz`: currents, flux,
+    T_fem, P_core). m=5, p_p=3, R_s=21.94 mOhm (computed EC; ADR 0003).
+    `iron_loss`: "steinmetz" (default), "lut", or None."""
+    z = np.load(_DATA)
+    currents, flux, p_core = z["currents"], z["flux"], z["P_core"]
     if iron_loss == "steinmetz":
         ilm: IronLossModel | None = SteinmetzIronLoss(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3)
     elif iron_loss == "lut":
