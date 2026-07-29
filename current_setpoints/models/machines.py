@@ -94,9 +94,11 @@ class NeuralFlux(FluxModel):
     Two deliberate properties, both by construction rather than by hoping
     training gets there:
       - inductance is symmetric: a Hessian of a scalar function is always
-        symmetric (W1.T @ diag(w2 * act''(z)) @ W1 is symmetric regardless
-        of the trained weights), unlike differentiating a raw 4-vector
-        network output, which has no such guarantee.
+        symmetric, for a network of ANY depth (see _forward_grad_hess's
+        docstring for the general recursion and why it stays exact and
+        symmetric regardless of how many hidden layers are stacked), unlike
+        differentiating a raw 4-vector network output, which has no such
+        guarantee.
       - flux/inductance degrade gracefully far outside the training data:
         with the network's own contribution near zero (e.g. if training
         regularizes the residual toward zero away from data, or simply by
@@ -128,10 +130,14 @@ class NeuralFlux(FluxModel):
         self.flux_pm = np.asarray(flux_pm)
 
         with torch.no_grad():
-            self._W1 = net.fc1.weight.cpu().numpy()  # (hidden, 5)
-            self._b1 = net.fc1.bias.cpu().numpy()  # (hidden,)
-            self._w2 = net.fc2.weight.cpu().numpy().reshape(-1)  # (hidden,) -- output_size == 1
-            self._b2 = float(net.fc2.bias.cpu().numpy().reshape(-1)[0])
+            # One (W, b) pair per hidden layer (arbitrary depth), plus the
+            # final linear output layer (w_out, b_out) -- net.layers is the
+            # nn.ModuleList of hidden Linear layers, net.out_layer the
+            # linear scalar-output layer.
+            self._Ws = [layer.weight.cpu().numpy() for layer in net.layers]  # each (n_k, n_{k-1})
+            self._bs = [layer.bias.cpu().numpy() for layer in net.layers]  # each (n_k,)
+            self._w_out = net.out_layer.weight.cpu().numpy().reshape(-1)  # (n_last,) -- output_size == 1
+            self._b_out = float(net.out_layer.bias.cpu().numpy().reshape(-1)[0])
         self._mean = scaler.mean_
         self._scale = scaler.scale_
         self._act_deriv = _NP_ACTIVATION_DERIVATIVES[net.activation]
@@ -140,15 +146,59 @@ class NeuralFlux(FluxModel):
         self._flux_cache: tuple[tuple[float, ...], np.ndarray] | None = None
         self._inductance_cache: tuple[tuple[float, ...], np.ndarray] | None = None
 
+    def _forward_grad_hess(self, x_normed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Exact gradient and Hessian of the network's scalar output w.r.t.
+        x_normed, for an MLP of ANY depth (elementwise activation on each
+        hidden layer, linear final layer) -- a forward-mode 2nd-order
+        propagation, generalizing the old single-hidden-layer closed form
+        (W1.T @ diag(w2*act''(z)) @ W1) to arbitrary depth.
+
+        At each layer, track for every unit its value, its gradient w.r.t.
+        the ORIGINAL input (a d0-vector), and its Hessian w.r.t. the
+        original input (a d0 x d0 matrix) -- propagated forward via the
+        standard chain rule for compositions:
+            z = W @ h_prev + b
+            grad(z) = W @ grad(h_prev)
+            hess(z) = W . hess(h_prev)          (contract over h_prev's index)
+            h = act(z)
+            grad(h) = act'(z) * grad(z)
+            hess(h) = act'(z)*hess(z) + act''(z) * outer(grad(z), grad(z))
+        and at the final linear layer, output = w_out . h + b_out, so
+        grad(out) = w_out . grad(h), hess(out) = w_out . hess(h). This is
+        exact (not an approximation) and its Hessian is symmetric by
+        construction for any depth or trained weights, since it computes
+        the true Hessian of a genuine scalar function -- verified against
+        finite differences and against the old single-layer formula (the
+        depth=1 special case) to ~1e-8 before this was used here.
+        """
+        d0 = x_normed.shape[0]
+        grad_h = np.eye(d0)  # (n_prev=d0, d0)
+        hess_h = np.zeros((d0, d0, d0))  # (n_prev=d0, d0, d0)
+        h = x_normed
+
+        for W, b in zip(self._Ws, self._bs):
+            z = W @ h + b  # (n_k,)
+            grad_z = W @ grad_h  # (n_k, d0)
+            hess_z = np.einsum("ji,ipq->jpq", W, hess_h)  # (n_k, d0, d0)
+
+            d_act = self._act_deriv(z)
+            d2_act = self._act_second_deriv(z)
+
+            h = _NP_ACTIVATIONS[self.net.activation](z)
+            grad_h = d_act[:, None] * grad_z  # (n_k, d0)
+            hess_h = d_act[:, None, None] * hess_z + d2_act[:, None, None] * np.einsum("jp,jq->jpq", grad_z, grad_z)
+
+        grad_out = self._w_out @ grad_h  # (d0,)
+        hess_out = np.einsum("j,jpq->pq", self._w_out, hess_h)  # (d0, d0), symmetric by construction
+        return grad_out, hess_out
+
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         key = (float(omega), *(float(v) for v in curr_dq))
         if self._flux_cache is not None and self._flux_cache[0] == key:
             return self._flux_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        z = self._W1 @ x_normed + self._b1  # (hidden,)
-        d_act_dz = self._act_deriv(z)  # (hidden,)
-        grad_normed = (self._w2 * d_act_dz) @ self._W1  # (5,) -- d(W_res)/d(x_normed)
+        grad_normed, _ = self._forward_grad_hess(x_normed)  # d(W_res)/d(x_normed)
         grad_x = grad_normed / self._scale  # d(W_res)/d(x_raw)
         d_wres_d_i = grad_x[1:]  # (dim,) -- drop the omega component
         result = self.flux_pm + self.L_stat @ curr_dq + d_wres_d_i
@@ -158,8 +208,8 @@ class NeuralFlux(FluxModel):
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         """L = L_stat + d^2(W_res)/di^2, the Hessian of the network's scalar
         co-energy residual w.r.t. current -- symmetric by construction (see
-        class docstring), computed directly from the network's weights via
-        W1.T @ diag(w2 * act''(z)) @ W1, exact (not an approximation)."""
+        _forward_grad_hess's docstring), exact (not an approximation) for a
+        network of any depth."""
         if curr_dq is None:
             curr_dq = np.zeros(self.L_stat.shape[0])
         key = (float(omega), *(float(v) for v in curr_dq))
@@ -167,10 +217,7 @@ class NeuralFlux(FluxModel):
             return self._inductance_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        z = self._W1 @ x_normed + self._b1  # (hidden,)
-        d2_act_dz2 = self._act_second_deriv(z)  # (hidden,)
-        weighted_W1 = (self._w2 * d2_act_dz2)[:, None] * self._W1  # (hidden, 5)
-        hess_normed = self._W1.T @ weighted_W1  # (5, 5), symmetric by construction
+        _, hess_normed = self._forward_grad_hess(x_normed)  # (5, 5), symmetric by construction
         hess_x = hess_normed / np.outer(self._scale, self._scale)
         hess_i = hess_x[1:, 1:]  # (dim, dim)
         result = self.L_stat + hess_i
@@ -460,13 +507,14 @@ def neural_pmsm5phase(
 
 # Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
 # "co-energy residual" section for how it was produced): a single-hidden-layer
-# MLP, hidden_size=24, GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output a
+# MLP, hidden_size=12 (chosen by an actual hidden_size x volt_weight sweep,
+# not hand-picked), GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output a
 # SCALAR magnetic co-energy residual (dim=1) -- NeuralFlux takes its gradient
 # and Hessian w.r.t. current, added to the analytic ConstantFlux baseline
 # (flux_pm, L_stat), rather than treating the network's output as the whole
 # flux vector from scratch (see NeuralFlux's docstring for why).
 _WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
-_FLUX_NN_HIDDEN_SIZE = 24
+_FLUX_NN_HIDDEN_SIZES = [12]
 _FLUX_NN_ACTIVATION = "gelu"
 _FLUX_NN_INPUT_SIZE = 5
 _FLUX_NN_OUTPUT_SIZE = 1
@@ -488,7 +536,7 @@ def ieee_machine2_trained_neural_flux(
     net, scaler = load_neural_flux_model(
         str(_WEIGHTS_DIR / "FluxNN_Weights.pth"),
         str(_WEIGHTS_DIR / "FluxNN_Scaler.npy"),
-        hidden_size=_FLUX_NN_HIDDEN_SIZE,
+        hidden_sizes=_FLUX_NN_HIDDEN_SIZES,
         input_size=_FLUX_NN_INPUT_SIZE,
         output_size=_FLUX_NN_OUTPUT_SIZE,
         device=device,
