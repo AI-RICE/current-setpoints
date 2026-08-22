@@ -153,16 +153,26 @@ class FluxMapDrive(DriveModel):
         return self.R_stat
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
-        if curr_dq is None:
-            return np.zeros((self.dim, self.dim))
-        psi = self.flux(omega, curr_dq)
-        L = np.zeros((self.dim, self.dim))
-        for i in range(self.n_harmonics):
-            sl = slice(2 * i, 2 * i + 2)
-            n = float(np.hypot(curr_dq[2 * i], curr_dq[2 * i + 1]))
-            if n > 1e-9:
-                L[sl, sl] = float(np.hypot(psi[2 * i], psi[2 * i + 1])) / n * np.eye(2)
-        return L
+        """Differential (tangent) inductance ``L_d = dpsi/di`` at the operating
+        point, via a central finite difference of the flux map (symmetrised for
+        Maxwell reciprocity). This is the proper small-signal inductance --- not
+        a chord/secant. With :meth:`flux_offset` it splits ``psi = psi* + L_d@i``
+        into a PM-like offset and a linear part (cf. App. C, 5f-async)."""
+        x = np.zeros(self.dim) if curr_dq is None else np.asarray(curr_dq, float)
+        h = 1e-3 * max(self.curr_max, 1.0)
+        jac = np.empty((self.dim, self.dim))
+        for b in range(self.dim):
+            e = np.zeros(self.dim)
+            e[b] = h
+            jac[:, b] = (self.flux(omega, x + e) - self.flux(omega, x - e)) / (2.0 * h)
+        return 0.5 * (jac + jac.T)
+
+    def flux_offset(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        """PM-like flux offset ``psi* = psi(i) - L_d@i`` (the flux not explained
+        by the local differential inductance); the back-EMF gain is
+        ``omega * J @ psi*``. By construction ``psi(i) == flux_offset + L_d@i``."""
+        x = np.asarray(curr_dq, float)
+        return self.flux(omega, x) - self.inductance(omega, x) @ x
 
     def copper_loss(self, omega: float, curr_dq: np.ndarray) -> float:
         """Stator copper loss only (rotor current is not in a flux map)."""
