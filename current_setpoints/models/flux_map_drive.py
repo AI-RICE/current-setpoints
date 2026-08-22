@@ -79,6 +79,43 @@ class FluxMapDrive(DriveModel):
         # a Delaunay membership test for `in_hull`, regardless of backend
         self._member = LinearNDInterpolator(pts, val[:, :1])
 
+    @classmethod
+    def from_npz(
+        cls,
+        path,
+        *,
+        n_phases: int,
+        n_ppairs: int,
+        R_s: float,
+        curr_max: float,
+        volt_max: float,
+        iron_loss: str | None = None,
+        iron_k: tuple[float, float] | None = None,
+        flux_backend: str = "smooth",
+    ) -> "FluxMapDrive":
+        """Build from an ``.npz`` flux map --- machine-agnostic, point it at any
+        machine's data. Required arrays: ``currents`` [N,4] and ``flux`` [N,4]
+        (dq of harmonics 1,3); ``P_core`` [N] is needed only for
+        ``iron_loss="lut"``. ``iron_loss``: ``None``, ``"lut"`` (uses
+        ``P_core``), or ``"steinmetz"`` (needs ``iron_k=(k1, k3)``)."""
+        z = np.load(path)
+        currents, flux = z["currents"], z["flux"]
+        if iron_loss == "steinmetz":
+            if iron_k is None:
+                raise ValueError("iron_loss='steinmetz' requires iron_k=(k1, k3)")
+            ilm: IronLossModel | None = SteinmetzIronLoss(*iron_k)
+        elif iron_loss == "lut":
+            ilm = CoreLossLUT(currents, z["P_core"])
+        elif iron_loss is None:
+            ilm = None
+        else:
+            raise ValueError(f"iron_loss must be 'steinmetz', 'lut' or None, got {iron_loss!r}")
+        return cls(
+            currents=currents, flux=flux, n_phases=n_phases, n_ppairs=n_ppairs,
+            R_s=R_s, curr_max=curr_max, volt_max=volt_max,
+            iron_loss_model=ilm, flux_backend=flux_backend,
+        )
+
     @staticmethod
     def _canon(curr_dq: np.ndarray) -> tuple[float, np.ndarray]:
         c = np.asarray(curr_dq, float)
@@ -154,23 +191,18 @@ def im5_tesla_gen1_fluxmap(
     volt_max: float = 230.0,
     iron_loss: str | None = "steinmetz",
     flux_backend: str = "smooth",
+    data_path=_DATA,
 ) -> FluxMapDrive:
-    """Tesla1-class five-phase IM as a direct FEM flux-map drive.
+    """Tesla1-class five-phase IM as a direct FEM flux-map drive --- the bundled
+    EXAMPLE of :class:`FluxMapDrive` (and a usage template for your own machine).
 
-    Data: 357-point Ansys sweep (`data/tesla5f_fluxmap.npz`: currents, flux,
-    T_fem, P_core). m=5, p_p=3, R_s=21.94 mOhm (computed EC; ADR 0003).
-    `iron_loss`: "steinmetz" (default), "lut", or None."""
-    z = np.load(_DATA)
-    currents, flux, p_core = z["currents"], z["flux"], z["P_core"]
-    if iron_loss == "steinmetz":
-        ilm: IronLossModel | None = SteinmetzIronLoss(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3)
-    elif iron_loss == "lut":
-        ilm = CoreLossLUT(currents, p_core)
-    elif iron_loss is None:
-        ilm = None
-    else:
-        raise ValueError(f"iron_loss must be 'steinmetz', 'lut' or None, got {iron_loss!r}")
-    return FluxMapDrive(
-        currents=currents, flux=flux, n_phases=5, n_ppairs=3, R_s=0.02194121,
-        curr_max=curr_max, volt_max=volt_max, iron_loss_model=ilm, flux_backend=flux_backend,
+    Default data: 357-point Ansys sweep (`data/tesla5f_fluxmap.npz`: currents,
+    flux, T_fem, P_core). m=5, p_p=3, R_s=21.94 mOhm (computed EC; ADR 0003).
+    `iron_loss`: "steinmetz" (default), "lut", or None. Pass ``data_path`` to
+    build the same drive from another machine's flux map."""
+    return FluxMapDrive.from_npz(
+        data_path, n_phases=5, n_ppairs=3, R_s=0.02194121,
+        curr_max=curr_max, volt_max=volt_max,
+        iron_loss=iron_loss, iron_k=(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3),
+        flux_backend=flux_backend,
     )
