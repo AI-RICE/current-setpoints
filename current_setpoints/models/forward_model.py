@@ -9,18 +9,27 @@ from .machines import DriveModel
 
 def _build_clarke_5phase() -> np.ndarray:
     """Static (theta-independent) Clarke/Concordia matrix at the 5 fixed
-    phase positions a_p = p*2pi/5: harmonic 1 (rows 0-1) and harmonic 2
-    (rows 2-3, per the reference formulation's Eq.(1) -- NOT harmonic 3;
-    the rotation rate used to reconstruct time-domain quantities from this
-    static projection is a separate, genuinely different harmonic (3), see
-    _build_dq_to_phase_map)."""
+    phase positions a_p = p*2pi/5: harmonic 1 (rows 0-1) and the 3rd-harmonic
+    plane (rows 2-3): cos(2a_p) and -sin(2a_p), i.e. cos(3a_p) and sin(3a_p).
+
+    Row 3 is -sin(2a_p), NOT the +sin(2a_p) printed in the PDF's Eq.(1): with
+    +sin(2a_p) and the 3*theta rotation of _build_dq_to_phase_map, phase p's
+    3rd harmonic comes out as cos(3*theta - 2a_p) = cos(3*theta + 3a_p) -- the
+    phases in reverse order (a, e, d, c, b) relative to the fundamental, so
+    phases b-e do not carry phase a's waveform delayed by a_p. With -sin(2a_p)
+    every phase is exactly phase a delayed by a_p (3rd harmonic
+    cos(3*(theta - a_p))), matching the original drive-control code (first
+    commit c58f2cc, pmsm_lib Transform: phase a = [cos th, -sin th, cos 3th,
+    -sin 3th] over a full period, i.e. a symmetric machine) and this code
+    before 2026-07-20 (commit 5b6e545). Phase a itself is unchanged (still
+    exactly the PDF's Eq.(2))."""
     C = np.zeros((5, 5))
     for p in range(5):
         a = p * 2 * np.pi / 5
         C[0, p] = np.cos(a)
         C[1, p] = np.sin(a)
         C[2, p] = np.cos(2 * a)
-        C[3, p] = np.sin(2 * a)
+        C[3, p] = -np.sin(2 * a)
         C[4, p] = 0.5
     return C * (2.0 / 5.0)
 
@@ -39,10 +48,10 @@ def _null_space_row(C_red: np.ndarray) -> np.ndarray:
 
 def _build_dq_to_phase_map(kept: tuple[int, ...], vec_theta: np.ndarray) -> np.ndarray:
     """The reference formulation's two-step reconstruction (Eq.(2)/Eq.(12)):
-    invert the static, theta-independent Clarke matrix once (built with
-    harmonic 1 and 2), then rotate by a separate, theta-dependent R(theta)
-    that uses harmonic 1 and **3** for the second block -- a genuinely
-    different harmonic from the static matrix's, not a relabeling of it.
+    invert the static, theta-independent Clarke matrix once (see
+    _build_clarke_5phase for its 3rd-harmonic rows), then rotate by a
+    separate, theta-dependent R(theta) that uses harmonic 1 and 3. Healthy
+    result: every phase p is phase a delayed by a_p = p*2pi/5.
     Used identically for the always-5-phase voltage map (kept = all 5
     phases) and the fault-reduced current map (kept = surviving phases).
 

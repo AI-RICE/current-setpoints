@@ -18,6 +18,18 @@ class DynamicOptimizer(BaseOptimizer):
         super().__init__(fwd, opts)
         self.n_grid = n_grid
 
+    def _node_torques(self, omega: float, curr_dq_grid: np.ndarray) -> np.ndarray:
+        # Torque actually delivered at each grid node (NaN where the node has no current).
+        # The trajectory's reported torque is the mean of these -- NOT torque(mean current),
+        # which is not a physical operating point and differs whenever the trajectory varies,
+        # since torque is nonlinear in current.
+        return np.array(
+            [
+                self.fwd.drive.torque(omega, x) if np.all(np.isfinite(x)) else np.nan
+                for x in curr_dq_grid
+            ]
+        )
+
     def _grid_indices(self) -> tuple[np.ndarray, np.ndarray]:
         n_theta = self.fwd.vec_theta.size - 1
         theta_grid = np.linspace(0.0, 2 * np.pi, self.n_grid, endpoint=False)
@@ -115,6 +127,7 @@ class IndependentOptimizer(DynamicOptimizer):
         maps: dict[str, Any],
         torq_target: float | None,
         maximize: bool = False,
+        guess: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         fwd = self.fwd
         n_grid = self.n_grid
@@ -122,7 +135,18 @@ class IndependentOptimizer(DynamicOptimizer):
 
         curr_dq_grid = np.full((n_grid, dim), np.nan)
         ok_grid = np.zeros(n_grid, dtype=bool)
-        seed = fwd.drive.seeds()[0]
+        # Callers warm-start from a previous solve's FULL (n_grid, dim) trajectory as often
+        # as a single (dim,) vector (e.g. grid.py carries maximize_torque's own curr_dq
+        # straight across speeds) -- reduce defensively, otherwise it gets used as SLSQP's
+        # x0 downstream and crashes ("'x0' must only have one dimension.").
+        if guess is not None and guess.ndim == 2:
+            guess = np.nanmean(guess, axis=0)
+        # guess seeds node 0 only (a real, physically-motivated starting point -- e.g. the
+        # converged result from a nearby omega -- rather than the generic default); every
+        # later node already warm-starts from whichever of ITS predecessors last converged,
+        # unaffected by this. Purely additive: guess=None (the default) reproduces the
+        # exact previous behavior for every existing caller.
+        seed = guess if guess is not None else fwd.drive.seeds()[0]
 
         for i in range(n_grid):
             cons = self._per_angle_constraints(maps, omega, i, None if maximize else torq_target)
@@ -142,15 +166,20 @@ class IndependentOptimizer(DynamicOptimizer):
         guess: np.ndarray | None = None,
     ) -> Solution:
         maps = self._precompute_maps(omega)
-        curr_dq_grid, ok_grid = self._run_per_angle(omega, maps, torq_target)
+        curr_dq_grid, ok_grid = self._run_per_angle(omega, maps, torq_target, guess=guess)
         success = bool(np.all(ok_grid))
-        mean_dq = np.nanmean(curr_dq_grid, axis=0)
-        torque = float(self.fwd.drive.torque(omega, mean_dq)) if np.any(ok_grid) else float("nan")
+        node_torques = self._node_torques(omega, curr_dq_grid)
+        has_torque = bool(np.any(np.isfinite(node_torques)))
         return Solution(
             curr_dq=curr_dq_grid,
-            torque=torque,
+            torque=float(np.nanmean(node_torques)) if has_torque else float("nan"),
             success=success,
-            diagnostics={"ok_grid": ok_grid, "theta_grid": maps["theta_grid"]},
+            diagnostics={
+                "ok_grid": ok_grid,
+                "theta_grid": maps["theta_grid"],
+                "torque_min": float(np.nanmin(node_torques)) if has_torque else float("nan"),
+                "torque_max": float(np.nanmax(node_torques)) if has_torque else float("nan"),
+            },
         )
 
     def maximize_torque(
@@ -159,7 +188,7 @@ class IndependentOptimizer(DynamicOptimizer):
         guess: np.ndarray | None = None,
     ) -> Solution:
         maps = self._precompute_maps(omega)
-        curr_dq_grid, ok_grid = self._run_per_angle(omega, maps, None, maximize=True)
+        curr_dq_grid, ok_grid = self._run_per_angle(omega, maps, None, maximize=True, guess=guess)
         if not np.any(ok_grid):
             return Solution(
                 curr_dq=np.full((self.n_grid, self.fwd.drive.dim), np.nan),

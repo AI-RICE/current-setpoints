@@ -18,6 +18,27 @@ class Solution:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+def _constraints_satisfied(constraints: list[dict[str, Any]], x: np.ndarray, tol: float = 1e-4) -> bool:
+    # scipy's own res.success only means "SLSQP terminated normally" (e.g. step size or
+    # gradient went to zero) -- NOT that the constraints are actually satisfied at res.x. In
+    # a razor-thin or empty feasible region (e.g. a PM machine probed above the speed where
+    # even zero current keeps back-EMF under volt_max), SLSQP can report success at a point
+    # that still genuinely violates a constraint, silently producing a nonsensical "solution"
+    # (verified directly: StaticOptimizer.maximize_torque returned a NEGATIVE torque -- a
+    # solution that satisfies EVERY real constraint always exists at i=0-if-feasible, so a
+    # negative "maximum" is never something a truly-feasible point can produce). This
+    # explicitly re-checks every constraint at x instead of trusting res.success alone.
+    for con in constraints:
+        val = np.asarray(con["fun"](x))
+        if con["type"] == "ineq":
+            if np.any(val < -tol):
+                return False
+        else:  # "eq"
+            if np.any(np.abs(val) > tol):
+                return False
+    return True
+
+
 def _run_slsqp(
     objective: Any,
     constraints: list[dict[str, Any]],
@@ -41,7 +62,7 @@ def _run_slsqp(
 
     for x0 in candidates:
         res = minimize(objective, x0, method="SLSQP", constraints=constraints, bounds=bounds, options=opts)
-        if res.success and res.fun < best_val:
+        if res.success and res.fun < best_val and _constraints_satisfied(constraints, res.x):
             best_val = res.fun
             best_x = res.x
 
