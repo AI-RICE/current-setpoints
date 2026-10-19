@@ -323,10 +323,16 @@ class NeuralTorqueResidual:
         net: Any,  # NeuralTorquePredictor
         scaler: Any,  # sklearn StandardScaler
         device: torch.device,
+        as_loss: bool = False,
     ) -> None:
+        """as_loss=True: the network output is a loss torque T_loss = softplus(output) >= 0 and the
+        residual added to the flux-model torque is -T_loss (iron and mechanical losses can only reduce
+        the shaft torque). Used for networks trained jointly with the flux network
+        (notebooks/flux_nn_trainer.ipynb, "_tauR" weights)."""
         self.net = net
         self.scaler = scaler
         self.device = device
+        self.as_loss = as_loss
 
         with torch.no_grad():
             self._W1 = net.fc1.weight.cpu().numpy()  # (hidden, input)
@@ -342,14 +348,19 @@ class NeuralTorqueResidual:
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
         h = self._gelu(x_normed @ self._W1.T + self._b1)
-        return float(h @ self._w2 + self._b2)
+        out = float(h @ self._w2 + self._b2)
+        return -float(np.logaddexp(0.0, out)) if self.as_loss else out
 
     def grad(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         """Exact d(residual)/d(curr_dq) of __call__ (chain rule through the scaler)."""
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
         z = x_normed @ self._W1.T + self._b1
-        return ((self._w2 * self._gelu_deriv(z)) @ self._W1)[1:] / self._scale[1:]
+        g = ((self._w2 * self._gelu_deriv(z)) @ self._W1)[1:] / self._scale[1:]
+        if self.as_loss:  # d(-softplus(out))/di = -sigmoid(out) * d(out)/di
+            out = float(self._gelu(z) @ self._w2 + self._b2)
+            g = -g / (1.0 + np.exp(-out))
+        return g
 
 
 class DriveModel(ABC):
@@ -646,10 +657,25 @@ _FLUX_NN_OUTPUT_SIZE = 1
 # FluxNN_Weights.pth / NTM_Weights_neuralflux_refit.pth were trained with L i
 # counted twice in both equations and are kept in weights/ only as a backup.
 #
-# Trained torque-residual artifact (see notebooks/nn_trainer_neuralflux_baseline.ipynb),
-# trained against ieee_machine2_trained_neural_flux() as the analytical baseline.
+# "_tauR" weights (2026-10-13, notebooks/flux_nn_trainer.ipynb): flux network and a loss network
+# (torque = T_em(psi) - T_loss, T_loss >= 0) trained together on voltage and torque. The logged
+# voltages are the controller's references, delayed against the currents by tau (fitted, about
+# 1.5 sampling periods) -- tau enters only the training comparison, not the drive model (a delay
+# only time-shifts the phase waveform). Logged voltages above the inverter's capability
+# (peak phase voltage > Vdc/2) are left out of the voltage fit. The winding resistance is fitted
+# too, one value per harmonic plane (MeasParams_tauR.npy), replacing the identified diag R_stat
+# for these weights. The "_pdf" weights are kept as a backup.
+_TAUR = "_tauR"
 _TORQUE_NN_HIDDEN_SIZE = 12
 _TORQUE_NN_INPUT_SIZE = 5
+
+
+def _ieee_machine2_params_tauR(curr_max: float, volt_max: float) -> PMSMParams:
+    """ieee_machine2_params with the winding resistance fitted together with the "_tauR" networks."""
+    meas = np.load(_WEIGHTS_DIR / f"MeasParams{_TAUR}.npy", allow_pickle=True).item()
+    params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
+    params.R_stat = np.diag([meas["R1"], meas["R1"], meas["R3"], meas["R3"]])
+    return params
 
 
 def ieee_machine2_trained_neural_flux(
@@ -659,22 +685,22 @@ def ieee_machine2_trained_neural_flux(
     volt_max: float = 13.0,
 ) -> PMSMDrive:
     """IEEE-Machine-2 with the trained neural flux co-energy residual from
-    ``weights/`` (``FluxNN_Weights_pdf.pth``/``FluxNN_Scaler_pdf.npy``) composed in as
+    ``weights/`` (``FluxNN_Weights_tauR.pth``/``FluxNN_Scaler_tauR.npy``) composed in as
     a correction on top of the analytic ``ConstantFlux`` baseline (see
-    ``NeuralFlux``)."""
+    ``NeuralFlux``), with the winding resistance fitted together with it."""
     from ..utils.neural_model import load_neural_flux_model  # lazy — avoids circular import
 
     device = device if device is not None else torch.device("cpu")
     net, scaler = load_neural_flux_model(
-        str(_WEIGHTS_DIR / "FluxNN_Weights_pdf.pth"),
-        str(_WEIGHTS_DIR / "FluxNN_Scaler_pdf.npy"),
+        str(_WEIGHTS_DIR / f"FluxNN_Weights{_TAUR}.pth"),
+        str(_WEIGHTS_DIR / f"FluxNN_Scaler{_TAUR}.npy"),
         hidden_sizes=_FLUX_NN_HIDDEN_SIZES,
         input_size=_FLUX_NN_INPUT_SIZE,
         output_size=_FLUX_NN_OUTPUT_SIZE,
         device=device,
         activation=_FLUX_NN_ACTIVATION,
     )
-    params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
+    params = _ieee_machine2_params_tauR(curr_max, volt_max)
     flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2), params.flux_pm)
     return PMSMDrive(params, flux=flux)
 
@@ -693,17 +719,17 @@ def ieee_machine2_trained_neural_flux_and_torque(
     two residuals are independent corrections stacked on the same baseline,
     not alternatives to each other.
 
-    Uses the "_pdf" torque weights (``NTM_Weights_neuralflux_pdf.pth``),
-    trained specifically against this flux model as its baseline (see
-    notebooks/nn_trainer_neuralflux_baseline.ipynb). The torque residual
+    Uses the "_tauR" loss network (``NTM_Weights_tauR.pth``), trained together
+    with this flux model (notebooks/flux_nn_trainer.ipynb): the residual is
+    -T_loss <= 0 (losses only reduce the shaft torque). The torque residual
     corrects torque only, not voltage.
     """
     from ..utils.neural_model import load_neural_flux_model, load_neural_model  # lazy — avoids circular import
 
     device = device if device is not None else torch.device("cpu")
     flux_net, flux_scaler = load_neural_flux_model(
-        str(_WEIGHTS_DIR / "FluxNN_Weights_pdf.pth"),
-        str(_WEIGHTS_DIR / "FluxNN_Scaler_pdf.npy"),
+        str(_WEIGHTS_DIR / f"FluxNN_Weights{_TAUR}.pth"),
+        str(_WEIGHTS_DIR / f"FluxNN_Scaler{_TAUR}.npy"),
         hidden_sizes=_FLUX_NN_HIDDEN_SIZES,
         input_size=_FLUX_NN_INPUT_SIZE,
         output_size=_FLUX_NN_OUTPUT_SIZE,
@@ -711,15 +737,15 @@ def ieee_machine2_trained_neural_flux_and_torque(
         activation=_FLUX_NN_ACTIVATION,
     )
     torque_net, torque_scaler = load_neural_model(
-        str(_WEIGHTS_DIR / "NTM_Weights_neuralflux_pdf.pth"),
-        str(_WEIGHTS_DIR / "NTM_Scaler_neuralflux_pdf.npy"),
+        str(_WEIGHTS_DIR / f"NTM_Weights{_TAUR}.pth"),
+        str(_WEIGHTS_DIR / f"NTM_Scaler{_TAUR}.npy"),
         hidden_size=_TORQUE_NN_HIDDEN_SIZE,
         input_size=_TORQUE_NN_INPUT_SIZE,
         device=device,
     )
-    params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
+    params = _ieee_machine2_params_tauR(curr_max, volt_max)
     flux = NeuralFlux(flux_net, flux_scaler, device, params.L_stat, _build_cross_coupling(2), params.flux_pm)
-    torque_residual = NeuralTorqueResidual(torque_net, torque_scaler, device)
+    torque_residual = NeuralTorqueResidual(torque_net, torque_scaler, device, as_loss=True)
     return PMSMDrive(params, flux=flux, torque_residual=torque_residual)
 
 

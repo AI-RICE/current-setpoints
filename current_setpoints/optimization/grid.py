@@ -177,11 +177,15 @@ def _fill_grid_point(
         grid["curr_dq_grid"][:, idx_torq, idx_omega] = curr_dq
     else:
         curr_peak, volt_peak, n_curr, n_volt, joule_loss = _trajectory_waveforms(fwd, omega, curr_dq, rel_tol)
-        # curr_dq_grid holds one representative current per cell; the full
-        # per-angle trajectory itself is discarded here (not needed for the
-        # peak/segment diagnostics plotted from this grid). grid_joule_loss
-        # below is NOT derived from this mean -- see _trajectory_waveforms.
+        # curr_dq_grid holds one representative current per cell (the mean over the nodes -- NOT an
+        # operating point, only a summary); the full per-angle trajectory, which is the actual
+        # dynamic setpoint, is kept in curr_dq_traj (n_torq, n_omega, n_grid, dim), allocated on the
+        # first dynamic cell. grid_joule_loss is NOT derived from the mean -- see _trajectory_waveforms.
         grid["curr_dq_grid"][:, idx_torq, idx_omega] = np.nanmean(curr_dq, axis=0)
+        if "curr_dq_traj" not in grid:
+            n_torq, n_omega = grid["grid_joule_loss"].shape
+            grid["curr_dq_traj"] = np.full((n_torq, n_omega) + curr_dq.shape, np.nan)
+        grid["curr_dq_traj"][idx_torq, idx_omega] = curr_dq
 
     grid["grid_curr_peak"][idx_torq, idx_omega] = curr_peak
     grid["grid_volt_peak"][idx_torq, idx_omega] = volt_peak
