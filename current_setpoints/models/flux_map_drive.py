@@ -303,3 +303,43 @@ def im5_tesla_gen1_fluxmap_v2(
         iron_loss=iron_loss, iron_k=(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3),
         flux_backend=flux_backend,
     )
+
+
+_DATA_PMSM5 = Path(__file__).parent / "data" / "pmsm5_prototype_fluxmap.npz"
+
+# 5-phase PMSM prototype, measured on the bench (not a design): R_s = 0.45 Ohm at
+# 20 C from the bench import script, scaled with the copper temperature
+# coefficient; the flux map's mean winding temperature is the default.
+_PMSM5_R20 = 0.45  # Ohm
+_ALPHA_CU = 0.00393  # 1/K
+_PMSM5_T_WDG = 115.8  # C
+
+
+def pmsm5_prototype_fluxmap(
+    curr_max: float = 50.0,
+    volt_max: float = 180.0,
+    t_winding: float = _PMSM5_T_WDG,
+    flux_backend: str = "smooth",
+    flux_smoothing: float = 0.0,
+) -> FluxMapDrive:
+    """Five-phase PMSM prototype (p_p = 2) as a direct MEASURED flux-map drive.
+
+    Data (`data/pmsm5_prototype_fluxmap.npz`): Laksar bench, Oct 2026, 959
+    setpoints of a 4-D current grid, each the average of +2000 and -2000 rpm
+    (cancels inverter-voltage and resistance errors and drag); arrays currents,
+    flux, T_meas (shaft, sensor zero removed), T_drag, udc, t_wdg. Valid for the
+    hot machine (winding 108-130 C) in the motoring quadrant (i_d1 <= 0,
+    i_q1 >= 0) -- use HullConstrainedOptimizer to stay there.
+
+    volt_max = U_dc/2 with the DC link measured at full current (360 V); exact
+    for the inverter with ``ForwardModel(add_volt_0=True)``. curr_max: phase
+    peak, 50 A assumed. No iron-loss model: the map has a single speed.
+    Open: measured shaft torque is 4.9 % above the flux-predicted torque
+    (calibration: torque sensor vs current/voltage chain)."""
+    return FluxMapDrive.from_npz(
+        _DATA_PMSM5, n_phases=5, n_ppairs=2,
+        R_s=_PMSM5_R20 * (1.0 + _ALPHA_CU * (t_winding - 20.0)),
+        curr_max=curr_max, volt_max=volt_max, iron_loss=None,
+        flux_backend=flux_backend, symmetry="none", anchor_origin=False,
+        seed_mode="data", flux_smoothing=flux_smoothing,
+    )
