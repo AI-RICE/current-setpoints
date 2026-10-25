@@ -53,3 +53,49 @@ def test_fluxmap_from_npz_configurable():
     d2 = im5_tesla_gen1_fluxmap(curr_max=170.0, iron_loss="lut")   # same data via the example
     i = np.array([80.0, 120.0, 0.0, 0.0])
     assert d.torque(0.0, i) == pytest.approx(d2.torque(0.0, i), rel=1e-9)
+
+
+def _synthetic_pmsm_map():
+    """Linear PMSM map psi = psi_pm + L i on the motoring quadrant (i_d1 <= 0,
+    i_q1 >= 0), with a sample at i = 0 carrying the PM flux."""
+    psi_pm = np.array([0.2, 0.0, -0.025, 0.0])
+    L = np.diag([4e-3, 9e-3, 1.3e-3, 1.4e-3])
+    g = np.meshgrid(np.arange(-50.0, 1, 10), np.arange(0.0, 36, 7), [-5.0, 0, 5], [-5.0, 0, 5], indexing="ij")
+    cur = np.column_stack([a.ravel() for a in g])
+    return cur, psi_pm + cur @ L.T, psi_pm, L
+
+
+def _pmsm_fluxmap(cur, flux):
+    return FluxMapDrive(cur, flux, n_phases=5, n_ppairs=2, R_s=0.5, curr_max=50.0, volt_max=180.0,
+                        symmetry="none", anchor_origin=False, seed_mode="data")
+
+
+def test_pmsm_fluxmap_matches_analytic_pmsm():
+    from current_setpoints.models import PMSMDrive, PMSMParams
+
+    cur, flux, psi_pm, L = _synthetic_pmsm_map()
+    d = _pmsm_fluxmap(cur, flux)
+    ref = PMSMDrive(PMSMParams(n_phases=5, n_ppairs=2, R_stat=0.5 * np.eye(4), L_stat=L,
+                               flux_pm=psi_pm, curr_max=50.0, volt_max=180.0))
+    i = np.array([-23.0, 17.0, 1.5, -2.5])                      # interior, off-grid
+    assert d.torque(0.0, i) == pytest.approx(ref.torque(0.0, i), rel=1e-6)
+    assert np.allclose(d.inductance(0.0, i), L, atol=1e-6)
+    assert np.allclose(d.flux_offset(0.0, i), psi_pm, atol=1e-6)  # PM flux recovered
+
+
+def test_pmsm_map_refuses_im_assumptions():
+    cur, flux, _, _ = _synthetic_pmsm_map()
+    with pytest.raises(ValueError, match="symmetry"):
+        FluxMapDrive(cur, flux, n_phases=5, n_ppairs=2, R_s=0.5, curr_max=50.0, volt_max=180.0)
+    with pytest.raises(ValueError, match="anchor_origin"):
+        FluxMapDrive(cur, flux, n_phases=5, n_ppairs=2, R_s=0.5, curr_max=50.0, volt_max=180.0,
+                     symmetry="none")
+
+
+def test_data_seeds_stay_in_sampled_region():
+    cur, flux, _, _ = _synthetic_pmsm_map()
+    d = _pmsm_fluxmap(cur, flux)
+    seeds = d.seeds()
+    assert len(seeds) == 4
+    assert all(s[0] <= 0.0 and s[1] >= 0.0 and d.in_hull(s) for s in seeds)
+    assert d.torque(0.0, seeds[-1]) == pytest.approx(max(d.torque(0.0, c) for c in cur), rel=1e-6)

@@ -12,8 +12,19 @@ It works for IM or PMSM alike (it only needs a flux map). For the Tesla1-class
 
 Scope: valid inside the convex hull of the sampled currents. `hull_margins`
 exposes the facet inequalities so `HullConstrainedOptimizer` can keep setpoints
-inside the FEM envelope (no extrapolation). Odd symmetry psi(-i) = -psi(i) is
-imposed (`_canon`), so only the positive-Id1 half of the data is needed.
+inside the FEM envelope (no extrapolation).
+
+The machine type enters only through how the samples are used, not the physics:
+
+- IM (defaults): odd symmetry psi(-i) = -psi(i) (`_canon`), so only the
+  positive-Id1 half of the data is needed, and the known point psi(0) = 0 is
+  added (`anchor_origin`).
+- PMSM: ``symmetry="none"`` and ``anchor_origin=False`` -- psi(0) is the PM
+  flux, and the data usually covers only the motoring quadrant (i_d1 <= 0).
+  ``seed_mode="data"`` takes the optimizer seeds from the sampled points.
+
+Both IM-only choices refuse PMSM-like data loudly instead of interpolating
+garbage.
 """
 
 from __future__ import annotations
@@ -51,7 +62,31 @@ class FluxMapDrive(DriveModel):
         iron_loss_model: IronLossModel | None = None,
         flux_backend: str = "smooth",
         rotor_loss_model: IronLossModel | None = None,
+        symmetry: str = "odd",
+        anchor_origin: bool = True,
+        seed_mode: str = "fixed",
+        flux_smoothing: float = 0.0,
     ) -> None:
+        currents = np.asarray(currents, float)
+        flux = np.asarray(flux, float)
+        if symmetry not in ("odd", "none"):
+            raise ValueError(f"symmetry must be 'odd' or 'none', got {symmetry!r}")
+        if symmetry == "odd" and np.any(currents[:, 0] < 0):
+            raise ValueError(
+                "symmetry='odd' folds every query onto i_d1 >= 0, but the map has samples at "
+                "i_d1 < 0 (e.g. a PMSM map) -- pass symmetry='none'"
+            )
+        i_mag, psi_mag = np.linalg.norm(currents, axis=1), np.linalg.norm(flux, axis=1)
+        k0 = int(np.argmin(i_mag))
+        if anchor_origin and i_mag[k0] < 0.05 * i_mag.max() and psi_mag[k0] > 0.2 * psi_mag.max():
+            raise ValueError(
+                "the map has a sample at (near) i = 0 carrying large flux (PM flux?), "
+                "contradicting the psi(0) = 0 anchor -- pass anchor_origin=False"
+            )
+        if seed_mode not in ("fixed", "data"):
+            raise ValueError(f"seed_mode must be 'fixed' or 'data', got {seed_mode!r}")
+        self.symmetry = symmetry
+        self.seed_mode = seed_mode
         self.rotor_loss_model = rotor_loss_model  # FEM rotor-cage Joule loss LUT (W), if the map has it
         self.n_phases = n_phases
         self.n_harmonics = 2
@@ -66,14 +101,19 @@ class FluxMapDrive(DriveModel):
         self.iron_loss_model = iron_loss_model
         self.flux_backend = flux_backend
         self._J = _build_cross_coupling(self.n_harmonics)
-        # origin-anchored so low-current queries stay inside the hull
-        pts = np.vstack([np.zeros((1, 4)), np.asarray(currents, float)])
-        val = np.vstack([np.zeros((1, 4)), np.asarray(flux, float)])
+        if anchor_origin:
+            # origin-anchored so low-current queries stay inside the hull
+            pts = np.vstack([np.zeros((1, 4)), currents])
+            val = np.vstack([np.zeros((1, 4)), flux])
+        else:
+            pts, val = currents, flux
         self._hull_eq = ConvexHull(pts).equations
         if flux_backend == "smooth":
             # C-infinity thin-plate-spline: unbiased at the curved peak-torque
             # edge where Delaunay-linear reads ~5% low (see ADR 0003).
-            self._rbf = RBFInterpolator(pts, val, kernel="thin_plate_spline")
+            # flux_smoothing > 0 trades exact interpolation for noise rejection
+            # (measured maps).
+            self._rbf = RBFInterpolator(pts, val, kernel="thin_plate_spline", smoothing=flux_smoothing)
         elif flux_backend == "linear":
             self._lin = LinearNDInterpolator(pts, val)
             self._near = NearestNDInterpolator(pts, val)
@@ -81,6 +121,9 @@ class FluxMapDrive(DriveModel):
             raise ValueError(f"flux_backend must be 'smooth' or 'linear', got {flux_backend!r}")
         # a Delaunay membership test for `in_hull`, regardless of backend
         self._member = LinearNDInterpolator(pts, val[:, :1])
+        # sampled torques, for data-driven seeds
+        self._samples = pts
+        self._sample_torque = self.n_phases * self.n_ppairs / 2.0 * np.einsum("ni,ij,nj->n", pts, self._J, val)
 
     @classmethod
     def from_npz(
@@ -95,12 +138,18 @@ class FluxMapDrive(DriveModel):
         iron_loss: str | None = None,
         iron_k: tuple[float, float] | None = None,
         flux_backend: str = "smooth",
+        symmetry: str = "odd",
+        anchor_origin: bool = True,
+        seed_mode: str = "fixed",
+        flux_smoothing: float = 0.0,
     ) -> "FluxMapDrive":
         """Build from an ``.npz`` flux map --- machine-agnostic, point it at any
         machine's data. Required arrays: ``currents`` [N,4] and ``flux`` [N,4]
         (dq of harmonics 1,3); ``P_core`` [N] is needed only for
         ``iron_loss="lut"``. ``iron_loss``: ``None``, ``"lut"`` (uses
-        ``P_core``), or ``"steinmetz"`` (needs ``iron_k=(k1, k3)``)."""
+        ``P_core``), or ``"steinmetz"`` (needs ``iron_k=(k1, k3)``).
+        ``symmetry``/``anchor_origin``/``seed_mode``/``flux_smoothing``: see
+        the module docstring (defaults = IM map)."""
         z = np.load(path)
         currents, flux = z["currents"], z["flux"]
         rlm = CoreLossLUT(currents, z["P_rotor"]) if "P_rotor" in z.files else None
@@ -118,12 +167,15 @@ class FluxMapDrive(DriveModel):
             currents=currents, flux=flux, n_phases=n_phases, n_ppairs=n_ppairs,
             R_s=R_s, curr_max=curr_max, volt_max=volt_max,
             iron_loss_model=ilm, flux_backend=flux_backend, rotor_loss_model=rlm,
+            symmetry=symmetry, anchor_origin=anchor_origin, seed_mode=seed_mode,
+            flux_smoothing=flux_smoothing,
         )
 
-    @staticmethod
-    def _canon(curr_dq: np.ndarray) -> tuple[float, np.ndarray]:
+    def _canon(self, curr_dq: np.ndarray) -> tuple[float, np.ndarray]:
         c = np.asarray(curr_dq, float)
-        return (-1.0, -c) if c[0] < 0 else (1.0, c)
+        if self.symmetry == "odd" and c[0] < 0:
+            return -1.0, -c
+        return 1.0, c
 
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         s, cc = self._canon(curr_dq)
@@ -196,6 +248,14 @@ class FluxMapDrive(DriveModel):
         c: list[np.ndarray] = []
         if guess is not None:
             c.append(np.asarray(guess, float).copy())
+        if self.seed_mode == "data":
+            # highest-torque sample within each current-magnitude band: always
+            # inside the sampled region, whatever quadrant the machine uses
+            mag = np.linalg.norm(self._samples, axis=1)
+            for frac in (0.25, 0.5, 0.75, 1.0):
+                band = mag <= frac * mag.max() + 1e-9
+                c.append(self._samples[band][np.argmax(self._sample_torque[band])].copy())
+            return c
         c.append(np.array([0.1, 0.1, 0.0, 0.0]))
         for amp in (0.3, 0.5, 0.7):
             c.append(np.array([i_max * amp, i_max * amp, 0.0, 0.0]))
