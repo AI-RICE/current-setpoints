@@ -28,6 +28,7 @@ from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
 from .machines import DriveModel, _build_cross_coupling
 
 _DATA = Path(__file__).parent / "data" / "tesla5f_fluxmap.npz"
+_DATA_V2 = Path(__file__).parent / "data" / "tesla5f_fluxmap_v2.npz"  # 2026-09 full sweep, |I1|<=470 A, + rotor loss
 
 # Tesla1-class 5f iron-loss coefficients (P = k1|psi1|^2 + k3|psi3|^2), fit to
 # the FEM CoreLoss column (R^2=0.994, LOO 2.5%). See ADR 0003.
@@ -49,7 +50,9 @@ class FluxMapDrive(DriveModel):
         volt_max: float,
         iron_loss_model: IronLossModel | None = None,
         flux_backend: str = "smooth",
+        rotor_loss_model: IronLossModel | None = None,
     ) -> None:
+        self.rotor_loss_model = rotor_loss_model  # FEM rotor-cage Joule loss LUT (W), if the map has it
         self.n_phases = n_phases
         self.n_harmonics = 2
         self.dim = 4
@@ -100,6 +103,7 @@ class FluxMapDrive(DriveModel):
         ``P_core``), or ``"steinmetz"`` (needs ``iron_k=(k1, k3)``)."""
         z = np.load(path)
         currents, flux = z["currents"], z["flux"]
+        rlm = CoreLossLUT(currents, z["P_rotor"]) if "P_rotor" in z.files else None
         if iron_loss == "steinmetz":
             if iron_k is None:
                 raise ValueError("iron_loss='steinmetz' requires iron_k=(k1, k3)")
@@ -113,7 +117,7 @@ class FluxMapDrive(DriveModel):
         return cls(
             currents=currents, flux=flux, n_phases=n_phases, n_ppairs=n_ppairs,
             R_s=R_s, curr_max=curr_max, volt_max=volt_max,
-            iron_loss_model=ilm, flux_backend=flux_backend,
+            iron_loss_model=ilm, flux_backend=flux_backend, rotor_loss_model=rlm,
         )
 
     @staticmethod
@@ -175,8 +179,12 @@ class FluxMapDrive(DriveModel):
         return self.flux(omega, x) - self.inductance(omega, x) @ x
 
     def copper_loss(self, omega: float, curr_dq: np.ndarray) -> float:
-        """Stator copper loss only (rotor current is not in a flux map)."""
-        return self.k_phase * self.R_stat[0, 0] * float(curr_dq @ curr_dq)
+        """Stator copper loss, plus the FEM rotor-cage Joule loss when the map
+        carries a ``P_rotor`` column (v2 map); stator-only otherwise."""
+        p = self.k_phase * self.R_stat[0, 0] * float(curr_dq @ curr_dq)
+        if self.rotor_loss_model is not None:
+            p += self.rotor_loss_model.loss(omega, curr_dq, None)
+        return p
 
     def iron_loss_at(self, omega: float, curr_dq: np.ndarray) -> float:
         if self.iron_loss_model is None:
@@ -212,6 +220,25 @@ def im5_tesla_gen1_fluxmap(
     build the same drive from another machine's flux map."""
     return FluxMapDrive.from_npz(
         data_path, n_phases=5, n_ppairs=3, R_s=0.02194121,
+        curr_max=curr_max, volt_max=volt_max,
+        iron_loss=iron_loss, iron_k=(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3),
+        flux_backend=flux_backend,
+    )
+
+
+def im5_tesla_gen1_fluxmap_v2(
+    curr_max: float = 404.0,
+    volt_max: float = 230.0,
+    iron_loss: str | None = "lut",
+    flux_backend: str = "smooth",
+) -> FluxMapDrive:
+    """Same machine as :func:`im5_tesla_gen1_fluxmap` on the 2026-09 full FEM
+    sweep (2127 points: |i_1| to 470 A, i_d3 0..80 A plus the old negative-i_d3
+    points, i_q3 -60..80 A) with the rotor-cage loss column. Defaults: 2x rated
+    peak current (rated 143 A rms = 202 A peak, design sheet e5_eMobility_IM_150kW),
+    V_DC = 460 V (design sheet 461.8 V)."""
+    return FluxMapDrive.from_npz(
+        _DATA_V2, n_phases=5, n_ppairs=3, R_s=0.02194121,
         curr_max=curr_max, volt_max=volt_max,
         iron_loss=iron_loss, iron_k=(_TESLA5F_IRON_K1, _TESLA5F_IRON_K3),
         flux_backend=flux_backend,
