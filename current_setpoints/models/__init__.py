@@ -22,6 +22,7 @@ from .flux_map_drive import (
     pmsm5_prototype_fluxmap,
 )
 from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
+from .pm_saturation import SaturatingPMFlux, fit_saturating_pm_flux, pmsm5_prototype_physics
 from .forward_model import Fault, ForwardModel
 
 __all__ = [
@@ -44,6 +45,9 @@ __all__ = [
     "im5_tesla_gen1_fluxmap",
     "im5_tesla_gen1_fluxmap_v2",
     "pmsm5_prototype_fluxmap",
+    "SaturatingPMFlux",
+    "fit_saturating_pm_flux",
+    "pmsm5_prototype_physics",
     "IronLossModel",
     "SteinmetzIronLoss",
     "CoreLossLUT",
