@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.special import expit
 
 from .flux_map_drive import _ALPHA_CU, _PMSM5_R20, _PMSM5_T_WDG
 from .machines import FluxModel, PMSMDrive, PMSMParams, _build_cross_coupling
@@ -93,9 +94,8 @@ def grad_w(p: dict, psi: np.ndarray) -> np.ndarray:
     g_x1 = p["a_d0"] * x1 + a_dd * ax ** p["S"] * x1 + p["a_dq"] / (p["V"] + 2) * ax ** p["U"] * x1 * ay ** (p["V"] + 2)
     g_y1 = p["a_q0"] * y1 + a_qq * ay ** p["T"] * y1 + p["a_dq"] / (p["U"] + 2) * ax ** (p["U"] + 2) * ay ** p["V"] * y1
     # saturation harmonic o = K m(r) (P_d, P_q), m = h/r^3
-    z = (r / p["Psi_o"]) ** p["q"]
-    h = z / (1 + z)
-    dh = p["q"] * z / (r * (1 + z) ** 2)
+    h = expit(p["q"] * np.log(r / p["Psi_o"]))  # = z/(1+z), z = (r/Psi_o)^q, overflow-safe
+    dh = p["q"] / r * h * (1 - h)
     m = h / r**3
     dm = dh / r**3 - 3 * h / r**4
     Pd, Pq = x1**3 - 3 * x1 * y1**2, 3 * x1**2 * y1 - y1**3
@@ -134,8 +134,10 @@ def hessian_w(p: dict, psi: np.ndarray, h: float = 1e-7) -> np.ndarray:
 
 
 def solve_flux_true(p: dict, i_t: np.ndarray, guess: np.ndarray | None = None, tol: float = 1e-9,
-                    maxit: int = 40) -> np.ndarray:
-    """psi with current_true(psi) = i_t, damped Newton, vectorised over rows."""
+                    maxit: int = 40, max_step: float = 0.05) -> np.ndarray:
+    """psi with current_true(psi) = i_t, damped Newton, vectorised over rows; steps
+    capped at max_step Wb and a near-singular Hessian regularised, so far-out
+    queries (an optimizer exploring) cannot diverge."""
     i_t = np.atleast_2d(i_t)
     if guess is None:
         psi = np.array([0.2, 0.0, -0.02, 0.0]) + i_t / np.array([p["a_d0"], p["a_q0"], p["b_d"], p["b_q"]])
@@ -146,7 +148,14 @@ def solve_flux_true(p: dict, i_t: np.ndarray, guess: np.ndarray | None = None, t
         err = np.abs(F).max(axis=1)
         if err.max() < tol:
             break
-        step = np.linalg.solve(hessian_w(p, psi), -F[:, :, None])[:, :, 0]
+        H = hessian_w(p, psi)
+        H = H + 1e-9 * np.abs(H).max(axis=(1, 2))[:, None, None] * np.eye(4)
+        try:
+            step = np.linalg.solve(H, -F[:, :, None])[:, :, 0]
+        except np.linalg.LinAlgError:
+            step = np.stack([np.linalg.lstsq(Hn, -Fn, rcond=None)[0] for Hn, Fn in zip(H, F)])
+        big = np.abs(step).max(axis=1, keepdims=True)
+        step = np.where(big > max_step, step * max_step / np.maximum(big, 1e-300), step)
         lam = np.ones(len(psi))
         for _ in range(20):
             cand = psi + lam[:, None] * step
