@@ -19,7 +19,7 @@ VOLT_MAX = 13.0
 
 SLSQP_OPTS = {"disp": False, "ftol": 1e-9, "maxiter": 500}
 
-OMEGA_LOW  = 300.0  * (np.pi / 30) * 8   # electrical rad/s
+OMEGA_LOW  = 300.0  * (np.pi / 30) * 8
 OMEGA_MID  = 900.0  * (np.pi / 30) * 8
 OMEGA_HIGH = 1500.0 * (np.pi / 30) * 8
 

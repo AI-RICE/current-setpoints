@@ -13,10 +13,6 @@ from ..models.machines import DriveModel
 from ..optimization.data import MachineData
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PlotConfig
-# ─────────────────────────────────────────────────────────────────────────────
-
 class PlotConfig:
 
     @classmethod
@@ -35,8 +31,6 @@ class PlotConfig:
 
     @classmethod
     def get_labels(cls) -> dict[int, str]:
-        # index = 3*n_volt + n_curr (grid.py's grid_segments), n_volt/n_curr
-        # each capped at 2 by count_peaks_at_limit -- 9 combinations, 0-8.
         return {
             0: r"MTPA$_{0}$",
             1: r"MTPA$_{1}$",
@@ -129,10 +123,6 @@ class PlotConfig:
         plt.tight_layout()
         plt.show()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Plot functions
-# ─────────────────────────────────────────────────────────────────────────────
 
 _MODEL_COLORS: dict[str, str] = {"Analytical": "tab:blue", "Neural": "tab:green"}
 _DEFAULT_COLOR: str = "tab:gray"

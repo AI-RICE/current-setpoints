@@ -25,9 +25,6 @@ VOLT_MAX = 13.0
 
 SLSQP_OPTS = {"disp": False, "ftol": 1e-8, "maxiter": 300}
 
-# n_theta and n_grid both multiples of 5 avoid the phase-aliasing artifact
-# confirmed empirically: n_grid=64 (not a multiple of 5) broke single-fault
-# rotation symmetry by ~1.4%; n_grid=65/130 restored exact symmetry.
 N_THETA = 50
 N_GRID = 50
 
@@ -59,7 +56,7 @@ def _assert_solution_respects_constraints(opt, sol, omega):
         assert np.all(np.isfinite(i_n))
         theta_idx = int(idx_grid[n])
 
-        H = fwd.phase_map_at_theta(theta_idx)  # (n_surv, dim)
+        H = fwd.phase_map_at_theta(theta_idx)
         phase_i = H @ i_n
         assert np.max(np.abs(phase_i)) <= CURR_MAX + 1e-3, (
             f"node {n}: per-angle current limit violated ({np.max(np.abs(phase_i)):.4f} > {CURR_MAX})"
@@ -69,19 +66,6 @@ def _assert_solution_respects_constraints(opt, sol, omega):
             resid = cons["fun"](i_n)
             assert abs(resid) < 1e-6, f"node {n}: fault achievability constraint violated (residual={resid:.3e})"
 
-
-# ── Single fault: deterministic, and close (not identical) across phases ──
-#
-# Earlier versions of this test asserted *exact* phase invariance. That
-# expectation was itself an artifact of a since-fixed bug in the phase
-# reconstruction (ForwardModel used a single combined harmonic for both the
-# static Clarke projection and the theta rotation; the correct, reference-
-# formulation-matching reconstruction uses two genuinely different harmonics
-# -- see _build_dq_to_phase_map). Under the corrected geometry, combined with
-# this machine's known anisotropic L_stat/flux_pm, single-fault T_max is
-# *not* exactly phase-invariant -- only single-fault's zero-DOF-loss property
-# (no null-space constraint, exact square inverse for every choice of open
-# phase) is guaranteed, which the round-trip check below verifies directly.
 
 @pytest.mark.parametrize("phase", range(5))
 def test_single_fault_deterministic(pmsm, phase):
@@ -108,11 +92,6 @@ def test_single_fault_reduced_map_is_exact_square_inverse(pmsm, phase):
     assert len(cons) == 1
 
 
-# ── Single fault: dynamic mode must weakly dominate static mode ─────────────────
-# (valid only for n_open <= 1: static's fault handling is exact there, so a
-# per-angle relaxation -- which can always reproduce a constant trajectory --
-# can never do worse. This does NOT hold for n_open == 2; see the bug memory.)
-
 def test_single_fault_dynamic_at_least_static(pmsm):
     fwd_static = ForwardModel(pmsm, n_theta=N_THETA, fault=Fault((0,)))
     static_sol = StaticOptimizer(fwd_static, opts=SLSQP_OPTS).maximize_torque(OMEGA_LOW)
@@ -138,10 +117,6 @@ def test_healthy_dynamic_at_least_static(pmsm):
     assert dyn_sol.torque >= static_sol.torque - 1e-3
 
 
-# ── Double fault: dynamic-mode solutions must independently satisfy every ───────
-# per-angle current limit and the theta-rotated achievability constraint —
-# not just report success.
-
 @pytest.mark.parametrize("open_phases", [(0, 1), (0, 2), (1, 3), (1, 4)])
 def test_double_fault_solution_respects_all_constraints(pmsm, open_phases):
     opt = _ind_opt(pmsm, open_phases)
@@ -162,24 +137,6 @@ def test_double_fault_torque_below_healthy(pmsm, open_phases):
 
     assert fault_sol.torque < healthy_sol.torque
 
-
-# ── Regression: double-fault torque must be rotationally symmetric ──────────
-#
-# Two bugs, both fixed together, previously broke this:
-#   1. _per_angle_constraints passed the coarse n_grid loop index straight
-#      into ForwardModel.extra_constraints_at_theta, which expects a fine
-#      vec_theta index -- the achievability constraint was enforced at the
-#      wrong rotor angle at every node.
-#   2. The achievability constraint itself was derived from the null space
-#      of the *static* (harmonic-1,2) reduced Clarke matrix, then rotated by
-#      R(theta) (harmonic-1,3) -- a construction that does not actually zero
-#      the open phase's current when checked against the model's own true
-#      (theta-dependent) reconstruction. The fix derives it directly from the
-#      open phase's own row of the full map at each theta instead.
-# Both bugs happened to leave each fault-pair *category* internally
-# consistent by luck, but gave e.g. 42.6%-72.4% spread across physically-
-# equivalent non-adjacent pairs on a fully isotropic machine. Fixed, every
-# pair within a rotation-equivalent category must match exactly.
 
 def _isotropic_pmsm():
     from current_setpoints.models.machines import PMSMDrive, PMSMParams
@@ -253,7 +210,6 @@ def test_per_angle_constraint_uses_fine_grid_theta(pmsm):
 
     rng = np.random.default_rng(0)
     x = rng.normal(size=fwd.drive.dim)
-    # the achievability constraints are the last len(cons_expected) entries
     used_vals = sorted(c["fun"](x) for c in cons_used[-len(cons_expected):])
     expected_vals = sorted(c["fun"](x) for c in cons_expected)
     np.testing.assert_allclose(used_vals, expected_vals, atol=1e-10)
@@ -273,7 +229,7 @@ def test_achievability_constraint_actually_zeros_open_phase_current():
         H_full = fwd._mat_dq_to_ph_all[theta_idx]
         open_rows = H_full[list(open_phases)]
         _, _, vh = np.linalg.svd(open_rows)
-        v = vh[-1]  # feasible direction: satisfies all open-phase-row constraints
+        v = vh[-1]
         recon = H_full @ v
         for p in open_phases:
             assert abs(recon[p]) < 1e-9, f"open_phases={open_phases}: phase {p} current not zero ({recon[p]:.4e})"

@@ -81,13 +81,6 @@ _NP_ACTIVATION_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "tanh": _act_deriv_tanh,
     "leaky_relu": _act_deriv_leaky_relu,
 }
-# Second derivatives -- needed for NeuralFlux's Hessian-based inductance (see
-# below): a single-hidden-layer MLP's Hessian w.r.t. its input is
-# W1.T @ diag(w2 * act''(z)) @ W1, symmetric by construction regardless of
-# the trained weights, which is exactly what guarantees a symmetric
-# inductance matrix (Maxwell reciprocity) without having to hope training
-# happens to produce one. relu/leaky_relu are piecewise-linear (zero
-# second derivative a.e.; the kink at 0 is measure-zero and ignored).
 _NP_ACTIVATION_SECOND_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "relu": _act_2nd_relu,
     "gelu": _act_2nd_gelu,
@@ -108,7 +101,7 @@ def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
 
 
 class FluxModel(ABC):
-    cross_coupling: np.ndarray  # J — anti-symmetric rotation/coupling matrix
+    cross_coupling: np.ndarray
 
     @abstractmethod
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
@@ -179,8 +172,8 @@ class NeuralFlux(FluxModel):
 
     def __init__(
         self,
-        net: Any,  # NeuralFluxPredictor, output_size == 1 (scalar co-energy residual)
-        scaler: Any,  # sklearn StandardScaler
+        net: Any,
+        scaler: Any,
         device: torch.device,
         L_stat: np.ndarray,
         cross_coupling: np.ndarray,
@@ -194,13 +187,9 @@ class NeuralFlux(FluxModel):
         self.flux_pm = np.asarray(flux_pm)
 
         with torch.no_grad():
-            # One (W, b) pair per hidden layer (arbitrary depth), plus the
-            # final linear output layer (w_out, b_out) -- net.layers is the
-            # nn.ModuleList of hidden Linear layers, net.out_layer the
-            # linear scalar-output layer.
-            self._Ws = [layer.weight.cpu().numpy() for layer in net.layers]  # each (n_k, n_{k-1})
-            self._bs = [layer.bias.cpu().numpy() for layer in net.layers]  # each (n_k,)
-            self._w_out = net.out_layer.weight.cpu().numpy().reshape(-1)  # (n_last,) -- output_size == 1
+            self._Ws = [layer.weight.cpu().numpy() for layer in net.layers]
+            self._bs = [layer.bias.cpu().numpy() for layer in net.layers]
+            self._w_out = net.out_layer.weight.cpu().numpy().reshape(-1)
             self._b_out = float(net.out_layer.bias.cpu().numpy().reshape(-1)[0])
         self._mean = scaler.mean_
         self._scale = scaler.scale_
@@ -236,24 +225,24 @@ class NeuralFlux(FluxModel):
         depth=1 special case) to ~1e-8 before this was used here.
         """
         d0 = x_normed.shape[0]
-        grad_h = np.eye(d0)  # (n_prev=d0, d0)
-        hess_h = np.zeros((d0, d0, d0))  # (n_prev=d0, d0, d0)
+        grad_h = np.eye(d0)
+        hess_h = np.zeros((d0, d0, d0))
         h = x_normed
 
         for W, b in zip(self._Ws, self._bs):
-            z = W @ h + b  # (n_k,)
-            grad_z = W @ grad_h  # (n_k, d0)
-            hess_z = np.einsum("ji,ipq->jpq", W, hess_h)  # (n_k, d0, d0)
+            z = W @ h + b
+            grad_z = W @ grad_h
+            hess_z = np.einsum("ji,ipq->jpq", W, hess_h)
 
             d_act = self._act_deriv(z)
             d2_act = self._act_second_deriv(z)
 
             h = _NP_ACTIVATIONS[self.net.activation](z)
-            grad_h = d_act[:, None] * grad_z  # (n_k, d0)
+            grad_h = d_act[:, None] * grad_z
             hess_h = d_act[:, None, None] * hess_z + d2_act[:, None, None] * np.einsum("jp,jq->jpq", grad_z, grad_z)
 
-        grad_out = self._w_out @ grad_h  # (d0,)
-        hess_out = np.einsum("j,jpq->pq", self._w_out, hess_h)  # (d0, d0), symmetric by construction
+        grad_out = self._w_out @ grad_h
+        hess_out = np.einsum("j,jpq->pq", self._w_out, hess_h)
         return grad_out, hess_out
 
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
@@ -262,9 +251,9 @@ class NeuralFlux(FluxModel):
             return self._flux_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        grad_normed, _ = self._forward_grad_hess(x_normed)  # d(W_res)/d(x_normed)
-        grad_x = grad_normed / self._scale  # d(W_res)/d(x_raw)
-        d_wres_d_i = grad_x[1:]  # (dim,) -- drop the omega component
+        grad_normed, _ = self._forward_grad_hess(x_normed)
+        grad_x = grad_normed / self._scale
+        d_wres_d_i = grad_x[1:]
         result = self.flux_pm + self.L_stat @ curr_dq + d_wres_d_i
         self._flux_cache = (key, result)
         return result
@@ -281,16 +270,14 @@ class NeuralFlux(FluxModel):
             return self._inductance_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        _, hess_normed = self._forward_grad_hess(x_normed)  # (5, 5), symmetric by construction
+        _, hess_normed = self._forward_grad_hess(x_normed)
         hess_x = hess_normed / np.outer(self._scale, self._scale)
-        hess_i = hess_x[1:, 1:]  # (dim, dim)
+        hess_i = hess_x[1:, 1:]
         result = self.L_stat + hess_i
         self._inductance_cache = (key, result)
         return result
 
     def bemf_flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        # flux() is the TOTAL flux psi(i) here (it already contains L_stat @ i), so
-        # subtract inductance(i) @ i -- otherwise U(i) @ i + bemf adds wJ L(i) i twice.
         return self.flux(omega, curr_dq) - self.inductance(omega, curr_dq) @ curr_dq
 
 
@@ -320,8 +307,8 @@ class NeuralTorqueResidual:
 
     def __init__(
         self,
-        net: Any,  # NeuralTorquePredictor
-        scaler: Any,  # sklearn StandardScaler
+        net: Any,
+        scaler: Any,
         device: torch.device,
         as_loss: bool = False,
     ) -> None:
@@ -335,9 +322,9 @@ class NeuralTorqueResidual:
         self.as_loss = as_loss
 
         with torch.no_grad():
-            self._W1 = net.fc1.weight.cpu().numpy()  # (hidden, input)
-            self._b1 = net.fc1.bias.cpu().numpy()  # (hidden,)
-            self._w2 = net.fc2.weight.cpu().numpy().reshape(-1)  # (hidden,) -- output_size == 1
+            self._W1 = net.fc1.weight.cpu().numpy()
+            self._b1 = net.fc1.bias.cpu().numpy()
+            self._w2 = net.fc2.weight.cpu().numpy().reshape(-1)
             self._b2 = float(net.fc2.bias.cpu().numpy().reshape(-1)[0])
         self._mean = scaler.mean_
         self._scale = scaler.scale_
@@ -357,32 +344,25 @@ class NeuralTorqueResidual:
         x_normed = (x - self._mean) / self._scale
         z = x_normed @ self._W1.T + self._b1
         g = ((self._w2 * self._gelu_deriv(z)) @ self._W1)[1:] / self._scale[1:]
-        if self.as_loss:  # d(-softplus(out))/di = -sigmoid(out) * d(out)/di
+        if self.as_loss:
             out = float(self._gelu(z) @ self._w2 + self._b2)
             g = -g / (1.0 + np.exp(-out))
         return g
 
 
 class DriveModel(ABC):
-    # identity
     n_phases: int
     n_harmonics: int
-    dim: int  # = 2 * n_harmonics
+    dim: int
     n_ppairs: int
-    k_phase: float  # = n_phases / 2
+    k_phase: float
 
-    # converter limits. Deliberately NOT here: the speed horizon of a
-    # setpoint map (opts["omega_max"] at grid time, see optimization/grid.py)
-    # -- that is a property of the optimization run, not of the drive (an IM
-    # has no electromagnetic speed ceiling; even for a PMSM the map horizon
-    # is a run choice).
     curr_max: float
     volt_max: float
 
-    # electrical
-    R_stat: np.ndarray  # (dim, dim) stator resistance in dq frame
-    k_v: float  # eddy-type iron-loss coefficient (ModelLossesSubstitution1)
-    k_h: float  # hysteresis-type iron-loss coefficient
+    R_stat: np.ndarray
+    k_v: float
+    k_h: float
 
     @abstractmethod
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
@@ -395,8 +375,6 @@ class DriveModel(ABC):
     @abstractmethod
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         pass
-
-    # mechanical
 
     @abstractmethod
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
@@ -427,7 +405,7 @@ class DriveModel(ABC):
         return A, b, c
 
     def iron_loss(self, omega: float, volt_dq: np.ndarray) -> float:
-        from ..utils.loss_fit import substitution_loss_features  # lazy — avoids circular import
+        from ..utils.loss_fit import substitution_loss_features
 
         f_v, f_h = substitution_loss_features(omega, volt_dq, self.n_ppairs)
         return float(self.k_v * f_v + self.k_h * f_h)
@@ -450,11 +428,6 @@ class PMSMParams:
     k_h: float = 0.0
 
 
-# Fixed, reproducible sample of the (dim=4) current hypercube [-1,1]^4, used
-# as additional SLSQP restart directions in PMSMDrive.seeds() (scaled by
-# curr_max there). Generated once via a fixed-seed RNG so results stay
-# deterministic across runs -- NOT reseeded per call, which would just
-# repeat the same directions rather than exploring new ones.
 _RANDOM_SEED_DIRECTIONS = np.random.default_rng(20260721).uniform(-1.0, 1.0, size=(8, 4))
 
 
@@ -497,9 +470,6 @@ class PMSMDrive(DriveModel):
         return self.flux.inductance(omega, curr_dq)
 
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
-        # PDF eq. (6)-(7): T = iᵀ A i + 2 bᵀ i, A from the inductance, b from the PM
-        # flux only -- bemf_flux, not flux(): for NeuralFlux flux() is the total flux
-        # (already contains L i), which would add iᵀ A i a second time.
         flux_pm = self.flux.bemf_flux(omega, curr_dq)
         L = self.flux.inductance(omega, curr_dq)
         J = self.flux.cross_coupling
@@ -543,10 +513,6 @@ class PMSMDrive(DriveModel):
         g_fw[1] = I * 0.1
         candidates.append(g_fw)
 
-        # The four seeds above all have id3=iq3=0 -- blind to any operating
-        # point whose torque optimum genuinely needs third-harmonic current
-        # (common under fault, and for machines with real 3rd-harmonic
-        # torque content) and to field-weakening deeper than -0.9*curr_max.
         if dim >= 4:
             for sign1, sign3 in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                 c = np.zeros(dim)
@@ -559,26 +525,6 @@ class PMSMDrive(DriveModel):
             c[1] = I * (1.0 - frac) * 0.5 + I * 0.05
             candidates.append(c)
 
-        # Hand-picked directions above still leave real gaps: verified
-        # empirically that fixing one grid node's bad local optimum this way
-        # just exposes a different node as the new bottleneck, at a
-        # comparably bad value (down to a spurious negative "success" once,
-        # on the fault-tolerant, high-speed field-weakening corner). Broad
-        # random coverage is what actually closes the gap -- a cheap
-        # pre-screen to avoid paying for every random seed's full SLSQP
-        # solve was tried and does NOT work reliably (see optimizer._run_
-        # slsqp's docstring: the seed that actually converges to the true
-        # optimum can rank outside any cheap heuristic's top candidates
-        # before ever being polished), so every one of these is genuinely
-        # polished by the caller. Neither SLSQP tolerance (ftol down to
-        # 1e-12) nor finite-difference step size (eps from 1e-10 to 1e-3)
-        # changes the outcome at all from a fixed starting point -- this is
-        # a genuine basin-of-attraction problem, not a numerical-precision
-        # one, so more restarts (not tighter tolerances) is the only lever
-        # that actually helps. 8 rows (2x the 4 empirically found sufficient
-        # to fix the two known bottleneck nodes, as a margin for other
-        # operating points) -- going to 16 gave identical results on the
-        # cases tested, i.e. pure added cost.
         if dim >= 4:
             for row in _RANDOM_SEED_DIRECTIONS:
                 candidates.append(row * I)
@@ -594,11 +540,6 @@ def ieee_machine2_params(*, curr_max: float = 30.0, volt_max: float = 13.0) -> P
     instance so ``PMSMDrive`` is fully constructed in one call; the
     setpoint-map speed horizon is a run parameter, not here (see
     ``optimization.grid.calculate_grid``'s ``opts["omega_max"]``)."""
-    # As directly identified, this matrix is NOT symmetric (max asymmetry
-    # ~86% of its own largest entry -- verified 2026-07-21) -- but a real
-    # inductance matrix must be symmetric (energy reciprocity, not a
-    # modeling choice). Symmetrized below; the raw identified matrix is
-    # kept here for provenance.
     L_stat_raw = 1e-3 * np.array(
         [
             [0.0920, -0.0286, -0.0141, 0.0010],
@@ -638,33 +579,12 @@ def neural_pmsm5phase(
     )
 
 
-# Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
-# "co-energy residual" section for how it was produced): a single-hidden-layer
-# MLP, hidden_size=12 (chosen by an actual hidden_size x volt_weight sweep,
-# not hand-picked), GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output a
-# SCALAR magnetic co-energy residual (dim=1) -- NeuralFlux takes its gradient
-# and Hessian w.r.t. current, added to the analytic ConstantFlux baseline
-# (flux_pm, L_stat), rather than treating the network's output as the whole
-# flux vector from scratch (see NeuralFlux's docstring for why).
 _WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
 _FLUX_NN_HIDDEN_SIZES = [12]
 _FLUX_NN_ACTIVATION = "gelu"
 _FLUX_NN_INPUT_SIZE = 5
 _FLUX_NN_OUTPUT_SIZE = 1
 
-# "_pdf" weights (2026-10-05): flux and torque networks retrained with the PDF's
-# voltage eq. (3) and torque eq. (6)-(7) (see FluxModel.bemf_flux). The previous
-# FluxNN_Weights.pth / NTM_Weights_neuralflux_refit.pth were trained with L i
-# counted twice in both equations and are kept in weights/ only as a backup.
-#
-# "_tauR" weights (2026-10-13, notebooks/flux_nn_trainer.ipynb): flux network and a loss network
-# (torque = T_em(psi) - T_loss, T_loss >= 0) trained together on voltage and torque. The logged
-# voltages are the controller's references, delayed against the currents by tau (fitted, about
-# 1.5 sampling periods) -- tau enters only the training comparison, not the drive model (a delay
-# only time-shifts the phase waveform). Logged voltages above the inverter's capability
-# (peak phase voltage > Vdc/2) are left out of the voltage fit. The winding resistance is fitted
-# too, one value per harmonic plane (MeasParams_tauR.npy), replacing the identified diag R_stat
-# for these weights. The "_pdf" weights are kept as a backup.
 _TAUR = "_tauR"
 _TORQUE_NN_HIDDEN_SIZE = 12
 _TORQUE_NN_INPUT_SIZE = 5
@@ -688,7 +608,7 @@ def ieee_machine2_trained_neural_flux(
     ``weights/`` (``FluxNN_Weights_tauR.pth``/``FluxNN_Scaler_tauR.npy``) composed in as
     a correction on top of the analytic ``ConstantFlux`` baseline (see
     ``NeuralFlux``), with the winding resistance fitted together with it."""
-    from ..utils.neural_model import load_neural_flux_model  # lazy — avoids circular import
+    from ..utils.neural_model import load_neural_flux_model
 
     device = device if device is not None else torch.device("cpu")
     net, scaler = load_neural_flux_model(
@@ -724,7 +644,7 @@ def ieee_machine2_trained_neural_flux_and_torque(
     -T_loss <= 0 (losses only reduce the shaft torque). The torque residual
     corrects torque only, not voltage.
     """
-    from ..utils.neural_model import load_neural_flux_model, load_neural_model  # lazy — avoids circular import
+    from ..utils.neural_model import load_neural_flux_model, load_neural_model
 
     device = device if device is not None else torch.device("cpu")
     flux_net, flux_scaler = load_neural_flux_model(

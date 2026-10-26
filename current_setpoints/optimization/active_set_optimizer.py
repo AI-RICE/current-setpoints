@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -22,6 +23,10 @@ class ActiveSetOptimizer(IndependentOptimizer):
         rho: float = 0.0,
         iron_weight: float = 0.0,
         excess_weight: float = 0.0,
+        torque_ripple: float = 0.0,
+        torque_ripple_relative: bool = False,
+        slew_limit: float | Sequence[float | None] | None = None,
+        legacy_algorithm1: bool = False,
     ) -> None:
         super().__init__(
             fwd,
@@ -31,12 +36,41 @@ class ActiveSetOptimizer(IndependentOptimizer):
         if scheme not in ("forward", "central"):
             raise ValueError(f"scheme must be 'forward' or 'central', got {scheme!r}")
         self.scheme = scheme
-        # Default N (= n_grid): the PDF's bound on outer iterations of Algorithm 1.
         self.max_outer_iter = max_outer_iter if max_outer_iter is not None else n_grid
         self.tol = tol
         self.rho = rho
         self.iron_weight = iron_weight
         self.excess_weight = excess_weight
+        if torque_ripple < 0.0:
+            raise ValueError(f"torque_ripple must be >= 0, got {torque_ripple!r}")
+        self.torque_ripple = torque_ripple
+        self.torque_ripple_relative = torque_ripple_relative
+        if slew_limit is not None:
+            limits = [slew_limit] if np.isscalar(slew_limit) else list(slew_limit)
+            if not np.isscalar(slew_limit) and len(limits) != fwd.drive.dim // 2:
+                raise ValueError(f"slew_limit needs one value per plane ({fwd.drive.dim // 2}), got {len(limits)}")
+            if any(s is not None and s <= 0.0 for s in limits):
+                raise ValueError(f"slew limits must be > 0, got {slew_limit!r}")
+        self.slew_limit = slew_limit
+        self.legacy_algorithm1 = legacy_algorithm1
+
+    def _ripple_band(self, torq_target: float) -> float:
+        return self.torque_ripple * abs(torq_target) if self.torque_ripple_relative else self.torque_ripple
+
+    _SLEW_TOL = 1e-3
+
+    def _slew_steps(self, omega: float) -> list[tuple[slice, float]]:
+        if self.slew_limit is None or omega == 0.0:
+            return []
+        dt_ms = 1000.0 * (2 * np.pi / self.n_grid) / abs(omega)
+        if np.isscalar(self.slew_limit):
+            return [(slice(None), float(self.slew_limit) * dt_ms)]
+        return [(slice(2 * k, 2 * k + 2), float(s) * dt_ms) for k, s in enumerate(self.slew_limit) if s is not None]
+
+    def _slew_excess(self, X: np.ndarray, omega: float) -> float:
+        d = np.roll(X, -1, axis=0) - X
+        return max((float(np.max(np.linalg.norm(d[:, sl], axis=1))) / step - 1.0 for sl, step in self._slew_steps(omega)),
+                   default=0.0)
 
     def voltage_residuals(
         self,
@@ -46,28 +80,24 @@ class ActiveSetOptimizer(IndependentOptimizer):
     ) -> tuple[np.ndarray, np.ndarray]:
         n_grid, _dim = X.shape
         delta_theta = 2 * np.pi / n_grid
-        G = maps["G_volt"]  # (n_surv, n_grid, dim)
-        Lp = maps["L_proj"]  # (n_surv, n_grid, dim)
-        B = maps["bemf_ph"]  # (n_surv, n_grid)
+        G = maps["G_volt"]
+        Lp = maps["L_proj"]
+        B = maps["bemf_ph"]
 
         if self.scheme == "forward":
             dxdt = (np.roll(X, -1, axis=0) - X) / delta_theta
         else:
             dxdt = (np.roll(X, -1, axis=0) - np.roll(X, 1, axis=0)) / (2.0 * delta_theta)
 
-        v_ph = np.einsum("knj,nj->kn", G, X) + omega * np.einsum("knj,nj->kn", Lp, dxdt) + B  # (n_surv, n_grid)
+        v_ph = np.einsum("knj,nj->kn", G, X) + omega * np.einsum("knj,nj->kn", Lp, dxdt) + B
         v_abs = np.max(np.abs(v_ph), axis=0)
         if self.scheme == "forward":
-            # v_ph is the voltage at the START of segment n (PDF (9d)). The current runs linearly
-            # from i_n to i_{n+1}, so the voltage at the END of segment n (theta_{n+1}, same slope)
-            # must be within the limit too -- the second voltage _solve_joint limits for active
-            # nodes. r_n covers both ends of segment n, so activating node n constrains both.
             v_end = np.roll(np.einsum("knj,nj->kn", G, X) + B, -1, axis=1) + omega * np.einsum(
                 "knj,nj->kn", np.roll(Lp, -1, axis=1), dxdt
             )
             v_abs = np.maximum(v_abs, np.max(np.abs(v_end), axis=0))
         r = v_abs - self.fwd.drive.volt_max
-        return r, v_ph.T  # (n_grid,), (n_grid, n_surv)
+        return r, v_ph.T
 
     def _solve_joint(
         self,
@@ -87,18 +117,13 @@ class ActiveSetOptimizer(IndependentOptimizer):
         coupling = omega / delta_theta
         coupling_c = omega / (2.0 * delta_theta)
 
-        # Per-unit scaling of what SLSQP sees -- problem (9) itself is unchanged: dividing the
-        # objective, an inequality or an equality by a positive constant changes neither the
-        # feasible set nor the minimizer. SLSQP is not scale-invariant: unscaled, the objective
-        # (~5e4 at 60 nodes) dwarfs the constraint rows (~1-10 V or A) and its line search failed
-        # ("Positive directional derivative") at random points near max torque at high speed.
         obj_scale = 1.0 / (n_grid * curr_max**2)
         torq_scale = max(abs(torq_target), 1.0)
 
-        H_curr = maps["H_curr"]  # (n_surv, n_grid, dim)
-        G_volt = maps["G_volt"]  # (n_surv, n_grid, dim)
-        Lp = maps["L_proj"]  # (n_surv, n_grid, dim)
-        B = maps["bemf_ph"]  # (n_surv, n_grid)
+        H_curr = maps["H_curr"]
+        G_volt = maps["G_volt"]
+        Lp = maps["L_proj"]
+        B = maps["bemf_ph"]
 
         def slot(n: int) -> slice:
             return slice(n * dim, (n + 1) * dim)
@@ -106,7 +131,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
         iron_active = self.iron_weight > 0.0 or self.excess_weight > 0.0
         iron_scale = (omega**2) / (delta_theta**2) / n_grid
         excess_scale = (omega / delta_theta) ** 1.5 / n_grid
-        # PM flux change proxy between adjacent nodes (shape n_surv × n_grid)
         iron_bias = np.roll(B, -1, axis=1) - B
 
         def _iron_term(X_flat: np.ndarray) -> tuple[float, np.ndarray]:
@@ -156,12 +180,9 @@ class ActiveSetOptimizer(IndependentOptimizer):
 
         constraints: list[dict[str, Any]] = []
 
-        # Torque equalities (nonlinear). Exact gradient when the drive provides one (PMSMDrive.
-        # torque_grad) -- same constraint, only its slope is exact instead of SLSQP's finite
-        # differences, which made SLSQP's line search fail ("Positive directional derivative")
-        # with 60 nodes near max torque at high speed. Other drives: finite differences as before.
         torque_grad = getattr(fwd.drive, "torque_grad", None)
-        for n in range(n_grid):
+        ripple = self._ripple_band(torq_target)
+        for n in range(n_grid) if ripple == 0.0 else ():
 
             def eq_torq(X_flat: np.ndarray, _n: int = n) -> float:
                 return (fwd.drive.torque(omega, X_flat[slot(_n)]) - torq_target) / torq_scale
@@ -177,8 +198,41 @@ class ActiveSetOptimizer(IndependentOptimizer):
                 con["jac"] = eq_torq_jac
             constraints.append(con)
 
+        if ripple > 0.0:
+            def mean_torq(X_flat: np.ndarray) -> float:
+                t = [fwd.drive.torque(omega, X_flat[slot(n)]) for n in range(n_grid)]
+                return (float(np.mean(t)) - torq_target) / torq_scale
+
+            con = {"type": "eq", "fun": mean_torq}
+            if torque_grad is not None:
+
+                def mean_torq_jac(X_flat: np.ndarray) -> np.ndarray:
+                    g = np.zeros(total_vars)
+                    for n in range(n_grid):
+                        g[slot(n)] = torque_grad(omega, X_flat[slot(n)]) / (n_grid * torq_scale)
+                    return g
+
+                con["jac"] = mean_torq_jac
+            constraints.append(con)
+
+            for n in range(n_grid):
+                for sign in (1.0, -1.0):
+
+                    def band_torq(X_flat: np.ndarray, _n: int = n, _s: float = sign) -> float:
+                        return (ripple - _s * (fwd.drive.torque(omega, X_flat[slot(_n)]) - torq_target)) / torq_scale
+
+                    con = {"type": "ineq", "fun": band_torq}
+                    if torque_grad is not None:
+
+                        def band_torq_jac(X_flat: np.ndarray, _n: int = n, _s: float = sign) -> np.ndarray:
+                            g = np.zeros(total_vars)
+                            g[slot(_n)] = -_s * torque_grad(omega, X_flat[slot(_n)]) / torq_scale
+                            return g
+
+                        con["jac"] = band_torq_jac
+                    constraints.append(con)
+
         def _lin(coef: np.ndarray, offset: float, scale: float) -> dict[str, Any]:
-            # coef @ x + offset >= 0, divided by its limit (curr_max or volt_max): per-unit row
             coef_s, offset_s = coef / scale, offset / scale
 
             def fun(X_flat: np.ndarray) -> float:
@@ -189,7 +243,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
 
             return {"type": "ineq", "fun": fun, "jac": jac}
 
-        # Current: always static (no inductive coupling)
         for n in range(n_grid):
             for k in range(n_surv):
                 h = H_curr[k, n]
@@ -200,7 +253,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
                 constraints.append(_lin(c_pos, curr_max, curr_max))
                 constraints.append(_lin(c_neg, curr_max, curr_max))
 
-        # Voltage: static outside active set, dynamic inside
         for n in range(n_grid):
             n_next = (n + 1) % n_grid
             n_prev = (n - 1) % n_grid
@@ -209,6 +261,8 @@ class ActiveSetOptimizer(IndependentOptimizer):
                 lp_n = Lp[k, n]
                 b_n = float(B[k, n])
 
+                if n not in active_nodes and not self.legacy_algorithm1:
+                    continue
                 if n not in active_nodes:
                     c_pos = np.zeros(total_vars)
                     c_pos[slot(n)] = -g_n
@@ -221,7 +275,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
                     g_nn = G_volt[k, n_next]
                     lp_nn = Lp[k, n_next]
                     b_nn = float(B[k, n_next])
-                    # Left edge of segment [θ_n, θ_{n+1}]
                     gm = g_n - coupling * lp_n
                     gp = coupling * lp_n
                     for sign in (1.0, -1.0):
@@ -229,7 +282,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
                         c[slot(n)] = sign * (-gm)
                         c[slot(n_next)] = sign * (-gp)
                         constraints.append(_lin(c, volt_max - sign * b_n, volt_max))
-                    # Right edge of the same segment
                     gmr = -coupling * lp_nn
                     gpr = g_nn + coupling * lp_nn
                     for sign in (1.0, -1.0):
@@ -238,7 +290,7 @@ class ActiveSetOptimizer(IndependentOptimizer):
                         c[slot(n_next)] = sign * (-gpr)
                         constraints.append(_lin(c, volt_max - sign * b_nn, volt_max))
 
-                else:  # central
+                else:
                     a_self = g_n
                     a_next = coupling_c * lp_n
                     a_prev = -coupling_c * lp_n
@@ -249,8 +301,7 @@ class ActiveSetOptimizer(IndependentOptimizer):
                         c[slot(n_prev)] = sign * (-a_prev)
                         constraints.append(_lin(c, volt_max - sign * b_n, volt_max))
 
-        # Fault null-space: per-angle dynamic form, lifted to full X_flat
-        idx_grid = maps["idx_grid"]  # extra_constraints_at_theta indexes fwd.vec_theta, not the coarse n_grid
+        idx_grid = maps["idx_grid"]
         for n in range(n_grid):
             for fc in fwd.extra_constraints_at_theta(int(idx_grid[n])):
                 _n = n
@@ -260,6 +311,26 @@ class ActiveSetOptimizer(IndependentOptimizer):
                     return _f(X_flat[slot(_n)])
 
                 constraints.append({"type": "eq", "fun": lifted})
+
+        for sl, step in self._slew_steps(omega):
+
+            def slew_con(X_flat: np.ndarray, sl: slice = sl, step: float = step) -> np.ndarray:
+                X = X_flat.reshape(n_grid, dim)
+                d = (np.roll(X, -1, axis=0) - X)[:, sl]
+                return (step**2 - np.sum(d * d, axis=1)) / step**2
+
+            def slew_jac(X_flat: np.ndarray, sl: slice = sl, step: float = step) -> np.ndarray:
+                X = X_flat.reshape(n_grid, dim)
+                d = np.zeros_like(X)
+                d[:, sl] = (np.roll(X, -1, axis=0) - X)[:, sl]
+                J = np.zeros((n_grid, total_vars))
+                rows = np.arange(n_grid)
+                for j in range(dim):
+                    J[rows, rows * dim + j] += 2.0 * d[:, j] / step**2
+                    J[rows, ((rows + 1) % n_grid) * dim + j] -= 2.0 * d[:, j] / step**2
+                return J
+
+            constraints.append({"type": "ineq", "fun": slew_con, "jac": slew_jac})
 
         res = minimize(
             lambda X_flat: obj_scale * objective(X_flat),
@@ -278,16 +349,18 @@ class ActiveSetOptimizer(IndependentOptimizer):
         torq_target: float,
         X: np.ndarray,
     ) -> list[int]:
-        # Nodes where X breaks a non-voltage constraint: torque equality, current limit,
-        # or fault null-space. Voltage is checked separately (voltage_residuals), since
-        # in the active set it is the coupled dynamic form, not a per-node one.
         fwd = self.fwd
         curr_max = fwd.drive.curr_max
+        ripple = self._ripple_band(torq_target)
+        if ripple == 0.0:
+            torq_con: dict[str, Any] = {"type": "eq", "fun": lambda x: fwd.drive.torque(omega, x) - torq_target}
+        else:
+            torq_con = {"type": "ineq", "fun": lambda x: ripple - abs(fwd.drive.torque(omega, x) - torq_target)}
         bad = []
         for n in range(X.shape[0]):
             H_curr_n = maps["H_curr"][:, n, :]
             cons: list[dict[str, Any]] = [
-                {"type": "eq", "fun": lambda x: fwd.drive.torque(omega, x) - torq_target},
+                torq_con,
                 {"type": "ineq", "fun": lambda x, H=H_curr_n: curr_max - np.abs(H @ x)},
             ]
             cons.extend(fwd.extra_constraints_at_theta(int(maps["idx_grid"][n])))
@@ -303,10 +376,14 @@ class ActiveSetOptimizer(IndependentOptimizer):
     ) -> Solution:
         maps = self._precompute_maps(omega)
 
-        # R0 itself is exact regardless of this linearization -- IndependentOptimizer's
-        # per-node constraints evaluate voltage at the actual candidate current, not
-        # through maps["G_volt"]/["L_proj"]/["bemf_ph"].
         r0_grid, ok0 = self._run_per_angle(omega, maps, torq_target, guess=guess)
+        r0_free_nodes: list[int] = []
+        if not bool(np.all(ok0)) and not self.legacy_algorithm1:
+            free_grid, ok_free = self._run_per_angle(omega, maps, torq_target, guess=guess, voltage=False)
+            for n in np.where(~ok0)[0]:
+                if ok_free[n]:
+                    r0_grid[n], ok0[n] = free_grid[n], True
+                    r0_free_nodes.append(int(n))
         if not bool(np.all(ok0)):
             return Solution(
                 curr_dq=r0_grid,
@@ -315,17 +392,11 @@ class ActiveSetOptimizer(IndependentOptimizer):
                 diagnostics={
                     "r0_ok": ok0,
                     "theta_grid": maps["theta_grid"],
-                    "fail_reason": "R0 failed at some nodes",
+                    "fail_reason": "R0 failed at some nodes" if self.legacy_algorithm1
+                    else "torque/current/open-phase constraints infeasible at some nodes",
                 },
             )
 
-        # The joint solve's linear voltage constraints (_solve_joint,
-        # voltage_residuals) genuinely need to stay linear-in-current for
-        # tractability, unlike R0's per-node solve -- re-linearize them
-        # around R0's own per-node current (a real, physically motivated
-        # operating point) instead of the zeros default. Exact for
-        # ConstantFlux either way; a much closer approximation than zero
-        # for a current-dependent flux model (NeuralFlux).
         maps = self._precompute_maps(omega, lin_curr=r0_grid)
 
         X = r0_grid.copy()
@@ -333,6 +404,7 @@ class ActiveSetOptimizer(IndependentOptimizer):
         history: list[dict[str, Any]] = []
         converged = False
         fail_reason: str | None = None
+        joint_done = False
 
         for outer in range(self.max_outer_iter):
             r, _ = self.voltage_residuals(maps, omega, X)
@@ -345,20 +417,27 @@ class ActiveSetOptimizer(IndependentOptimizer):
             }
 
             if not violating:
-                # Voltage alone is not enough: converged only if X also meets torque,
-                # current and fault constraints at every node.
                 bad_nodes = self._nodes_violating_static(maps, omega, torq_target, X)
+                mean_err = abs(float(np.mean(self._node_torques(omega, X))) - torq_target)
+                slew_excess = self._slew_excess(X, omega)
                 if bad_nodes:
                     history.append(entry | {"action": "voltage ok, other constraints violated", "bad_nodes": bad_nodes})
                     fail_reason = f"torque/current/fault constraint violated at {len(bad_nodes)} nodes"
-                else:
+                    break
+                if self._ripple_band(torq_target) > 0.0 and mean_err > 1e-4:
+                    history.append(entry | {"action": "voltage ok, mean torque off target", "mean_err": mean_err})
+                    fail_reason = f"mean torque off target by {mean_err:.2e} Nm"
+                    break
+                if slew_excess <= self._SLEW_TOL:
                     history.append(entry | {"action": "converged"})
                     converged = True
-                break
+                    break
+                if joint_done:
+                    history.append(entry | {"action": "voltage ok, slew limit violated", "slew_excess": slew_excess})
+                    fail_reason = f"slew limit exceeded by {100 * slew_excess:.2f} %"
+                    break
+                entry["slew_excess"] = slew_excess
 
-            # PDF Algorithm 1 stops only when A stops growing AND all r_n <= 0 -- if A
-            # did not grow but nodes still violate, re-solve. For a linear machine this
-            # cannot happen; for NeuralFlux it re-solves around the updated linearization.
             new_active = active | violating
 
             X_new, ok = self._solve_joint(maps, omega, torq_target, X, set(new_active))
@@ -366,26 +445,15 @@ class ActiveSetOptimizer(IndependentOptimizer):
             entry["solve_success"] = ok
             history.append(entry)
             if not ok:
-                # Reject a failed joint solve: keep the previous X rather than passing
-                # a possibly constraint-violating point on as the next linearization.
                 fail_reason = f"joint solve failed at outer iteration {outer}"
                 break
             X = X_new
             active = new_active
-            # Re-linearize around the NEW X before the next residual check/solve --
-            # otherwise every later iteration keeps checking (and solving) against
-            # the voltage model evaluated at the stale r0_grid point, and "converged"
-            # would only mean "satisfies that stale linearization," not the actual
-            # current-dependent (NeuralFlux) voltage at the real solution. Since
-            # G_volt/L_proj/bemf_ph are exactly U(lin_curr)/L(lin_curr)/bemf(lin_curr)
-            # -- the same formula waveforms_for_plot uses for the "exact" voltage --
-            # linearizing around X makes the next check exact AT that X, not approximate.
+            joint_done = True
             maps = self._precompute_maps(omega, lin_curr=X)
         else:
             fail_reason = f"max_outer_iter={self.max_outer_iter} reached"
 
-        # Mean of the torques actually delivered at each node, converged or not --
-        # never assumed equal to torq_target (the last joint solve may have failed).
         node_torques = self._node_torques(omega, X)
         return Solution(
             curr_dq=X,
@@ -395,6 +463,7 @@ class ActiveSetOptimizer(IndependentOptimizer):
                 "active": active,
                 "history": history,
                 "r0_grid": r0_grid,
+                "r0_voltage_free_nodes": r0_free_nodes,
                 "theta_grid": maps["theta_grid"],
                 "torque_min": float(np.nanmin(node_torques)),
                 "torque_max": float(np.nanmax(node_torques)),
@@ -402,8 +471,6 @@ class ActiveSetOptimizer(IndependentOptimizer):
             },
         )
 
-    # 9 steps: final bracket t_naive / 2**9 (~0.015 Nm here); 5 steps left ~0.2 Nm, enough
-    # for the reported dynamic T_max to land below the static one it provably reaches.
     _N_BISECT_ITERS = 9
 
     def maximize_torque(
@@ -412,27 +479,9 @@ class ActiveSetOptimizer(IndependentOptimizer):
         guess: np.ndarray | None = None,
         start_margin: float = 1.0,
     ) -> Solution:
-        # R0's raw per-node estimate (min of 60 independently-maximized, mutually
-        # unconstrained torques) systematically overestimates what one current
-        # trajectory can hit at all 60 angles simultaneously -- and by how MUCH
-        # varies with omega: R0's per-node problems are solved independently, with
-        # no inductive coupling term at all (that term is ~omega/delta_theta), so
-        # the overestimate is small at low speed (coupling negligible) and large at
-        # high speed (coupling dominant). A FIXED backoff fraction that works at one
-        # speed can therefore fail at another purely because the reference itself
-        # scales differently, not because of any solver/iteration-budget issue.
-        # Bisect between 0 (never achievable... unless it is) and the raw estimate
-        # instead of guessing fixed fractions -- same bounded number of solve
-        # attempts (1 + _N_BISECT_ITERS), but finds wherever the true ceiling
-        # actually is at THIS speed, whatever fraction of t_naive that turns out
-        # to be.
-        #
-        # start_margin: for a sweep over many (omega, target) points, neighboring
-        # points tend to need a similar fraction -- pass the previous point's
-        # sol.diagnostics["margin"] here as the first guess, then bisection still
-        # refines from there instead of accepting it blindly.
         maps = self._precompute_maps(omega)
-        r0_grid, ok0 = self._run_per_angle(omega, maps, None, maximize=True, guess=guess)
+        r0_grid, ok0 = self._run_per_angle(omega, maps, None, maximize=True, guess=guess,
+                                           voltage=self.legacy_algorithm1)
 
         if not np.any(ok0):
             return Solution(
@@ -443,27 +492,25 @@ class ActiveSetOptimizer(IndependentOptimizer):
 
         torques = np.array([self.fwd.drive.torque(omega, r0_grid[i]) if ok0[i] else np.nan for i in range(self.n_grid)])
         t_naive = float(np.nanmin(torques))
+        n_bisect = self._N_BISECT_ITERS
+        if not self.legacy_algorithm1:
+            if self.torque_ripple_relative and 0.0 < self.torque_ripple < 1.0:
+                t_naive = t_naive / (1.0 - self.torque_ripple)
+            elif not self.torque_ripple_relative:
+                t_naive = t_naive + self.torque_ripple
+            n_bisect += 3
 
         lo, hi = 0.0, t_naive
         best_sol: Solution | None = None
         best_margin = 0.0
 
-        # Fast-path guess using the carried-forward margin -- if it succeeds, it
-        # gives an early lo bound (fewer bisection steps needed below). If it
-        # FAILS, that says nothing about whether something between it and t_naive
-        # is achievable at THIS speed (a neighboring, easier speed's margin is not
-        # a valid upper bound here) -- discard it and let real bisection search
-        # the full, always-correct [0, t_naive] range instead of narrowing hi to
-        # the failed guess (that bug caused a monotonic hi-collapse across a sweep:
-        # one low margin, once carried forward, permanently traps every later
-        # probe's search below it).
         sol = self.minimize_current(start_margin * t_naive, omega, guess=guess)
         if sol.success:
             lo = start_margin * t_naive
             best_sol, best_margin = sol, start_margin
 
-        for _ in range(self._N_BISECT_ITERS):
-            if lo >= hi:  # first try already reached t_naive -- nothing left to bisect
+        for _ in range(n_bisect):
+            if lo >= hi:
                 break
             mid = 0.5 * (lo + hi)
             sol = self.minimize_current(mid, omega, guess=guess)

@@ -84,7 +84,7 @@ def _joule_loss_static(fwd: ForwardModel, omega: float, curr_dq: np.ndarray) -> 
     of the SQUARED PHASE current, not the squared dq norm and not the
     square of a mean -- see _trajectory_waveforms below for why that
     distinction matters for a valid static-vs-dynamic comparison."""
-    curr_ph = fwd.curr_ph(omega, curr_dq)  # (n_kept, n_theta+1)
+    curr_ph = fwd.curr_ph(omega, curr_dq)
     return float(np.mean(np.sum(curr_ph**2, axis=0)))
 
 
@@ -126,11 +126,10 @@ def _trajectory_waveforms(
     theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
     idx_grid = np.round(theta_grid / (2 * np.pi) * n_theta).astype(int) % n_theta
     kept = list(fwd.fault._kept)
-    coupling = omega / (2 * np.pi / n_grid)  # omega / dtheta
+    coupling = omega / (2 * np.pi / n_grid)
 
     n_curr_ph = fwd.phase_map_at_theta(0).shape[0]
     curr_wave = np.full((n_curr_ph, n_grid), np.nan)
-    # Column 2n: end of segment n-1 (just before theta_n); column 2n+1: start of segment n.
     volt_wave = np.full((len(kept), 2 * n_grid), np.nan)
 
     for n in range(n_grid):
@@ -147,9 +146,6 @@ def _trajectory_waveforms(
         volt_wave[:, 2 * n] = (v_steady + coupling * (gL @ (i_n - i_prev)))[kept]
         volt_wave[:, 2 * n + 1] = (v_steady + coupling * (gL @ (i_next - i_n)))[kept]
 
-    # count_peaks_at_limit expects a trailing "wrap" sample (theta=2pi == theta=0,
-    # as the constant-current n_theta+1 sweep has); append the first column so
-    # the same peak-touching logic applies unchanged.
     curr_wave_wrapped = np.concatenate([curr_wave, curr_wave[:, :1]], axis=1)
     volt_wave_wrapped = np.concatenate([volt_wave, volt_wave[:, :1]], axis=1)
 
@@ -177,10 +173,6 @@ def _fill_grid_point(
         grid["curr_dq_grid"][:, idx_torq, idx_omega] = curr_dq
     else:
         curr_peak, volt_peak, n_curr, n_volt, joule_loss = _trajectory_waveforms(fwd, omega, curr_dq, rel_tol)
-        # curr_dq_grid holds one representative current per cell (the mean over the nodes -- NOT an
-        # operating point, only a summary); the full per-angle trajectory, which is the actual
-        # dynamic setpoint, is kept in curr_dq_traj (n_torq, n_omega, n_grid, dim), allocated on the
-        # first dynamic cell. grid_joule_loss is NOT derived from the mean -- see _trajectory_waveforms.
         grid["curr_dq_grid"][:, idx_torq, idx_omega] = np.nanmean(curr_dq, axis=0)
         if "curr_dq_traj" not in grid:
             n_torq, n_omega = grid["grid_joule_loss"].shape
@@ -221,10 +213,6 @@ def calculate_grid(
     const_mech_speed = 30.0 / (np.pi * drive.n_ppairs)
     omega_probe = float(opts.get("omega_probe", 0.0))
 
-    # Optional hard per-solve wall-clock cap -- off (None) by default, matching every existing
-    # caller's behavior exactly. See _call_with_timeout's docstring for what this does and does
-    # not protect against. A timed-out cell is treated exactly like a converged-but-failed one
-    # (sol is None below wherever a plain "not sol.success" check used to be sufficient).
     cell_timeout = opts.get("cell_timeout_seconds")
 
     def _solve(fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -249,9 +237,6 @@ def calculate_grid(
                 )
             torq_max_global = sol.torque
 
-        # The speed horizon is a property of the map being computed, not of
-        # the machine; opts["omega_max"] is preferred, drive.omega_max is the
-        # legacy fallback for drives that still carry it.
         if "omega_max" in opts and opts["omega_max"] is not None:
             omega_max_grid = float(opts["omega_max"])
         else:
@@ -278,7 +263,6 @@ def calculate_grid(
 
     print(f"Starting {mode} grid: {n_torq} torques × {n_omega} speeds")
 
-    # Warm-start for maximize_torque carried across speeds (FW corner convergence)
     prev_max_curr: np.ndarray | None = None
 
     for idx_omega in range(n_omega):
@@ -286,17 +270,14 @@ def calculate_grid(
         rpm = omega * const_mech_speed
         print(f"  Speed {idx_omega + 1}/{n_omega}: {rpm:.1f} RPM")
 
-        # Per-speed T_max probe (warm-started from previous speed)
         sol_max = _solve(optimizer.maximize_torque, omega, guess=prev_max_curr)
         if sol_max is not None and sol_max.success:
             torq_max_local = sol_max.torque
             prev_max_curr = sol_max.curr_dq
         else:
-            # Fall back to global estimate so cells aren't silently skipped
             torq_max_local = torq_max_global if mode == "standard" else float("inf")
         grid["vec_torq_max"][0, idx_omega] = torq_max_local
 
-        # Initial warm-start for the torque sweep: first seed from drive
         prev_curr = drive.seeds()[0]
 
         for idx_torq in range(n_torq):
@@ -319,10 +300,6 @@ def calculate_grid(
                     prev_curr = sol.curr_dq
                     _fill_grid_point(grid, fwd, omega, sol.curr_dq, idx_torq, idx_omega)
             else:
-                # Recalculated: only a converged solve fills the cell. A failed or timed-out solve
-                # leaves it empty (NaN) -- no fallback to the warm-start guess (2026-10-05): the
-                # guess is not a solution for this cell's torque target, and filling it in made
-                # failed cells look solved on the maps.
                 if sol is not None and sol.success:
                     _fill_grid_point(grid, fwd, omega, sol.curr_dq, idx_torq, idx_omega)
 

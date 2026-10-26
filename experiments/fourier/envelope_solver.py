@@ -46,8 +46,8 @@ if ROOT not in sys.path:
 
 from dynamic.fourier_math import extract_quadratic_torque, n_basis  # noqa: E402
 
-H_FREE = tuple(range(11))  # {0..10} free-shaping basis for Yepes / Dynamic
-N_CON = 90  # collocation grid size
+H_FREE = tuple(range(11))
+N_CON = 90
 
 ARMS = ("Static", "Yepes", "Dynamic")
 

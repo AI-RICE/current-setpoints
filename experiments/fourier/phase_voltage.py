@@ -68,8 +68,8 @@ def phase_voltage(
     Returns:
         (n_sel, n) per-phase voltage, n = idx.size, n_sel = len(phases).
     """
-    v_dq = voltage_dq(fwd, omega, i_dq, di_dq)  # (n, dim)
-    Pk = phase_basis(fwd, idx, phases)          # (n_sel, n, dim)
+    v_dq = voltage_dq(fwd, omega, i_dq, di_dq)
+    Pk = phase_basis(fwd, idx, phases)
     return np.einsum("pnj,nj->pn", Pk, v_dq)
 
 
@@ -89,7 +89,7 @@ def voltage_linear_maps(
     U = fwd.drive.voltage_operator(omega, zeros)
     L = fwd.drive.inductance(omega, zeros)
     bemf_dq = fwd.drive.bemf_dq(omega, zeros)
-    Pk = phase_basis(fwd, idx, phases)          # (n_sel, n, dim)
+    Pk = phase_basis(fwd, idx, phases)
     gU = np.einsum("pnj,jl->pnl", Pk, U)
     gL = np.einsum("pnj,jl->pnl", Pk, L)
     b = np.einsum("pnj,j->pn", Pk, bemf_dq)

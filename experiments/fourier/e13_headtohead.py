@@ -51,7 +51,6 @@ from current_setpoints.optimization import ActiveSetOptimizer, FourierOptimizer 
 from dynamic._waveforms import evaluate_dq_on_grid  # noqa: E402
 from dynamic.voltage_diagnostics import voltage_residuals_dense  # noqa: E402
 
-# Harmonic sets to sweep (each must include the DC term 0).
 HARMONIC_SETS: list[tuple[int, ...]] = [
     (0,),
     (0, 9, 11),
@@ -60,7 +59,6 @@ HARMONIC_SETS: list[tuple[int, ...]] = [
 ]
 
 CELLS = [
-    # (rpm, T*, label)
     (1400.0, 4.0, "FW (voltage-limited)"),
     (200.0, 7.0, "current-limited"),
 ]
@@ -92,21 +90,20 @@ def spectral_voltage_residual(fwd: ForwardModel, omega: float, X_grid: np.ndarra
     drive = fwd.drive
     dim = drive.dim
     n_grid, _ = X_grid.shape
-    # spectral derivative on the coarse grid (band-limited interpolation)
     Xf = np.fft.fft(X_grid, axis=0)
-    h = np.fft.fftfreq(n_grid, d=1.0 / n_grid)  # integer mode numbers
-    dX = np.real(np.fft.ifft(1j * h[:, None] * Xf, axis=0))  # d/dtheta on [0,2pi)
+    h = np.fft.fftfreq(n_grid, d=1.0 / n_grid)
+    dX = np.real(np.fft.ifft(1j * h[:, None] * Xf, axis=0))
 
     zeros = np.zeros(dim)
     U = drive.voltage_operator(omega, zeros)
     L = drive.inductance(omega, zeros)
     bemf_dq = drive.bemf_dq(omega, zeros)
-    v_dq = X_grid @ U.T + omega * dX @ L.T + bemf_dq[None, :]  # (n_grid, dim)
+    v_dq = X_grid @ U.T + omega * dX @ L.T + bemf_dq[None, :]
 
     n_theta = fwd.vec_theta.size - 1
     theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
     idx = (np.round(theta_grid / (2 * np.pi) * n_theta).astype(int)) % n_theta
-    Hb = fwd._mat_dq_to_ph_all[idx].transpose(1, 0, 2)  # (n_phases, n_grid, dim)
+    Hb = fwd._mat_dq_to_ph_all[idx].transpose(1, 0, 2)
     v_ph = np.einsum("knj,nj->kn", Hb, v_dq)
     return float(np.max(np.abs(v_ph)) - volt_max)
 
@@ -163,7 +160,7 @@ def main() -> None:
             Js.append(Jf)
             tags.append("{" + ",".join(map(str, H)) + "}")
             if H == (0, 9, 11):
-                warm = fr["C"]  # warm-start richer sets from the {0,9,11} solution
+                warm = fr["C"]
 
         ax = axes[0][col]
         x = np.arange(len(Js))

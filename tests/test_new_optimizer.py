@@ -23,7 +23,6 @@ VOLT_MAX = 13.0
 
 SLSQP_OPTS = {"disp": False, "ftol": 1e-8, "maxiter": 500}
 
-# electrical rad/s from mechanical RPM
 def to_elec(rpm, n_ppairs):
     return rpm * (np.pi / 30) * n_ppairs
 
@@ -72,8 +71,6 @@ def static_opt_im(fwd_im):
     return StaticOptimizer(fwd_im, opts=SLSQP_OPTS)
 
 
-# ── Solution dataclass ────────────────────────────────────────────────────────
-
 def test_solution_fields():
     s = Solution(curr_dq=np.zeros(4), torque=5.0, success=True)
     assert s.curr_dq.shape == (4,)
@@ -81,9 +78,6 @@ def test_solution_fields():
     assert s.success is True
     assert isinstance(s.diagnostics, dict)
 
-
-# ── StaticOptimizer — minimize_current ────────────────────────────────────────
-# Torque targets are derived from maximize_torque to guarantee feasibility.
 
 def _feasible_torque(opt, omega, fraction):
     """Return fraction of max achievable torque at omega, or None if probe fails."""
@@ -163,8 +157,6 @@ def test_static_minimize_current_with_warm_start(static_opt):
         assert np.sum(sol_warm.curr_dq**2) <= np.sum(sol_cold.curr_dq**2) + 1e-6
 
 
-# ── StaticOptimizer — maximize_torque ─────────────────────────────────────────
-
 @pytest.mark.parametrize("omega", [OMEGA_LOW, OMEGA_MID, OMEGA_HIGH])
 def test_static_maximize_torque_converges(static_opt, omega):
     sol = static_opt.maximize_torque(omega)
@@ -195,8 +187,6 @@ def test_static_maximize_torque_decreases_with_speed(static_opt):
     T_high = static_opt.maximize_torque(OMEGA_HIGH).torque
     assert T_low > T_high, f"Expected T(low speed) > T(high speed): {T_low:.2f} vs {T_high:.2f}"
 
-
-# ── StaticOptimizer — single fault ───────────────────────────────────────────
 
 def test_static_fault1_minimize_current_converges(static_opt_f1):
     torq_target = _feasible_torque(static_opt_f1, OMEGA_LOW, 0.5)
@@ -234,8 +224,6 @@ def test_static_fault1_maximize_torque(static_opt_f1):
     assert sol.torque > 0
 
 
-# ── StaticOptimizer — IM ─────────────────────────────────────────────────────
-
 def test_static_im_maximize_torque_converges(static_opt_im):
     omega = to_elec(500, 2)
     sol = static_opt_im.maximize_torque(omega)
@@ -269,8 +257,6 @@ def test_static_im_minimize_current_achieves_torque(static_opt_im):
         pytest.skip("Did not converge")
     np.testing.assert_allclose(sol.torque, torq_target, rtol=1e-3)
 
-
-# ── IndependentOptimizer ──────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
 def fwd_small(pmsm):
@@ -314,8 +300,6 @@ def test_ind_maximize_torque_positive(ind_opt):
     assert sol.torque > 0
 
 
-# ── ActiveSetOptimizer ────────────────────────────────────────────────────────
-
 @pytest.fixture(scope="module")
 def active_opt(fwd_small):
     return ActiveSetOptimizer(fwd_small, opts={**SLSQP_OPTS, "maxiter": 200})
@@ -351,11 +335,8 @@ def test_active_minimize_current_achieves_torque(active_opt):
     np.testing.assert_allclose(sol.torque, torq_target, rtol=1e-3)
 
 
-# ── FourierOptimizer ──────────────────────────────────────────────────────────
-
 @pytest.fixture(scope="module")
 def fourier_opt(fwd_small):
-    # harmonics=(0,1): nb=3 < dim=4 — avoids the warm-start recursive call in _solve
     return FourierOptimizer(fwd_small, opts={**SLSQP_OPTS, "maxiter": 300}, harmonics=(0, 1))
 
 

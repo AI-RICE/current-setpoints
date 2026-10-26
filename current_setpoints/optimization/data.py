@@ -9,10 +9,6 @@ import numpy as np
 from ..models.forward_model import ForwardModel
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MachineData
-# ─────────────────────────────────────────────────────────────────────────────
-
 class MachineData:
 
     def __init__(
@@ -84,10 +80,6 @@ class MachineData:
         return np.unique(self.segments[~np.isnan(self.segments)]).astype(int)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Waveforms
-# ─────────────────────────────────────────────────────────────────────────────
-
 @dataclass
 class Waveforms:
     theta: np.ndarray
@@ -100,10 +92,6 @@ class Waveforms:
     curr_peak: float
     volt_peak: float
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# evaluate
-# ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate(
     fwd: ForwardModel,
@@ -126,10 +114,6 @@ def evaluate(
         volt_peak=volt_peak,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# grid_to_data
-# ─────────────────────────────────────────────────────────────────────────────
 
 def grid_to_data(grid: dict[str, Any], k_skip: int) -> MachineData:
     torq = grid["vec_torq"]

@@ -78,10 +78,10 @@ class FourierOptimizer(DynamicOptimizer):
         dim: int,
     ) -> list[dict[str, Any]]:
         fwd = self.fwd
-        H_curr = maps["H_curr"]  # (n_surv, n_grid, dim)
-        G_volt = maps["G_volt"]  # (n_surv, n_grid, dim)
-        Lp = maps["L_proj"]  # (n_surv, n_grid, dim)
-        B = maps["bemf_ph"]  # (n_surv, n_grid)
+        H_curr = maps["H_curr"]
+        G_volt = maps["G_volt"]
+        Lp = maps["L_proj"]
+        B = maps["bemf_ph"]
         n_con = self.n_grid
         n_surv = H_curr.shape[0]
         curr_max = fwd.drive.curr_max
@@ -110,7 +110,6 @@ class FourierOptimizer(DynamicOptimizer):
 
         constraints: list[dict[str, Any]] = []
 
-        # Torque: mean equality + pointwise ripple band (minimize_current only)
         if torq_target is not None:
 
             def eq_mean(c: np.ndarray) -> float:
@@ -136,15 +135,12 @@ class FourierOptimizer(DynamicOptimizer):
 
                     constraints.append({"type": "ineq", "fun": rip_fun, "jac": rip_jac})
 
-        # Current: two-sided linear
         for s in range(n_con):
             for k in range(n_surv):
                 coef_i = np.outer(Phi[s], H_curr[k, s]).ravel()
                 constraints.append(_lin(-coef_i, curr_max))
                 constraints.append(_lin(coef_i, curr_max))
 
-        # Voltage: two-sided linear, exact inductive term via Fourier derivative
-        # v_k(θ_s) = G_volt[k,s] @ i_s + ω · L_proj[k,s] @ (di_s/dθ) + bemf[k,s]
         for s in range(n_con):
             for k in range(n_surv):
                 coef_v = (np.outer(Phi[s], G_volt[k, s]) + omega * np.outer(dPhi[s], Lp[k, s])).ravel()
@@ -152,8 +148,7 @@ class FourierOptimizer(DynamicOptimizer):
                 constraints.append(_lin(-coef_v, volt_max - b_kn))
                 constraints.append(_lin(coef_v, volt_max + b_kn))
 
-        # Fault null-space: N·R(θ_s)·i(θ_s) = 0, lifted to Fourier coefficients
-        idx_grid = maps["idx_grid"]  # extra_constraints_at_theta indexes fwd.vec_theta, not the coarse n_grid
+        idx_grid = maps["idx_grid"]
         for s in range(n_con):
             for fc in fwd.extra_constraints_at_theta(int(idx_grid[s])):
                 _phi_s = Phi[s]
@@ -208,9 +203,6 @@ class FourierOptimizer(DynamicOptimizer):
 
         constraints = self._build_constraints(maps, omega, torq_target, A_t, b_t, c_t, Phi, dPhi, nb, dim)
 
-        # Warm start: DC-only pre-solve when AC harmonics are present.
-        # Uses StaticOptimizer rather than a recursive _solve call (recursive call
-        # with the same harmonics caused infinite recursion when nb > dim).
         C0 = np.zeros((nb, dim))
         if warm_coeffs is not None:
             C0[: min(nb, warm_coeffs.shape[0])] = warm_coeffs[:nb]

@@ -19,21 +19,12 @@ class Solution:
 
 
 def _constraints_satisfied(constraints: list[dict[str, Any]], x: np.ndarray, tol: float = 1e-4) -> bool:
-    # scipy's own res.success only means "SLSQP terminated normally" (e.g. step size or
-    # gradient went to zero) -- NOT that the constraints are actually satisfied at res.x. In
-    # a razor-thin or empty feasible region (e.g. a PM machine probed above the speed where
-    # even zero current keeps back-EMF under volt_max), SLSQP can report success at a point
-    # that still genuinely violates a constraint, silently producing a nonsensical "solution"
-    # (verified directly: StaticOptimizer.maximize_torque returned a NEGATIVE torque -- a
-    # solution that satisfies EVERY real constraint always exists at i=0-if-feasible, so a
-    # negative "maximum" is never something a truly-feasible point can produce). This
-    # explicitly re-checks every constraint at x instead of trusting res.success alone.
     for con in constraints:
         val = np.asarray(con["fun"](x))
         if con["type"] == "ineq":
             if np.any(val < -tol):
                 return False
-        else:  # "eq"
+        else:
             if np.any(np.abs(val) > tol):
                 return False
     return True
@@ -46,14 +37,6 @@ def _run_slsqp(
     opts: dict[str, Any],
     bounds: list[tuple[float, float]] | None = None,
 ) -> tuple[np.ndarray, float, bool]:
-    # Rank-deficient fault maps (e.g. 2-open-phase: 3 surviving phases from a
-    # 4-dim dq current) have a genuine null direction invisible to the
-    # curr/volt inequality constraints. SLSQP's absolute constraint tolerance
-    # can let a huge (~1e8) current along that null direction pass as
-    # "feasible" while the torque quadratic form diverges -- an unbounded-QP
-    # numerical artifact, not a physical solution. Bounding dq current
-    # magnitude closes that escape route without affecting any genuine
-    # (bounded) optimum, since real solutions never approach this scale.
     if bounds is None:
         bounds = [(-1e4, 1e4)] * candidates[0].size
 
@@ -97,12 +80,6 @@ class StaticOptimizer(BaseOptimizer):
         fwd = self.fwd
 
         def limits_con(i: np.ndarray) -> np.ndarray:
-            # Current and voltage margins as one vector-valued constraint:
-            # SLSQP's finite-difference Jacobian is computed once per
-            # constraint *dict*, so keeping these as two separate scalar
-            # constraints costs a redundant Jacobian evaluation per SLSQP
-            # step (~35% more peak_vals()/flux() calls for identical
-            # convergence — verified same nit, same optimum).
             curr_peak, volt_peak = fwd.peak_vals(omega, i)
             return np.array([fwd.drive.curr_max - curr_peak, fwd.drive.volt_max - volt_peak])
 

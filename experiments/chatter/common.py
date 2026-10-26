@@ -38,9 +38,6 @@ class Setup:
     torq_target: float
 
 
-# 5 operating points selected from the Phase-0 survey
-# (see experiments/iron/e06_operating_point_survey.py).
-# Format: (T_star_Nm, n_mech_rpm, short_tag, description)
 OPERATING_POINTS: list[tuple[float, float, str, str]] = [
     (1.0, 100.0, "p1_free", "free baseline (low J, low iron)"),
     (3.0, 800.0, "p2_typical", "median V-residual (typical operating point)"),
@@ -86,7 +83,7 @@ def fourier_spectrum(curr_dq_grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     coeffs = np.fft.rfft(curr_dq_grid, axis=0) / N
     h = np.arange(coeffs.shape[0])
     mag = np.abs(coeffs)
-    mag[1:-1] *= 2.0  # one-sided scaling for h > 0 (except Nyquist if even N)
+    mag[1:-1] *= 2.0
     return h, mag
 
 

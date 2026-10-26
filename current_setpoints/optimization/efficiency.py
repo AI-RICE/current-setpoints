@@ -7,10 +7,6 @@ import numpy as np
 from ..models.forward_model import ForwardModel
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Flux waveforms
-# ─────────────────────────────────────────────────────────────────────────────
-
 def phase_flux_waveforms(
     fwd: ForwardModel,
     omega: float,
@@ -19,24 +15,19 @@ def phase_flux_waveforms(
 ) -> np.ndarray:
     drive = fwd.drive
     zeros = np.zeros(drive.dim)
-    L_s = drive.inductance(omega, zeros)                   # (dim, dim)
-    psi_pm = drive.flux.flux(omega, zeros)                  # (dim,)  — PM flux at zero current
-    lambda_dq = L_s @ curr_dq + psi_pm                    # (dim,)  — constant for static curr_dq
+    L_s = drive.inductance(omega, zeros)
+    psi_pm = drive.flux.flux(omega, zeros)
+    lambda_dq = L_s @ curr_dq + psi_pm
 
     n_theta = fwd.vec_theta.size - 1
     theta_grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
     idx_grid = (np.round(theta_grid / (2 * np.pi) * n_theta).astype(int)) % n_theta
 
-    # stack: list of (n_surv,) → (n_surv, n_grid)
     return np.stack(
         [fwd.phase_map_at_theta(int(k)) @ lambda_dq for k in idx_grid],
         axis=1,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Iron-loss components
-# ─────────────────────────────────────────────────────────────────────────────
 
 def eddy_loss(
     fwd: ForwardModel,
@@ -105,10 +96,6 @@ def iron_loss(
     return {"eddy": p_e, "hysteresis": p_h, "excess": p_x, "total": p_e + p_h + p_x}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Controller simulation utilities (trajectory-level)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def low_pass_trajectory(curr_dq_grid: np.ndarray, h_cutoff: int) -> np.ndarray:
     N = curr_dq_grid.shape[0]
     coeffs = np.fft.rfft(curr_dq_grid, axis=0)
@@ -133,10 +120,6 @@ def deadbeat_tracking(
     return np.repeat(samples, rep_counts, axis=0)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Grid-level entry point
-# ─────────────────────────────────────────────────────────────────────────────
-
 def add_efficiency_map(
     grid: dict[str, Any],
     fwd: ForwardModel,
@@ -149,7 +132,7 @@ def add_efficiency_map(
 ) -> dict[str, Any]:
     out: dict[str, Any] = dict(grid)
 
-    curr_dq_grid = grid["curr_dq_grid"]   # (dim, n_torq, n_omega)
+    curr_dq_grid = grid["curr_dq_grid"]
     vec_omega = grid["vec_omega"]
     dim, n_torq, n_omega = curr_dq_grid.shape
 

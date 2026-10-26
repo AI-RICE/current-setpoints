@@ -50,7 +50,6 @@ def _figs_dir() -> str:
 def main() -> None:
     n_grid = 128
     alphas = [0.0, 1e-2, 1.0, 10.0]
-    # Only the three cells where R0 is infeasible (active-set non-trivial).
     cells = [c for c in OPERATING_POINTS if c[2] in {"p3_curr_edge", "p4_iron_heavy", "p5_corner"}]
 
     results: dict[str, dict] = {}
@@ -111,7 +110,6 @@ def main() -> None:
         results[tag] = cell_data
     print(f"\nTotal wall: {time.time() - total_t0:.1f}s")
 
-    # Save table
     tab = os.path.join(_figs_dir(), "e11_table.txt")
     with open(tab, "w") as f:
         f.write(f"# E11 iron-aware multi-cell (N={n_grid})\n")
@@ -126,7 +124,6 @@ def main() -> None:
                 )
     print(f"saved {tab}")
 
-    # per-cell Pareto plot
     fig, axes = plt.subplots(1, len(cells), figsize=(5.5 * len(cells), 5))
     if len(cells) == 1:
         axes = [axes]
@@ -149,7 +146,6 @@ def main() -> None:
     plt.close(fig)
     print(f"saved {out}")
 
-    # relative loss vs alpha
     fig, axes = plt.subplots(2, len(cells), figsize=(5.5 * len(cells), 9), sharex=True)
     if len(cells) == 1:
         axes = axes.reshape(2, 1)

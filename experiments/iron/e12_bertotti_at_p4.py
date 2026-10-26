@@ -98,7 +98,6 @@ def main() -> None:
         results[name] = d
     print(f"\nTotal wall: {time.time() - t_all:.1f}s")
 
-    # write table
     tab = os.path.join(_figs_dir(), "e12_table.txt")
     with open(tab, "w") as f:
         f.write(f"# E12 Bertotti at p4 (N={n_grid})\n")
@@ -112,7 +111,6 @@ def main() -> None:
                 )
     print(f"saved {tab}")
 
-    # plot per-variant: J, P_e, P_x normalised vs alpha
     fig, axes = plt.subplots(2, 3, figsize=(15, 9), sharex=True)
     for col, name in enumerate(["eddy", "bertotti", "joint"]):
         d = results[name]

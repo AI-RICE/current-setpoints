@@ -19,10 +19,6 @@ class DynamicOptimizer(BaseOptimizer):
         self.n_grid = n_grid
 
     def _node_torques(self, omega: float, curr_dq_grid: np.ndarray) -> np.ndarray:
-        # Torque actually delivered at each grid node (NaN where the node has no current).
-        # The trajectory's reported torque is the mean of these -- NOT torque(mean current),
-        # which is not a physical operating point and differs whenever the trajectory varies,
-        # since torque is nonlinear in current.
         return np.array(
             [
                 self.fwd.drive.torque(omega, x) if np.all(np.isfinite(x)) else np.nan
@@ -60,9 +56,9 @@ class DynamicOptimizer(BaseOptimizer):
         per_node = lin_curr.ndim == 2
 
         H_curr = np.stack([fwd.phase_map_at_theta(int(n)) for n in idx_grid])
-        H_curr = H_curr.transpose(1, 0, 2)  # (n_surv, n_grid, dim)
+        H_curr = H_curr.transpose(1, 0, 2)
         H_volt = np.stack([fwd._mat_dq_to_ph_all[int(n)][kept] for n in idx_grid])
-        H_volt = H_volt.transpose(1, 0, 2)  # (n_surv, n_grid, dim) -- geometric only, no U/L/bemf baked in
+        H_volt = H_volt.transpose(1, 0, 2)
 
         gU_list, gL_list, bV_list = [], [], []
         for idx, n in enumerate(idx_grid):
@@ -75,11 +71,11 @@ class DynamicOptimizer(BaseOptimizer):
         return {
             "theta_grid": theta_grid,
             "idx_grid": idx_grid,
-            "H_curr": H_curr,  # (n_surv, n_grid, dim) current map
-            "H_volt": H_volt,  # (n_surv, n_grid, dim) geometric voltage map (current-independent)
-            "G_volt": np.stack(gU_list).transpose(1, 0, 2),  # (n_surv, n_grid, dim) linearized voltage
-            "L_proj": np.stack(gL_list).transpose(1, 0, 2),  # (n_surv, n_grid, dim) inductive
-            "bemf_ph": np.stack(bV_list).T,  # (n_surv, n_grid) BEMF offset
+            "H_curr": H_curr,
+            "H_volt": H_volt,
+            "G_volt": np.stack(gU_list).transpose(1, 0, 2),
+            "L_proj": np.stack(gL_list).transpose(1, 0, 2),
+            "bemf_ph": np.stack(bV_list).T,
         }
 
 
@@ -90,11 +86,12 @@ class IndependentOptimizer(DynamicOptimizer):
         omega: float,
         n: int,
         torq_target: float | None,
+        voltage: bool = True,
     ) -> list[dict[str, Any]]:
         fwd = self.fwd
-        H_curr_n = maps["H_curr"][:, n, :]  # (n_surv, dim)
-        H_volt_n = maps["H_volt"][:, n, :]  # (n_surv, dim) -- geometric only, no U/L/bemf baked in
-        fine_idx = int(maps["idx_grid"][n])  # extra_constraints_at_theta indexes fwd.vec_theta, not the coarse n_grid
+        H_curr_n = maps["H_curr"][:, n, :]
+        H_volt_n = maps["H_volt"][:, n, :]
+        fine_idx = int(maps["idx_grid"][n])
         curr_max = fwd.drive.curr_max
         volt_max = fwd.drive.volt_max
 
@@ -102,17 +99,12 @@ class IndependentOptimizer(DynamicOptimizer):
             return curr_max - np.abs(H_curr_n @ x)
 
         def volt_con(x: np.ndarray) -> np.ndarray:
-            # Exact for any drive: voltage_operator/bemf_dq evaluated at the
-            # actual candidate x, not a fixed linearization point -- unlike
-            # ActiveSetOptimizer's joint solve, each node here is independent
-            # (no inter-node coupling), so nothing requires this to stay linear.
             v_dq = fwd.drive.voltage_operator(omega, x) @ x + fwd.drive.bemf_dq(omega, x)
             return volt_max - np.abs(H_volt_n @ v_dq)
 
-        cons: list[dict[str, Any]] = [
-            {"type": "ineq", "fun": curr_con},
-            {"type": "ineq", "fun": volt_con},
-        ]
+        cons: list[dict[str, Any]] = [{"type": "ineq", "fun": curr_con}]
+        if voltage:
+            cons.append({"type": "ineq", "fun": volt_con})
 
         if torq_target is not None:
             T = torq_target
@@ -128,6 +120,7 @@ class IndependentOptimizer(DynamicOptimizer):
         torq_target: float | None,
         maximize: bool = False,
         guess: np.ndarray | None = None,
+        voltage: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         fwd = self.fwd
         n_grid = self.n_grid
@@ -135,21 +128,12 @@ class IndependentOptimizer(DynamicOptimizer):
 
         curr_dq_grid = np.full((n_grid, dim), np.nan)
         ok_grid = np.zeros(n_grid, dtype=bool)
-        # Callers warm-start from a previous solve's FULL (n_grid, dim) trajectory as often
-        # as a single (dim,) vector (e.g. grid.py carries maximize_torque's own curr_dq
-        # straight across speeds) -- reduce defensively, otherwise it gets used as SLSQP's
-        # x0 downstream and crashes ("'x0' must only have one dimension.").
         if guess is not None and guess.ndim == 2:
             guess = np.nanmean(guess, axis=0)
-        # guess seeds node 0 only (a real, physically-motivated starting point -- e.g. the
-        # converged result from a nearby omega -- rather than the generic default); every
-        # later node already warm-starts from whichever of ITS predecessors last converged,
-        # unaffected by this. Purely additive: guess=None (the default) reproduces the
-        # exact previous behavior for every existing caller.
         seed = guess if guess is not None else fwd.drive.seeds()[0]
 
         for i in range(n_grid):
-            cons = self._per_angle_constraints(maps, omega, i, None if maximize else torq_target)
+            cons = self._per_angle_constraints(maps, omega, i, None if maximize else torq_target, voltage=voltage)
             obj = (lambda x: -fwd.drive.torque(omega, x)) if maximize else (lambda x: float(np.sum(x**2)))
             best_x, _, ok = _run_slsqp(obj, cons, fwd.drive.seeds(seed), self.opts)
             curr_dq_grid[i] = best_x
@@ -198,7 +182,6 @@ class IndependentOptimizer(DynamicOptimizer):
         torques = np.array(
             [self.fwd.drive.torque(omega, curr_dq_grid[i]) if ok_grid[i] else np.nan for i in range(self.n_grid)]
         )
-        # Most constrained angle sets the feasible max torque for the whole trajectory
         t_max = float(np.nanmin(torques))
         return Solution(
             curr_dq=curr_dq_grid,

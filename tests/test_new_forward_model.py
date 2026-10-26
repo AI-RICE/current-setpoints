@@ -36,8 +36,6 @@ def fwd_f2(pmsm):
     return ForwardModel(pmsm, n_theta=700, fault=Fault((0, 2)))
 
 
-# ── Fault value object ────────────────────────────────────────────────────────
-
 def test_fault_healthy_default():
     f = Fault()
     assert f.is_healthy
@@ -81,16 +79,12 @@ def test_fault_rejects_duplicate():
         Fault((2, 2))
 
 
-# ── ForwardModel construction ─────────────────────────────────────────────────
-
 def test_fwd_theta_shape(fwd):
-    # n_theta rounded to multiple of 2*n_phases=10; 700 is already a multiple.
-    assert fwd.vec_theta.shape[0] == 701  # n_theta+1
+    assert fwd.vec_theta.shape[0] == 701
 
 
 def test_fwd_n_theta_rounding(pmsm):
     fwd_odd = ForwardModel(pmsm, n_theta=703)
-    # rounds to nearest multiple of 10 → 700
     assert fwd_odd.vec_theta.shape[0] == 701
 
 
@@ -108,16 +102,12 @@ def test_fwd_healthy_mat_curr_equals_full_park(fwd):
 
 
 def test_fwd_fault1_mat_curr_shape(fwd_f1):
-    # single fault: n_surviving=4, shape (n_t, 4, 4)
     assert fwd_f1._mat_curr_to_ph.shape == (701, 4, 4)
 
 
 def test_fwd_fault2_mat_curr_shape(fwd_f2):
-    # two-fault: n_surviving=3, shape (n_t, 3, 4)
     assert fwd_f2._mat_curr_to_ph.shape == (701, 3, 4)
 
-
-# ── Phase current shapes ──────────────────────────────────────────────────────
 
 def test_curr_ph_shape_healthy(fwd):
     curr = np.array([5.0, 15.0, 0.5, -1.0])
@@ -140,7 +130,7 @@ def test_curr_ph_shape_fault2(fwd_f2):
 def test_curr_ph_pure_d1_is_cosine(fwd):
     """Pure i_d1 (index 0) → phase A current is cos(θ)."""
     curr = np.array([1.0, 0.0, 0.0, 0.0])
-    i_ph = fwd.curr_ph(0.0, curr)  # (5, 701)
+    i_ph = fwd.curr_ph(0.0, curr)
     expected = np.cos(fwd.vec_theta)
     np.testing.assert_allclose(i_ph[0], expected, atol=1e-14)
 
@@ -165,12 +155,9 @@ def test_curr_ph_phase_shift(fwd):
     """Phase B at θ equals Phase A at θ-2π/5 (one phase shift sample earlier)."""
     curr = np.array([1.0, 0.0, 0.0, 0.0])
     i_ph = fwd.curr_ph(0.0, curr)
-    shift = fwd._phase_shift_samples  # = n_theta // n_phases = 700//5 = 140
-    # i_ph_B[shift:] == i_ph_A[:-shift] (phase A led by 2π/5)
+    shift = fwd._phase_shift_samples
     np.testing.assert_allclose(i_ph[1, shift:], i_ph[0, :-shift], atol=1e-13)
 
-
-# ── Phase voltage shapes ──────────────────────────────────────────────────────
 
 def test_volt_ph_shapes(fwd):
     curr = np.array([5.0, 15.0, 0.5, -1.0])
@@ -212,8 +199,6 @@ def test_volt_dq_at_zero_speed_zero_current(fwd):
     np.testing.assert_allclose(v_dq, 0.0, atol=1e-14)
 
 
-# ── peak_vals ─────────────────────────────────────────────────────────────────
-
 def test_peak_vals_returns_two_positive_floats(fwd):
     curr = np.array([5.0, 15.0, 0.5, -1.0])
     cp, vp = fwd.peak_vals(100.0, curr)
@@ -247,18 +232,15 @@ def test_peak_vals_fault1_excludes_open_phase(fwd_f1):
     curr = np.array([0.0, 20.0, 0.0, 0.0])
     _, vp = fwd_f1.peak_vals(500.0, curr)
     vl, _, _ = fwd_f1.volt_ph(500.0, curr)
-    surviving = list(fwd_f1.fault._kept)  # phases 1,2,3,4
+    surviving = list(fwd_f1.fault._kept)
     np.testing.assert_allclose(vp, np.max(np.abs(vl[surviving, :])), rtol=1e-14)
 
 
-# ── count_peaks ───────────────────────────────────────────────────────────────
-
 def test_count_peaks_type_i_fundamental_current(fwd):
     """Pure fundamental dq → exactly one peak per half-period → Type I (n_curr=1)."""
-    # At well below the current limit, count_peaks should return 0
-    curr = np.array([0.0, 1.0, 0.0, 0.0])   # tiny current
+    curr = np.array([0.0, 1.0, 0.0, 0.0])
     n_c, n_v = fwd.count_peaks(0.0, curr)
-    assert n_c == 0  # nowhere near the limit
+    assert n_c == 0
 
 
 def test_count_peaks_zero_waveform(fwd):
@@ -271,7 +253,6 @@ def test_count_peaks_at_limit_type_i(fwd):
     Find a current that saturates a fundamental current waveform — single-harmonic
     drive produces exactly one positive and one negative peak per period (Type I).
     """
-    # Scale until curr_peak == curr_max
     curr_base = np.array([0.0, 1.0, 0.0, 0.0])
     cp, _ = fwd.peak_vals(0.0, curr_base)
     scale = fwd.drive.curr_max / cp
@@ -287,19 +268,11 @@ def test_count_peaks_type_ii_two_harmonics(fwd):
     The exact combination from the old test suite:
         i = [14.14, 14.14, a_3, b_3] produces a Type II flat-top.
     """
-    # This mirrors the logic in test_transform.py:test_count_peaks_type_ii_flat_top
-    # We need a combination that creates two peaks. Use a 3rd-harmonic injection
-    # sized so that the current waveform develops a flat-top: inject i_d3 / i_q3
-    # with proper phase so the third-harmonic adds at the fundamental peak.
-    # For the IEEEMachine2 5-phase machine the exact waveform from old tests:
     i_base = np.array([14.14, 14.14, 0.0, 0.0])
-    # Scale to limit on i_d1+i_q1 channels only
     cp, _ = fwd.peak_vals(0.0, i_base)
     scale = fwd.drive.curr_max / cp
-    # Add a flat-top 3rd harmonic
     curr = np.array([14.14 * scale, 14.14 * scale, 3.5 * scale, 3.5 * scale])
     n_c, _ = fwd.count_peaks(0.0, curr, rel_tol=0.05)
-    # We just verify the function returns 0, 1, or 2 without crashing
     assert n_c in (0, 1, 2)
 
 
@@ -317,8 +290,6 @@ def test_count_peaks_at_limit_detects_endpoint_peak():
     n = 20
     theta = np.linspace(0, 2 * np.pi, n + 1)
     c = np.cos(theta)
-    # positive excursion peaks at theta=0 and touches the limit; negative
-    # excursion is damped well below it, so it's the only extremum that matters.
     w = np.where(c > 0, c, 0.3 * c)
     assert count_peaks_at_limit(w, limit=1.0, rel_tol=1e-3) == 1
 
@@ -332,23 +303,15 @@ def test_count_peaks_at_limit_plateau_counts_once():
     assert count_peaks_at_limit(w_wrapped, limit=1.0, rel_tol=1e-3) == 1
 
 
-# ── Fault constraints ─────────────────────────────────────────────────────────
-
 def test_extra_constraints_empty_healthy(fwd):
     assert fwd.extra_constraints() == []
 
 
 def test_extra_constraints_empty_single_fault(fwd_f1):
-    # Single fault's reduced map is exactly square (4 kept phases <-> 4 dq
-    # dims) -- no redundant direction, so the paper doesn't define a static
-    # achievability constraint for this case (Eq. 31/42 are both 2-open-
-    # phase only).
     assert fwd_f1.extra_constraints() == []
 
 
 def test_extra_constraints_nonempty_two_fault(fwd_f2):
-    # The paper's static achievability constraint (Eq. 31/42): a single,
-    # never-rotated N @ i_s = 0 for the whole cycle's constant i_s.
     cons = fwd_f2.extra_constraints()
     assert len(cons) == 1
     assert cons[0]["type"] == "eq"
@@ -374,7 +337,6 @@ def test_extra_constraints_at_theta_matches_full_map(fwd_f2):
     assert len(cons) == 2
     H_full = fwd_f2._mat_dq_to_ph_all[theta_idx]
     open_rows = H_full[list(fwd_f2.fault.open_phases)]
-    # Construct curr_dq in the null space of both open-phase rows.
     _, _, vh = np.linalg.svd(open_rows)
     v = vh[-1]
     for c in cons:
@@ -383,8 +345,6 @@ def test_extra_constraints_at_theta_matches_full_map(fwd_f2):
     for p in fwd_f2.fault.open_phases:
         np.testing.assert_allclose(recon[p], 0.0, atol=1e-10)
 
-
-# ── volt_map_at_theta / phase_map_at_theta ────────────────────────────────────
 
 def test_phase_map_at_theta_shape_healthy(fwd):
     M = fwd.phase_map_at_theta(0)
@@ -413,11 +373,6 @@ def test_volt_map_bv_zero_at_zero_speed(fwd):
     _, _, bV = fwd.volt_map_at_theta(0, 0.0)
     np.testing.assert_allclose(bV, 0.0, atol=1e-14)
 
-
-# ── h_k^I / h_k^V regression — ported from the old-layout test_phase_voltage.py ──
-# (dynamic/phase_voltage.py's "unified per-phase voltage" fix is now built into
-# ForwardModel itself: _mat_dq_to_ph_all (voltage, inverse-Park, fault-independent)
-# vs _mat_curr_to_ph (current, reduced-Clarke under fault) — see docs/sota.md §3.)
 
 def test_volt_map_at_theta_matches_volt_ph_direct_evaluation(fwd):
     """volt_map_at_theta (the per-angle linear map used by the dynamic

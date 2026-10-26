@@ -54,13 +54,12 @@ def main() -> None:
 
         T_fall, fall_d = fall_max_torque(machine, fwd, omega, Imax, Vmax)
         i_phase = fall_phase_currents_1f(fall_d["i_d1_F"], fall_d["i_q1_F"], theta_s)
-        i_dq = phase_to_amp_inv_dq(i_phase, theta_s)  # (4, n_con)
+        i_dq = phase_to_amp_inv_dq(i_phase, theta_s)
         C_warm, *_ = np.linalg.lstsq(Phi, i_dq.T, rcond=None)
 
-        # es-formulation evaluation of Fall's reconstructed trajectory
-        i_s = Phi @ C_warm            # (n_con, dim)
+        i_s = Phi @ C_warm
         di_s = dPhi @ C_warm
-        i_ph = np.einsum("skj,sj->sk", Hf_s, i_s)       # (n_con, n_surv)
+        i_ph = np.einsum("skj,sj->sk", Hf_s, i_s)
         v_ph = np.einsum("skl,sl->sk", HU, i_s) + omega * np.einsum("skl,sl->sk", HL, di_s) + bemf_ph_s
         A_t, b_t, c_t = extract_quadratic_torque(machine, omega)
         tq = np.einsum("sj,jk,sk->s", i_s, A_t, i_s) + i_s @ b_t + c_t

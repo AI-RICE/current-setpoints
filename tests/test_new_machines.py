@@ -17,8 +17,6 @@ CURR_MAX = 30.0
 VOLT_MAX = 13.0
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
 @pytest.fixture(scope="module")
 def pmsm():
     return ieee_machine2(curr_max=CURR_MAX, volt_max=VOLT_MAX)
@@ -29,8 +27,6 @@ def im():
     return im9_prototype(curr_max=20.0, volt_max=200.0)
 
 
-# ── Cross-coupling matrix ─────────────────────────────────────────────────────
-
 def test_cross_coupling_antisymmetric():
     J = _build_cross_coupling(2)
     assert J.shape == (4, 4)
@@ -39,12 +35,9 @@ def test_cross_coupling_antisymmetric():
 
 def test_cross_coupling_harmonic_values():
     J = _build_cross_coupling(2)
-    # h=1 block: [[0,-1],[1,0]]; h=3 block: [[0,-3],[3,0]]
     assert J[0, 1] == -1 and J[1, 0] == 1
     assert J[2, 3] == -3 and J[3, 2] == 3
 
-
-# ── PMSM5Phase geometry ───────────────────────────────────────────────────────
 
 def test_pmsm_dimensions(pmsm):
     assert pmsm.n_phases == 5
@@ -55,7 +48,6 @@ def test_pmsm_dimensions(pmsm):
 
 def test_pmsm_resistance_shape(pmsm):
     assert pmsm.R_stat.shape == (4, 4)
-    # diagonal resistance — off-diagonals must be zero
     np.testing.assert_array_equal(pmsm.R_stat, np.diag(np.diag(pmsm.R_stat)))
 
 
@@ -82,8 +74,6 @@ def test_pmsm_flux_volt_values(pmsm):
     np.testing.assert_allclose(fv[1], 1.71999345e-03, rtol=1e-6)
     np.testing.assert_allclose(fv[2:], 0.0, atol=2e-5)
 
-
-# ── PMSM5Phase physics ────────────────────────────────────────────────────────
 
 def test_pmsm_torque_zero_current(pmsm):
     """Zero current must produce zero torque."""
@@ -171,8 +161,6 @@ def test_pmsm_seeds_with_guess(pmsm):
     assert found, "guess should appear in seeds list"
 
 
-# ── IM9Phase geometry ─────────────────────────────────────────────────────────
-
 def test_im_dimensions(im):
     assert im.n_phases == 9
     assert im.n_ppairs == 2
@@ -190,8 +178,6 @@ def test_im_inductance_shape(im):
     assert L.shape == (4, 4)
 
 
-# ── IM9Phase physics ──────────────────────────────────────────────────────────
-
 def test_im_bemf_always_zero(im):
     """IM has no PM flux — BEMF is always zero."""
     for omega, curr in [
@@ -205,8 +191,7 @@ def test_im_bemf_always_zero(im):
 
 def test_im_torque_zero_at_zero_slip(im):
     """k_ir is zero at synchronous speed (omega_r=0), so torque should be zero."""
-    # slip_from_dq_foc returns 0 when i_sq^1 = 0
-    curr = np.array([5.0, 0.0, 0.0, 0.0])   # i_q1 = 0 → omega_r = 0
+    curr = np.array([5.0, 0.0, 0.0, 0.0])
     T = im.torque(0.0, curr)
     assert abs(T) < 1e-10, f"Expected T≈0 at zero slip, got {T}"
 
@@ -259,7 +244,6 @@ def test_im_inductance_at_none_current(im):
     """inductance(omega, None) must return L_s (static approximation)."""
     L = im.inductance(100.0, None)
     assert L.shape == (4, 4)
-    # Should equal L_s = L_mu + L_sigma — just check it's a reasonable diagonal
     assert np.all(np.diag(L) > 0)
 
 

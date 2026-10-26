@@ -66,11 +66,10 @@ def main() -> None:
         Phi, dPhi = fourier_design(theta_s, es.H_FREE)
         maps = (Hf_s, gU_s, gL_s, bemf_ph_s, Phi, dPhi)
 
-        # Fall optimum + project its dq trajectory onto the H_FREE Fourier basis
         T_fall, fall_d = fall_max_torque(machine, fwd, omega, Imax, Vmax)
         i_phase = fall_phase_currents_1f(fall_d["i_d1_F"], fall_d["i_q1_F"], theta_s)
-        i_dq = phase_to_amp_inv_dq(i_phase, theta_s)  # (4, n_con)
-        C_warm, *_ = np.linalg.lstsq(Phi, i_dq.T, rcond=None)  # (nb, dim)
+        i_dq = phase_to_amp_inv_dq(i_phase, theta_s)
+        C_warm, *_ = np.linalg.lstsq(Phi, i_dq.T, rcond=None)
         recon = float(np.sqrt(np.mean((Phi @ C_warm - i_dq.T) ** 2)))
 
         print(f"\n=== rpm={rpm}  Fall T_mean={T_fall:.2f} Nm (ripple {fall_d['T_ripple']:.2f})  "

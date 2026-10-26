@@ -71,8 +71,6 @@ def grid_im(static_opt_im, fwd_im):
     return calculate_grid(static_opt_im, fwd_im, opts=opts, mode="standard")
 
 
-# ── calculate_grid — required keys ───────────────────────────────────────────
-
 REQUIRED_KEYS = {
     "const_mech_speed",
     "vec_torq",
@@ -91,7 +89,6 @@ def test_grid_has_required_keys(grid_pmsm):
 
 
 def test_grid_curr_dq_shape(grid_pmsm):
-    # (dim=4, n_torq=2, n_omega=2)
     assert grid_pmsm["curr_dq_grid"].shape == (4, 2, 2)
 
 
@@ -146,16 +143,12 @@ def test_grid_invalid_mode_raises(static_opt, fwd):
         calculate_grid(static_opt, fwd, opts=GRID_OPTS_SMALL, mode="invalid")
 
 
-# ── calculate_grid — 3×3 grid with more coverage ─────────────────────────────
-
 def test_grid_3x3_shape(static_opt, fwd):
     opts = {"n_torq": 3, "n_omega": 3, "torq_min": 0.0, "omega_min": 0.0, "omega_max": 1800.0}
     grid = calculate_grid(static_opt, fwd, opts=opts, mode="standard")
     assert grid["curr_dq_grid"].shape == (4, 3, 3)
     assert grid["grid_curr_peak"].shape == (3, 3)
 
-
-# ── calculate_grid — IM mode ──────────────────────────────────────────────────
 
 def test_grid_im_has_required_keys(grid_im):
     for key in REQUIRED_KEYS:
@@ -166,8 +159,6 @@ def test_grid_im_curr_dq_shape(grid_im):
     assert grid_im["curr_dq_grid"].shape == (4, 2, 2)
 
 
-# ── grid_to_data ──────────────────────────────────────────────────────────────
-
 def test_grid_to_data_returns_machine_data(grid_pmsm):
     md = grid_to_data(grid_pmsm, k_skip=1)
     assert isinstance(md, MachineData)
@@ -175,13 +166,11 @@ def test_grid_to_data_returns_machine_data(grid_pmsm):
 
 def test_grid_to_data_omega_conversion(grid_pmsm):
     md = grid_to_data(grid_pmsm, k_skip=1)
-    # omega in MachineData is mechanical RPM (converted from electrical rad/s in grid)
     assert np.all(md.omega_grid >= 0)
 
 
 def test_grid_to_data_shapes(grid_pmsm):
     md = grid_to_data(grid_pmsm, k_skip=1)
-    # torq_grid and omega_grid are 2D meshgrids
     assert md.torq_grid.ndim == 2
     assert md.omega_grid.ndim == 2
     assert md.curr_dq_grid.ndim == 3
@@ -189,10 +178,8 @@ def test_grid_to_data_shapes(grid_pmsm):
 
 def test_grid_to_data_curr_dq_shape(grid_pmsm):
     md = grid_to_data(grid_pmsm, k_skip=1)
-    assert md.curr_dq_grid.shape[0] == 4  # dim
+    assert md.curr_dq_grid.shape[0] == 4
 
-
-# ── MachineData ───────────────────────────────────────────────────────────────
 
 def test_machine_data_unique_segments(grid_pmsm):
     md = grid_to_data(grid_pmsm, k_skip=1)
@@ -204,14 +191,11 @@ def test_machine_data_select_k(grid_pmsm):
     md = grid_to_data(grid_pmsm, k_skip=1)
     n_torq = md.torq.size
     n_omega = md.omega.size
-    # select_k mutates in place and returns None; k_skip=1 is a no-op
     result = md.select_k(1)
     assert result is None
     assert md.torq.size == n_torq
     assert md.omega.size == n_omega
 
-
-# ── evaluate (Waveforms) ──────────────────────────────────────────────────────
 
 def test_evaluate_returns_waveforms(fwd):
     curr = np.array([0.0, 15.0, 0.0, 0.0])
@@ -222,7 +206,7 @@ def test_evaluate_returns_waveforms(fwd):
 def test_evaluate_waveforms_shapes(fwd):
     curr = np.array([0.0, 15.0, 0.0, 0.0])
     w = evaluate(fwd, 300.0, curr)
-    n_t = fwd.vec_theta.size  # n_theta+1
+    n_t = fwd.vec_theta.size
     assert w.theta.shape == (n_t,)
     assert w.curr_ph.shape == (5, n_t)
     assert w.volt_leg.shape == (5, n_t)
@@ -250,10 +234,6 @@ def test_evaluate_volt_dq_consistent(fwd):
     expected_vdq = fwd.volt_dq(omega, curr)
     np.testing.assert_allclose(w.volt_dq, expected_vdq, rtol=1e-12)
 
-
-# ── calculate_grid — neural drive + get_correction_grid + recalculated mode ──
-# Ported from the old-layout test_grid.py (ModelNeural wrapper is gone in the
-# new API: a neural_pmsm5phase() drive is used directly as StaticOptimizer's fwd.drive).
 
 class DummyScaler:
     """A fake scaler that just returns the input exactly as it is."""

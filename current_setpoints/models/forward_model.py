@@ -68,7 +68,7 @@ def _build_dq_to_phase_map(kept: tuple[int, ...], vec_theta: np.ndarray) -> np.n
     """
     dim = 4
     C_full = _build_clarke_5phase()
-    C_red = C_full[:4, :][:, list(kept)]  # (dim, n_kept)
+    C_red = C_full[:4, :][:, list(kept)]
     C_inv = np.linalg.pinv(C_red) if C_red.shape[1] != dim else np.linalg.inv(C_red)
 
     n_t = vec_theta.size
@@ -107,7 +107,7 @@ def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e
     thresh = limit * (1.0 - rel_tol)
     n_max = 0
     for ph in range(waveform.shape[0]):
-        w = waveform[ph, :-1]  # drop the wrap sample; the array is circular
+        w = waveform[ph, :-1]
         if w.size < 3:
             continue
         prev = np.roll(w, 1)
@@ -131,7 +131,7 @@ class Fault:
             raise ValueError("open_phases must be two distinct indices.")
         self.open_phases: tuple[int, ...] = open_phases
         self._kept: tuple[int, ...] = tuple(p for p in range(5) if p not in open_phases)
-        self._N: np.ndarray | None = None  # static null-space row; set by _build_reduced_map
+        self._N: np.ndarray | None = None
 
     @property
     def is_healthy(self) -> bool:
@@ -148,9 +148,9 @@ class Fault:
     def _build_reduced_map(self, vec_theta: np.ndarray) -> np.ndarray:
         dim = 4
         C_full = _build_clarke_5phase()
-        C_red = C_full[:4, :][:, list(self._kept)]  # (dim, n_kept)
+        C_red = C_full[:4, :][:, list(self._kept)]
         self._N = _null_space_row(C_red) if C_red.shape[1] < dim else None
-        return _build_dq_to_phase_map(self._kept, vec_theta)  # (n_t, n_surviving, dim)
+        return _build_dq_to_phase_map(self._kept, vec_theta)
 
     def static_constraints(self) -> list[dict[str, Any]]:
         """The paper's own achievability constraint (Eq. 31/42): a single,
@@ -181,7 +181,7 @@ class Fault:
         one rotated after the fact."""
         if not self.open_phases:
             return []
-        rows = mat_dq_to_ph_all[theta_idx][list(self.open_phases)]  # (n_open, dim)
+        rows = mat_dq_to_ph_all[theta_idx][list(self.open_phases)]
         return [{"type": "eq", "fun": lambda i, row=row: float(row @ i)} for row in rows]
 
 
@@ -209,20 +209,10 @@ class ForwardModel:
         self.vec_theta: np.ndarray = np.linspace(0, 2 * np.pi, n_theta + 1)
         self._phase_shift_samples: int = n_theta // n_phases
 
-        # Full inverse-Park (n_theta+1, n_phases, dim) — fault-independent.
-        # Entry [t, p, :] maps curr_dq to the instantaneous contribution of
-        # harmonic content to physical phase p at rotor angle vec_theta[t].
         n_t = self.vec_theta.size
         if n_phases == 5:
-            # Two-step reconstruction matching the reference formulation's
-            # Eq.(2)/Eq.(12): invert the static (harmonic 1, 2) Clarke matrix
-            # once, then rotate by harmonic (1, 3) R(theta) -- a genuinely
-            # different harmonic from the static one, not a relabeling.
             mat_all = _build_dq_to_phase_map(tuple(range(5)), self.vec_theta)
         else:
-            # Generic n-phase construction (used by the induction-motor
-            # drives): no fault support, no reference formulation to match,
-            # single combined harmonic convention throughout.
             phi = 2 * np.pi / n_phases
             mat_all = np.zeros((n_t, n_phases, dim))
             for i in range(n_harmonics):
@@ -233,8 +223,6 @@ class ForwardModel:
                     mat_all[:, p, 2 * i + 1] = -np.sin(theta_arg)
         self._mat_dq_to_ph_all: np.ndarray = mat_all
 
-        # Current map — equals full inverse-Park for healthy machines;
-        # reduced-Clarke for faulted (open phases carry no current).
         if self.fault.is_healthy:
             self._mat_curr_to_ph: np.ndarray = mat_all
         else:
@@ -247,15 +235,6 @@ class ForwardModel:
         return np.einsum("tik, k -> it", self._mat_curr_to_ph, curr_dq)
 
     def volt_ph(self, omega: float, curr_dq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        # Fault-independent inverse-Park map: voltage across a surviving
-        # phase's own winding doesn't depend on which OTHER phase is open --
-        # only current genuinely redistributes under a fault. Reverted
-        # 2026-07-21 after a literal per-paper-equation version (reusing the
-        # fault-reduced current map for voltage) produced negative max-torque
-        # and solver failures at realistic speeds; also matches this
-        # research line's own prior, documented finding (docs/sota.md S3:
-        # conflating the two maps over-counts surviving-phase voltage by
-        # ~60% at speed). See FAULT_TOLERANT.md for the full record.
         v_dq = self.volt_dq(omega, curr_dq)
         volt_raw = np.einsum("tpk, k -> pt", self._mat_dq_to_ph_all, v_dq)
 
@@ -296,16 +275,10 @@ class ForwardModel:
         U = self.drive.voltage_operator(omega, lin_curr)
         L = self.drive.inductance(omega, lin_curr)
         bemf_dq = self.drive.bemf_dq(omega, lin_curr)
-        # Fault-independent map (see volt_ph) -- always all 5 phases.
-        H_ph = self._mat_dq_to_ph_all[theta_idx]  # (n_phases, dim)
+        H_ph = self._mat_dq_to_ph_all[theta_idx]
         return H_ph @ U, H_ph @ L, H_ph @ bemf_dq
 
     def extra_constraints(self) -> list[dict[str, Any]]:
-        # The paper's own static achievability constraint (Eq. 31/42): a
-        # single, never-rotated N @ i_s = 0 for a genuinely constant i_s.
-        # StaticOptimizer is the only caller; it separately checks current
-        # and voltage limits across the full theta range (peak_vals/
-        # count_peaks already scan the whole waveform, not a snapshot).
         return self.fault.static_constraints()
 
     def extra_constraints_at_theta(self, theta_idx: int) -> list[dict[str, Any]]:

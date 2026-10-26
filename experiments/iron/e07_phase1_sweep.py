@@ -120,7 +120,6 @@ def main() -> None:
 
     print(f"\nTotal wall time: {time.time() - total_t0:.1f}s")
 
-    # ---------------- summary table -------------------------------
     table_path = os.path.join(out_dir, "e07_summary_table.txt")
     with open(table_path, "w") as f:
         f.write(f"# E07 Phase-1 sweep (N={n_grid}, rho values: {rhos})\n")
@@ -135,7 +134,6 @@ def main() -> None:
                 )
     print(f"saved {table_path}")
 
-    # ---------------- per-cell Pareto subplots --------------------
     fig, axes = plt.subplots(1, len(OPERATING_POINTS), figsize=(4 * len(OPERATING_POINTS), 5))
     if len(OPERATING_POINTS) == 1:
         axes = [axes]
@@ -157,7 +155,6 @@ def main() -> None:
     plt.close(fig)
     print(f"saved {out}")
 
-    # ---------------- combined log-log Pareto ---------------------
     fig, ax = plt.subplots(figsize=(9, 7))
     markers = ["o", "s", "^", "v", "D"]
     for (T_star, n_mech, tag, descr), marker in zip(OPERATING_POINTS, markers, strict=True):
@@ -176,7 +173,6 @@ def main() -> None:
     plt.close(fig)
     print(f"saved {out}")
 
-    # ---------------- chatter vs rho per cell ---------------------
     fig, ax = plt.subplots(figsize=(9, 6))
     for (T_star, n_mech, tag, descr), marker in zip(OPERATING_POINTS, markers, strict=True):
         d = results[tag]
