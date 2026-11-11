@@ -68,10 +68,10 @@ def phase_flux_waveforms(
     flux_model = getattr(drive, "flux", None)
     psi_pm_dq = flux_model.flux(omega, mean_curr) if flux_model is not None else np.zeros(dim)
 
-    lambda_dq = curr_dq_grid @ L.T + psi_pm_dq[None, :]  # (n_grid, dim)
+    lambda_dq = curr_dq_grid @ L.T + psi_pm_dq[None, :]
     idx_grid = _grid_indices(fwd, n_grid)
-    H = fwd._mat_dq_to_ph_all[idx_grid]  # (n_grid, n_phases, dim)
-    lambda_ph = np.einsum("nkj,nj->kn", H, lambda_dq)  # (n_phases, n_grid)
+    H = fwd._mat_dq_to_ph_all[idx_grid]
+    lambda_ph = np.einsum("nkj,nj->kn", H, lambda_dq)
     return lambda_ph
 
 
@@ -91,7 +91,7 @@ def eddy_loss(
     lambda_ph = phase_flux_waveforms(fwd, omega, curr_dq_grid)
     n_grid = lambda_ph.shape[1]
     delta_theta = 2 * np.pi / n_grid
-    dlambda_dth = (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta  # (n_phases, n_grid)
+    dlambda_dth = (np.roll(lambda_ph, -1, axis=1) - lambda_ph) / delta_theta
     dlambda_dt = omega * dlambda_dth
     return float(k_e * np.mean(np.sum(dlambda_dt**2, axis=0)))
 

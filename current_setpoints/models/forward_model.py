@@ -8,21 +8,83 @@ from .machines import DriveModel
 
 
 def _build_clarke_5phase() -> np.ndarray:
+    """Static (theta-independent) Clarke/Concordia matrix at the 5 fixed
+    phase positions a_p = p*2pi/5: harmonic 1 (rows 0-1) and the 3rd-harmonic
+    plane (rows 2-3): cos(2a_p) and -sin(2a_p), i.e. cos(3a_p) and sin(3a_p).
+
+    Row 3 is -sin(2a_p), NOT the +sin(2a_p) printed in the PDF's Eq.(1): with
+    +sin(2a_p) and the 3*theta rotation of _build_dq_to_phase_map, phase p's
+    3rd harmonic comes out as cos(3*theta - 2a_p) = cos(3*theta + 3a_p) -- the
+    phases in reverse order (a, e, d, c, b) relative to the fundamental, so
+    phases b-e do not carry phase a's waveform delayed by a_p. With -sin(2a_p)
+    every phase is exactly phase a delayed by a_p (3rd harmonic
+    cos(3*(theta - a_p))), matching the original drive-control code (first
+    commit c58f2cc, pmsm_lib Transform: phase a = [cos th, -sin th, cos 3th,
+    -sin 3th] over a full period, i.e. a symmetric machine) and this code
+    before 2026-07-20 (commit 5b6e545). Phase a itself is unchanged (still
+    exactly the PDF's Eq.(2))."""
     C = np.zeros((5, 5))
     for p in range(5):
         a = p * 2 * np.pi / 5
         C[0, p] = np.cos(a)
         C[1, p] = np.sin(a)
-        C[2, p] = np.cos(3 * a)
-        C[3, p] = np.sin(3 * a)
+        C[2, p] = np.cos(2 * a)
+        C[3, p] = -np.sin(2 * a)
         C[4, p] = 0.5
     return C * (2.0 / 5.0)
 
 
 def _null_space_row(C_red: np.ndarray) -> np.ndarray:
+    """Row vector N such that N @ C_red == 0 (left null space of C_red, i.e.
+    N is orthogonal to Range(C_red)). Used ONLY for the paper's static
+    achievability constraint (Eq. 31/42: N @ i_s = 0, never rotated,
+    checked once for a single constant i_s) -- NOT for the per-angle
+    trajectory optimizers, which need a genuinely different, theta-
+    dependent condition (see Fault.extra_constraints_at_theta)."""
     _, _, vh = np.linalg.svd(C_red.T)
     row = vh[-1]
     return row / np.linalg.norm(row)
+
+
+def _build_dq_to_phase_map(kept: tuple[int, ...], vec_theta: np.ndarray) -> np.ndarray:
+    """The reference formulation's two-step reconstruction (Eq.(2)/Eq.(12)):
+    invert the static, theta-independent Clarke matrix once (see
+    _build_clarke_5phase for its 3rd-harmonic rows), then rotate by a
+    separate, theta-dependent R(theta) that uses harmonic 1 and 3. Healthy
+    result: every phase p is phase a delayed by a_p = p*2pi/5.
+    Used identically for the always-5-phase voltage map (kept = all 5
+    phases) and the fault-reduced current map (kept = surviving phases).
+
+    Returns a (n_t, len(kept), dim) map. Achievability of a chosen i_dq for
+    the *open* phases (i.e. does the current model's own full 5-phase map
+    also reconstruct exactly zero current there) is NOT determined by this
+    static-block pseudo-inverse -- see Fault.extra_constraints_at_theta,
+    which checks the open phases directly through the full theta-dependent
+    map instead of through a null vector of this static construction (the
+    two are not equivalent, since this map mixes the static harmonic-2
+    block with a harmonic-3 rotation; a vector that is a null direction of
+    the static block only is not generally a null direction of the
+    rotated map at a given theta).
+    """
+    dim = 4
+    C_full = _build_clarke_5phase()
+    C_red = C_full[:4, :][:, list(kept)]
+    C_inv = np.linalg.pinv(C_red) if C_red.shape[1] != dim else np.linalg.inv(C_red)
+
+    n_t = vec_theta.size
+    c1, s1 = np.cos(vec_theta), np.sin(vec_theta)
+    c3, s3 = np.cos(3 * vec_theta), np.sin(3 * vec_theta)
+    R = np.zeros((n_t, dim, dim))
+    R[:, 0, 0] = c1
+    R[:, 0, 1] = -s1
+    R[:, 1, 0] = s1
+    R[:, 1, 1] = c1
+    R[:, 2, 2] = c3
+    R[:, 2, 3] = -s3
+    R[:, 3, 2] = s3
+    R[:, 3, 3] = c3
+
+    return np.einsum("ij, tjk -> tik", C_inv, R)
 
 
 def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e-3) -> int:
@@ -30,19 +92,30 @@ def count_peaks_at_limit(waveform: np.ndarray, limit: float, rel_tol: float = 1e
     ``rel_tol``). Shared between ``ForwardModel.count_peaks`` (constant-current
     case) and ``optimization.grid``'s dynamic-mode trajectory reconstruction —
     both just need this applied to an (n_phases, n_samples) waveform array,
-    however it was produced."""
+    however it was produced.
+
+    The waveform is treated as circular (theta=0 and theta=2pi are the same
+    physical point) via np.roll, so a peak sitting exactly at the array
+    boundary is not silently invisible to the search. A plateau of equal
+    values at a peak counts once, not once per sample: a point only starts
+    a new peak if it's strictly greater than its predecessor (>=1 sample
+    into the rise) and at least as large as its successor (still at or
+    past the top), so only the plateau's leading edge is flagged.
+    """
     if waveform.ndim == 1:
         waveform = waveform[np.newaxis, :]
     thresh = limit * (1.0 - rel_tol)
     n_max = 0
     for ph in range(waveform.shape[0]):
-        w = waveform[ph, :-1]  # drop the wrap sample
+        w = waveform[ph, :-1]
         if w.size < 3:
             continue
-        is_pmax = (w[1:-1] > w[:-2]) & (w[1:-1] > w[2:]) & (w[1:-1] > 0)
-        n_pos = int(np.sum(w[1:-1][is_pmax] >= thresh))
-        is_nmin = (w[1:-1] < w[:-2]) & (w[1:-1] < w[2:]) & (w[1:-1] < 0)
-        n_neg = int(np.sum(-w[1:-1][is_nmin] >= thresh))
+        prev = np.roll(w, 1)
+        nxt = np.roll(w, -1)
+        is_pmax = (w > prev) & (w >= nxt) & (w > 0)
+        n_pos = int(np.sum(w[is_pmax] >= thresh))
+        is_nmin = (w < prev) & (w <= nxt) & (w < 0)
+        n_neg = int(np.sum(-w[is_nmin] >= thresh))
         n_max = max(n_max, n_pos, n_neg)
     return min(n_max, 2)
 
@@ -58,7 +131,7 @@ class Fault:
             raise ValueError("open_phases must be two distinct indices.")
         self.open_phases: tuple[int, ...] = open_phases
         self._kept: tuple[int, ...] = tuple(p for p in range(5) if p not in open_phases)
-        self._N: np.ndarray | None = None  # null-space row; set by _build_reduced_map
+        self._N: np.ndarray | None = None
 
     @property
     def is_healthy(self) -> bool:
@@ -73,53 +146,43 @@ class Fault:
         return 5 - self.n_open
 
     def _build_reduced_map(self, vec_theta: np.ndarray) -> np.ndarray:
+        dim = 4
         C_full = _build_clarke_5phase()
         C_red = C_full[:4, :][:, list(self._kept)]
+        self._N = _null_space_row(C_red) if C_red.shape[1] < dim else None
+        return _build_dq_to_phase_map(self._kept, vec_theta)
 
-        if C_red.shape[0] == C_red.shape[1]:
-            T_inv = np.linalg.inv(C_red)
-            self._N = None
-        else:
-            T_inv = np.linalg.pinv(C_red)
-            self._N = _null_space_row(C_red)
-
-        n_t = vec_theta.size
-        c1, s1 = np.cos(vec_theta), np.sin(vec_theta)
-        c3, s3 = np.cos(3 * vec_theta), np.sin(3 * vec_theta)
-        R = np.zeros((n_t, 4, 4))
-        R[:, 0, 0] = c1
-        R[:, 0, 1] = -s1
-        R[:, 1, 0] = s1
-        R[:, 1, 1] = c1
-        R[:, 2, 2] = c3
-        R[:, 2, 3] = -s3
-        R[:, 3, 2] = s3
-        R[:, 3, 3] = c3
-
-        return np.einsum("ij, tjk -> tik", T_inv, R)  # (n_t, n_surviving, dim)
-
-    def extra_constraints(self) -> list[dict[str, Any]]:
+    def static_constraints(self) -> list[dict[str, Any]]:
+        """The paper's own achievability constraint (Eq. 31/42): a single,
+        NEVER-rotated N @ i_s = 0, for a genuinely constant i_s used across
+        the whole cycle (StaticOptimizer only -- current/voltage limits are
+        separately checked across the full theta range by the caller). Only
+        meaningful for a 2-open-phase fault (N is None otherwise: healthy and
+        single-fault have no redundant dq direction to constrain)."""
         if self._N is None:
             return []
         N = self._N
         return [{"type": "eq", "fun": lambda i, N=N: float(N @ i)}]
 
-    def extra_constraints_at_theta(self, theta_idx: int, vec_theta: np.ndarray) -> list[dict[str, Any]]:
-        if self._N is None:
+    def extra_constraints_at_theta(self, theta_idx: int, mat_dq_to_ph_all: np.ndarray) -> list[dict[str, Any]]:
+        """Per-angle achievability for the trajectory-based optimizers (a
+        genuinely different i_s(theta) is solved at each grid node, so the
+        constraint only needs to hold AT that node's theta, not globally):
+        an open phase carries physically zero current at every instant, so
+        the constraint is simply that open phase's own row of the full
+        (fault-independent) dq-to-phase map, evaluated at this theta, dotted
+        with i_dq. One constraint per open phase. This is NOT the same
+        object as static_constraints()'s N -- rotating that static N by
+        R(theta) does not actually zero the open phase's current when
+        checked against the true theta-dependent map (verified empirically:
+        ~0.3-0.5A residual on a unit-norm test current), because it mixes
+        the static harmonic-2 block with a harmonic-3 rotation in a way that
+        only cancels for a genuinely theta-VARYING i_s(theta), not a fixed
+        one rotated after the fact."""
+        if not self.open_phases:
             return []
-        th = float(vec_theta[theta_idx])
-        c1, s1 = np.cos(th), np.sin(th)
-        c3, s3 = np.cos(3 * th), np.sin(3 * th)
-        R = np.array(
-            [
-                [c1, -s1, 0, 0],
-                [s1, c1, 0, 0],
-                [0, 0, c3, -s3],
-                [0, 0, s3, c3],
-            ]
-        )
-        NR = self._N @ R
-        return [{"type": "eq", "fun": lambda i, NR=NR: float(NR @ i)}]
+        rows = mat_dq_to_ph_all[theta_idx][list(self.open_phases)]
+        return [{"type": "eq", "fun": lambda i, row=row: float(row @ i)} for row in rows]
 
 
 class InverterDrop:
@@ -197,23 +260,20 @@ class ForwardModel:
         self.vec_theta: np.ndarray = np.linspace(0, 2 * np.pi, n_theta + 1)
         self._phase_shift_samples: int = n_theta // n_phases
 
-        # Full inverse-Park (n_theta+1, n_phases, dim) — fault-independent.
-        # Entry [t, p, :] maps curr_dq to the instantaneous contribution of
-        # harmonic content to physical phase p at rotor angle vec_theta[t].
-        # Convention: cos(h·θ - h·p·φ), φ = 2π/n_phases.
-        phi = 2 * np.pi / n_phases
         n_t = self.vec_theta.size
-        mat_all = np.zeros((n_t, n_phases, dim))
-        for i in range(n_harmonics):
-            h = 2 * i + 1
-            for p in range(n_phases):
-                theta_arg = h * self.vec_theta - h * p * phi
-                mat_all[:, p, 2 * i] = np.cos(theta_arg)
-                mat_all[:, p, 2 * i + 1] = -np.sin(theta_arg)
+        if n_phases == 5:
+            mat_all = _build_dq_to_phase_map(tuple(range(5)), self.vec_theta)
+        else:
+            phi = 2 * np.pi / n_phases
+            mat_all = np.zeros((n_t, n_phases, dim))
+            for i in range(n_harmonics):
+                h = 2 * i + 1
+                for p in range(n_phases):
+                    theta_arg = h * self.vec_theta - h * p * phi
+                    mat_all[:, p, 2 * i] = np.cos(theta_arg)
+                    mat_all[:, p, 2 * i + 1] = -np.sin(theta_arg)
         self._mat_dq_to_ph_all: np.ndarray = mat_all
 
-        # Current map — equals full inverse-Park for healthy machines;
-        # reduced-Clarke for faulted (open phases carry no current).
         if self.fault.is_healthy:
             self._mat_curr_to_ph: np.ndarray = mat_all
         else:
@@ -270,20 +330,28 @@ class ForwardModel:
     def phase_map_at_theta(self, theta_idx: int) -> np.ndarray:
         return self._mat_curr_to_ph[theta_idx]
 
-    def volt_map_at_theta(self, theta_idx: int, omega: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def volt_map_at_theta(
+        self, theta_idx: int, omega: float, lin_curr: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """U/L/bemf_dq linearized around lin_curr (default zeros). Exact for
+        a linear machine (ConstantFlux -- these don't depend on current, so
+        any linearization point gives the same answer); an approximation
+        for a genuinely current-dependent flux model (NeuralFlux) unless
+        lin_curr is close to the actual operating current."""
         if self.volt_drop is not None:
             raise NotImplementedError(
                 "the inverter drop (volt_drop) is nonlinear in the current and not part of the linearised "
                 "per-angle voltage map; use StaticOptimizer/HullConstrainedOptimizer, or no volt_drop")
-        zeros = np.zeros(self.drive.dim)
-        U = self.drive.voltage_operator(omega, zeros)
-        L = self.drive.inductance(omega, zeros)
-        bemf_dq = self.drive.bemf_dq(omega, zeros)
-        H_ph = self._mat_dq_to_ph_all[theta_idx]  # (n_phases, dim)
+        if lin_curr is None:
+            lin_curr = np.zeros(self.drive.dim)
+        U = self.drive.voltage_operator(omega, lin_curr)
+        L = self.drive.inductance(omega, lin_curr)
+        bemf_dq = self.drive.bemf_dq(omega, lin_curr)
+        H_ph = self._mat_dq_to_ph_all[theta_idx]
         return H_ph @ U, H_ph @ L, H_ph @ bemf_dq
 
     def extra_constraints(self) -> list[dict[str, Any]]:
-        return self.fault.extra_constraints()
+        return self.fault.static_constraints()
 
     def extra_constraints_at_theta(self, theta_idx: int) -> list[dict[str, Any]]:
-        return self.fault.extra_constraints_at_theta(theta_idx, self.vec_theta)
+        return self.fault.extra_constraints_at_theta(theta_idx, self._mat_dq_to_ph_all)

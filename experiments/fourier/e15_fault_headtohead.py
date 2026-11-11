@@ -93,7 +93,7 @@ def per_angle_optimum(drive, omega, T, Imax, Vmax, Hf_all, Gf_all, bemf_ph_all, 
     seed = np.array([1.0, 1.0, 0.0, 0.0])
     ok = np.zeros(n_grid, dtype=bool)
     for n, i in enumerate(idx_grid):
-        Hrows = Hf_all[i]  # (n_surv, dim)
+        Hrows = Hf_all[i]
         Grows = Gf_all[i]
         bph = bemf_ph_all[i]
         cons = [{"type": "eq", "fun": (lambda x, _T=T: drive.torque(omega, x) - _T)}]
@@ -153,7 +153,7 @@ def fourier_fault(
             ci = np.outer(Phi[s], h).ravel()
             cons.append({"type": "ineq", "fun": (lambda c, a=ci: Imax - a @ c), "jac": (lambda c, a=ci: -a)})
             cons.append({"type": "ineq", "fun": (lambda c, a=ci: Imax + a @ c), "jac": (lambda c, a=ci: a)})
-            pv_row = Pv_s[s, k]  # inverse-Park voltage row for surviving phase k
+            pv_row = Pv_s[s, k]
             gU = U.T @ pv_row
             gL = L.T @ pv_row
             cv = (np.outer(Phi[s], gU) + omega * np.outer(dPhi[s], gL)).ravel()
@@ -186,14 +186,10 @@ def main() -> None:
     omega = rpm * (np.pi / 30.0) * machine.n_ppairs
     dim = machine.dim
 
-    # --- single-fault (phase 0 open) maps ---
-    # CURRENT: reduced-Clarke map (open phase carries no current).
-    # VOLTAGE: inverse-Park map (machine's fault-independent voltage transform).
-    Hf_all, kept = fault_phase_map(fwd.vec_theta, (0,))  # (n_theta, 4, dim)
+    Hf_all, kept = fault_phase_map(fwd.vec_theta, (0,))
     zeros = np.zeros(dim)
     U = machine.voltage_operator(omega, zeros)
     bemf_dq = machine.bemf_dq(omega, zeros)
-    # inverse-Park rows P_k(theta) for surviving phases, (n_theta, n_surv, dim)
     Pv_all = pv.phase_basis(fwd, np.arange(fwd.vec_theta.size), phases=kept).transpose(1, 0, 2)
     Gf_all = np.einsum("tik,kj->tij", Pv_all, U)
     bemf_ph_all = np.einsum("tik,k->ti", Pv_all, bemf_dq)
@@ -210,7 +206,6 @@ def main() -> None:
         ),
     )
 
-    # --- find fault current-limited torque ceiling at this speed ---
     ceiling = None
     for T in np.arange(6.5, 2.0, -0.1):
         _, X, ok = per_angle_optimum(
@@ -220,9 +215,7 @@ def main() -> None:
             ceiling = float(T)
             break
 
-    # --- static (constant-dq, prior-art) torque ceiling under fault ---
-    # max T(i_s) over a constant dq s.t. surviving-phase peak current <= Imax (voltage slack here).
-    Hf_dense = Hf_all  # (n_theta, n_surv, dim)
+    Hf_dense = Hf_all
 
     def neg_torque(x):
         return -machine.torque(omega, x)
@@ -252,8 +245,7 @@ def main() -> None:
             print("  full per-angle optimum infeasible at some node; skipping")
             continue
         Jfull = joule_dense(fwd, tg, Xfull)
-        # surviving-phase peak current / voltage of full solution at grid nodes
-        i_surv = np.einsum("nik,nk->ni", Hf_all[idx_grid], Xfull)  # (n_grid, n_surv)
+        i_surv = np.einsum("nik,nk->ni", Hf_all[idx_grid], Xfull)
         v_surv = np.einsum("nik,nk->ni", Gf_all[idx_grid], Xfull) + bemf_ph_all[idx_grid]
         maxI, maxV = np.max(np.abs(i_surv)), np.max(np.abs(v_surv))
         arc = float(np.mean(np.abs(i_surv) >= 0.995 * Imax))
@@ -261,7 +253,6 @@ def main() -> None:
             f"  FULL optimum: J={Jfull:.3f}  maxIph={maxI:.2f}/{Imax}  maxVph={maxV:.2f}/{Vmax}  arc@Imax={arc * 100:.1f}%"
         )
 
-        # Fourier collocation maps
         n_con = 200
         _, idx_s = (
             np.linspace(0, 2 * np.pi, n_con, endpoint=False),
@@ -273,12 +264,11 @@ def main() -> None:
             ),
         )
         theta_s = fwd.vec_theta[idx_s]
-        Hf_s = Hf_all[idx_s]      # reduced-Clarke current map
-        Pv_s = Pv_all[idx_s]      # inverse-Park voltage map
+        Hf_s = Hf_all[idx_s]
+        Pv_s = Pv_all[idx_s]
         bemf_ph_s = bemf_ph_all[idx_s]
         theta_out = np.linspace(0.0, 2 * np.pi, 256, endpoint=False)
 
-        # DC seed = mean of the full optimum (a feasible constant-dq start)
         warm = np.zeros((1, dim))
         warm[0] = Xfull.mean(axis=0)
         for H in [(0,), (0, 9, 11), tuple(range(8)), tuple(range(16))]:
@@ -300,7 +290,6 @@ def main() -> None:
             )
             Xo = fourier_design(theta_out, H)[0] @ C
             Jf = joule_dense(fwd, theta_out, Xo)
-            # feasibility of this Fourier solution (surviving-phase current peak at collocation)
             i_chk = np.einsum("nik,nk->ni", Hf_all[idx_s], fourier_design(theta_s, H)[0] @ C)
             maxI_f = float(np.max(np.abs(i_chk)))
             gap = 100.0 * (Jf - Jfull) / Jfull

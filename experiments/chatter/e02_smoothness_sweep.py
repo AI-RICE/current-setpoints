@@ -84,7 +84,7 @@ def main() -> None:
         )
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
-    rho_plot = [max(r, 1e-9) for r in rhos]  # log-safe
+    rho_plot = [max(r, 1e-9) for r in rhos]
 
     axes[0].semilogx(rho_plot, losses, marker="o")
     axes[0].set_ylabel(r"Joule loss  $J$")

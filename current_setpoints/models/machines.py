@@ -11,20 +11,82 @@ import torch
 from scipy.special import erf as _np_erf, expit as _np_sigmoid
 
 
+def _act_relu(z: np.ndarray) -> np.ndarray:
+    return np.maximum(z, 0.0)
+
+
+def _act_gelu(z: np.ndarray) -> np.ndarray:
+    return 0.5 * z * (1.0 + _np_erf(z / math.sqrt(2.0)))
+
+
+def _act_silu(z: np.ndarray) -> np.ndarray:
+    return z * _np_sigmoid(z)
+
+
+def _act_leaky_relu(z: np.ndarray) -> np.ndarray:
+    return np.where(z > 0, z, 0.01 * z)
+
+
+def _act_deriv_relu(z: np.ndarray) -> np.ndarray:
+    return (z > 0).astype(z.dtype)
+
+
+def _act_deriv_gelu(z: np.ndarray) -> np.ndarray:
+    return 0.5 * (1.0 + _np_erf(z / math.sqrt(2.0))) + z * np.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+
+
+def _act_deriv_silu(z: np.ndarray) -> np.ndarray:
+    return _np_sigmoid(z) * (1.0 + z * (1.0 - _np_sigmoid(z)))
+
+
+def _act_deriv_tanh(z: np.ndarray) -> np.ndarray:
+    return 1.0 - np.tanh(z) ** 2
+
+
+def _act_deriv_leaky_relu(z: np.ndarray) -> np.ndarray:
+    return np.where(z > 0, 1.0, 0.01)
+
+
+def _act_2nd_relu(z: np.ndarray) -> np.ndarray:
+    return np.zeros_like(z)
+
+
+def _act_2nd_gelu(z: np.ndarray) -> np.ndarray:
+    return (2.0 - z * z) * np.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+
+
+def _act_2nd_silu(z: np.ndarray) -> np.ndarray:
+    return _np_sigmoid(z) * (1.0 - _np_sigmoid(z)) * (2.0 + z * (1.0 - 2.0 * _np_sigmoid(z)))
+
+
+def _act_2nd_tanh(z: np.ndarray) -> np.ndarray:
+    return -2.0 * np.tanh(z) * (1.0 - np.tanh(z) ** 2)
+
+
+def _act_2nd_leaky_relu(z: np.ndarray) -> np.ndarray:
+    return np.zeros_like(z)
+
+
 _NP_ACTIVATIONS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
-    "relu": lambda z: np.maximum(z, 0.0),
-    "gelu": lambda z: 0.5 * z * (1.0 + _np_erf(z / math.sqrt(2.0))),
-    "silu": lambda z: z * _np_sigmoid(z),
+    "relu": _act_relu,
+    "gelu": _act_gelu,
+    "silu": _act_silu,
     "tanh": np.tanh,
-    "leaky_relu": lambda z: np.where(z > 0, z, 0.01 * z),
+    "leaky_relu": _act_leaky_relu,
 }
 _NP_ACTIVATION_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
-    "relu": lambda z: (z > 0).astype(z.dtype),
-    "gelu": lambda z: 0.5 * (1.0 + _np_erf(z / math.sqrt(2.0)))
-    + z * np.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
-    "silu": lambda z: _np_sigmoid(z) * (1.0 + z * (1.0 - _np_sigmoid(z))),
-    "tanh": lambda z: 1.0 - np.tanh(z) ** 2,
-    "leaky_relu": lambda z: np.where(z > 0, 1.0, 0.01),
+    "relu": _act_deriv_relu,
+    "gelu": _act_deriv_gelu,
+    "silu": _act_deriv_silu,
+    "tanh": _act_deriv_tanh,
+    "leaky_relu": _act_deriv_leaky_relu,
+}
+_NP_ACTIVATION_SECOND_DERIVATIVES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "relu": _act_2nd_relu,
+    "gelu": _act_2nd_gelu,
+    "silu": _act_2nd_silu,
+    "tanh": _act_2nd_tanh,
+    "leaky_relu": _act_2nd_leaky_relu,
 }
 
 
@@ -39,7 +101,7 @@ def _build_cross_coupling(n_harmonics: int) -> np.ndarray:
 
 
 class FluxModel(ABC):
-    cross_coupling: np.ndarray  # J — anti-symmetric rotation/coupling matrix
+    cross_coupling: np.ndarray
 
     @abstractmethod
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
@@ -47,6 +109,12 @@ class FluxModel(ABC):
 
     @abstractmethod
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
+        pass
+
+    @abstractmethod
+    def bemf_flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        """Flux not already covered by inductance(i) @ i, so that the steady-state
+        voltage R i + wJ (inductance(i) @ i + bemf_flux(i)) equals R i + wJ psi(i)."""
         pass
 
 
@@ -67,34 +135,115 @@ class ConstantFlux(FluxModel):
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         return self.L_stat
 
+    def bemf_flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        return self.flux_pm
+
 
 class NeuralFlux(FluxModel):
+    """Neural correction to the analytic ConstantFlux model, not a from-
+    scratch flux predictor. The network outputs a single SCALAR magnetic
+    co-energy residual W_res(omega, i); flux and inductance are then its
+    gradient and Hessian w.r.t. i, ADDED to the analytic baseline:
+
+        flux(omega, i)       = flux_pm + L_stat @ i + d(W_res)/di
+        inductance(omega, i) = L_stat + d^2(W_res)/di^2
+
+    Two deliberate properties, both by construction rather than by hoping
+    training gets there:
+      - inductance is symmetric: a Hessian of a scalar function is always
+        symmetric, for a network of ANY depth (see _forward_grad_hess's
+        docstring for the general recursion and why it stays exact and
+        symmetric regardless of how many hidden layers are stacked), unlike
+        differentiating a raw 4-vector network output, which has no such
+        guarantee.
+      - flux/inductance degrade gracefully far outside the training data:
+        with the network's own contribution near zero (e.g. if training
+        regularizes the residual toward zero away from data, or simply by
+        the network's limited capacity to extrapolate strongly), both
+        reduce to the analytic ConstantFlux values -- which are well-
+        behaved everywhere -- rather than to an ungrounded raw MLP output.
+        This mirrors NeuralTorqueResidual's existing additive-correction
+        pattern (see machines.py's neural_pmsm5phase), which never showed
+        the same failure mode this replaces (see FAULT_TOLERANT.md).
+
+    See notebooks/flux_nn_trainer.ipynb ("co-energy residual" section) for
+    how the shipped weights were trained to be consistent with this.
+    """
+
     def __init__(
         self,
-        net: Any,  # NeuralFluxPredictor
-        scaler: Any,  # sklearn StandardScaler
+        net: Any,
+        scaler: Any,
         device: torch.device,
         L_stat: np.ndarray,
         cross_coupling: np.ndarray,
+        flux_pm: np.ndarray,
     ) -> None:
         self.net = net
         self.scaler = scaler
         self.device = device
         self.L_stat = np.asarray(L_stat)
         self.cross_coupling = np.asarray(cross_coupling)
+        self.flux_pm = np.asarray(flux_pm)
 
         with torch.no_grad():
-            self._W1 = net.fc1.weight.cpu().numpy()
-            self._b1 = net.fc1.bias.cpu().numpy()
-            self._W2 = net.fc2.weight.cpu().numpy()
-            self._b2 = net.fc2.bias.cpu().numpy()
+            self._Ws = [layer.weight.cpu().numpy() for layer in net.layers]
+            self._bs = [layer.bias.cpu().numpy() for layer in net.layers]
+            self._w_out = net.out_layer.weight.cpu().numpy().reshape(-1)
+            self._b_out = float(net.out_layer.bias.cpu().numpy().reshape(-1)[0])
         self._mean = scaler.mean_
         self._scale = scaler.scale_
-        self._act = _NP_ACTIVATIONS[net.activation]
         self._act_deriv = _NP_ACTIVATION_DERIVATIVES[net.activation]
+        self._act_second_deriv = _NP_ACTIVATION_SECOND_DERIVATIVES[net.activation]
 
         self._flux_cache: tuple[tuple[float, ...], np.ndarray] | None = None
         self._inductance_cache: tuple[tuple[float, ...], np.ndarray] | None = None
+
+    def _forward_grad_hess(self, x_normed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Exact gradient and Hessian of the network's scalar output w.r.t.
+        x_normed, for an MLP of ANY depth (elementwise activation on each
+        hidden layer, linear final layer) -- a forward-mode 2nd-order
+        propagation, generalizing the old single-hidden-layer closed form
+        (W1.T @ diag(w2*act''(z)) @ W1) to arbitrary depth.
+
+        At each layer, track for every unit its value, its gradient w.r.t.
+        the ORIGINAL input (a d0-vector), and its Hessian w.r.t. the
+        original input (a d0 x d0 matrix) -- propagated forward via the
+        standard chain rule for compositions:
+            z = W @ h_prev + b
+            grad(z) = W @ grad(h_prev)
+            hess(z) = W . hess(h_prev)          (contract over h_prev's index)
+            h = act(z)
+            grad(h) = act'(z) * grad(z)
+            hess(h) = act'(z)*hess(z) + act''(z) * outer(grad(z), grad(z))
+        and at the final linear layer, output = w_out . h + b_out, so
+        grad(out) = w_out . grad(h), hess(out) = w_out . hess(h). This is
+        exact (not an approximation) and its Hessian is symmetric by
+        construction for any depth or trained weights, since it computes
+        the true Hessian of a genuine scalar function -- verified against
+        finite differences and against the old single-layer formula (the
+        depth=1 special case) to ~1e-8 before this was used here.
+        """
+        d0 = x_normed.shape[0]
+        grad_h = np.eye(d0)
+        hess_h = np.zeros((d0, d0, d0))
+        h = x_normed
+
+        for W, b in zip(self._Ws, self._bs):
+            z = W @ h + b
+            grad_z = W @ grad_h
+            hess_z = np.einsum("ji,ipq->jpq", W, hess_h)
+
+            d_act = self._act_deriv(z)
+            d2_act = self._act_second_deriv(z)
+
+            h = _NP_ACTIVATIONS[self.net.activation](z)
+            grad_h = d_act[:, None] * grad_z
+            hess_h = d_act[:, None, None] * hess_z + d2_act[:, None, None] * np.einsum("jp,jq->jpq", grad_z, grad_z)
+
+        grad_out = self._w_out @ grad_h
+        hess_out = np.einsum("j,jpq->pq", self._w_out, hess_h)
+        return grad_out, hess_out
 
     def flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         key = (float(omega), *(float(v) for v in curr_dq))
@@ -102,20 +251,18 @@ class NeuralFlux(FluxModel):
             return self._flux_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        z = self._W1 @ x_normed + self._b1
-        a = self._act(z)
-        result = self._W2 @ a + self._b2
+        grad_normed, _ = self._forward_grad_hess(x_normed)
+        grad_x = grad_normed / self._scale
+        d_wres_d_i = grad_x[1:]
+        result = self.flux_pm + self.L_stat @ curr_dq + d_wres_d_i
         self._flux_cache = (key, result)
         return result
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
-        """
-        L = L_stat + d(flux)/d(i), where the derivative is computed directly
-        from the network's weights (single hidden layer: fc1 -> act -> fc2)
-        via the chain rule: d(out)/d(x) = W2 @ diag(act'(z)) @ W1 / scale.
-        Exact (not an approximation) — verified to match
-        ``torch.autograd.functional.jacobian`` to float precision.
-        """
+        """L = L_stat + d^2(W_res)/di^2, the Hessian of the network's scalar
+        co-energy residual w.r.t. current -- symmetric by construction (see
+        _forward_grad_hess's docstring), exact (not an approximation) for a
+        network of any depth."""
         if curr_dq is None:
             curr_dq = np.zeros(self.L_stat.shape[0])
         key = (float(omega), *(float(v) for v in curr_dq))
@@ -123,58 +270,99 @@ class NeuralFlux(FluxModel):
             return self._inductance_cache[1]
         x = np.hstack(([omega], curr_dq))
         x_normed = (x - self._mean) / self._scale
-        z = self._W1 @ x_normed + self._b1
-        d_act_dz = self._act_deriv(z)
-        d_out_d_xnormed = self._W2 @ (d_act_dz[:, None] * self._W1)  # (dim, 1 + dim)
-        d_out_d_x = d_out_d_xnormed / self._scale
-        d_flux_d_i = d_out_d_x[:, 1:]
-        result = self.L_stat + d_flux_d_i
+        _, hess_normed = self._forward_grad_hess(x_normed)
+        hess_x = hess_normed / np.outer(self._scale, self._scale)
+        hess_i = hess_x[1:, 1:]
+        result = self.L_stat + hess_i
         self._inductance_cache = (key, result)
         return result
+
+    def bemf_flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        return self.flux(omega, curr_dq) - self.inductance(omega, curr_dq) @ curr_dq
 
 
 class NeuralTorqueResidual:
     """Callable torque-residual component: composed into a drive via its
     optional ``torque_residual`` constructor argument, mirroring how
-    ``NeuralFlux`` composes into the ``flux`` argument."""
+    ``NeuralFlux`` composes into the ``flux`` argument.
+
+    Pure numpy at inference time, weights extracted once here at
+    construction -- mirroring NeuralFlux's own "no torch per call" design
+    (see its class docstring / _forward_grad_hess). Unlike NeuralFlux,
+    torque only ever needs the network's plain forward value (it's added
+    straight into PMSMDrive.torque as a scalar, no gradient/Hessian
+    required), so this is just two matmuls plus one GELU, no
+    analytic-derivative machinery needed.
+
+    The previous version called ``self.net`` through PyTorch on every
+    single invocation (sklearn scaler.transform + a fresh torch tensor +
+    a no_grad context + a device round-trip + .item() extraction), which
+    measured at ~190-320 us/call depending on load -- more overhead than
+    NeuralFlux's entire gradient+Hessian computation (~75 us/call) despite
+    this network being far smaller. The numpy path measures ~5.5 us/call,
+    matching the plain analytic model (~6 us/call); verified numerically
+    identical to the old torch path to ~1e-7 (float32 rounding) over 500
+    random points before replacing it.
+    """
 
     def __init__(
         self,
-        net: Any,  # NeuralTorquePredictor
-        scaler: Any,  # sklearn StandardScaler
+        net: Any,
+        scaler: Any,
         device: torch.device,
+        as_loss: bool = False,
     ) -> None:
+        """as_loss=True: the network output is a loss torque T_loss = softplus(output) >= 0 and the
+        residual added to the flux-model torque is -T_loss (iron and mechanical losses can only reduce
+        the shaft torque). Used for networks trained jointly with the flux network
+        (notebooks/flux_nn_trainer.ipynb, "_tauR" weights)."""
         self.net = net
         self.scaler = scaler
         self.device = device
+        self.as_loss = as_loss
+
+        with torch.no_grad():
+            self._W1 = net.fc1.weight.cpu().numpy()
+            self._b1 = net.fc1.bias.cpu().numpy()
+            self._w2 = net.fc2.weight.cpu().numpy().reshape(-1)
+            self._b2 = float(net.fc2.bias.cpu().numpy().reshape(-1)[0])
+        self._mean = scaler.mean_
+        self._scale = scaler.scale_
+        self._gelu = _NP_ACTIVATIONS["gelu"]
+        self._gelu_deriv = _NP_ACTIVATION_DERIVATIVES["gelu"]
 
     def __call__(self, omega: float, curr_dq: np.ndarray) -> float:
-        X = self.scaler.transform(np.hstack(([omega], curr_dq)).reshape(1, -1))
-        with torch.no_grad():
-            residual = self.net(torch.from_numpy(X).float().to(self.device))
-        return float(residual.cpu().numpy().item())
+        x = np.hstack(([omega], curr_dq))
+        x_normed = (x - self._mean) / self._scale
+        h = self._gelu(x_normed @ self._W1.T + self._b1)
+        out = float(h @ self._w2 + self._b2)
+        return -float(np.logaddexp(0.0, out)) if self.as_loss else out
+
+    def grad(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        """Exact d(residual)/d(curr_dq) of __call__ (chain rule through the scaler)."""
+        x = np.hstack(([omega], curr_dq))
+        x_normed = (x - self._mean) / self._scale
+        z = x_normed @ self._W1.T + self._b1
+        g = ((self._w2 * self._gelu_deriv(z)) @ self._W1)[1:] / self._scale[1:]
+        if self.as_loss:
+            out = float(self._gelu(z) @ self._w2 + self._b2)
+            g = -g / (1.0 + np.exp(-out))
+        return g
 
 
 class DriveModel(ABC):
-    # identity
     n_phases: int
     n_harmonics: int
-    dim: int  # = 2 * n_harmonics
+    dim: int
     n_ppairs: int
-    k_phase: float  # = n_phases / 2
+    k_phase: float
 
-    # converter limits. Deliberately NOT here: the speed horizon of a
-    # setpoint map (opts["omega_max"] at grid time, see optimization/grid.py)
-    # -- that is a property of the optimization run, not of the drive (an IM
-    # has no electromagnetic speed ceiling; even for a PMSM the map horizon
-    # is a run choice).
     curr_max: float
     volt_max: float
 
-    # electrical
-    R_stat: np.ndarray  # (dim, dim) stator resistance in dq frame
-    k_v: float  # eddy-type iron-loss coefficient (ModelLossesSubstitution1)
-    k_h: float  # hysteresis-type iron-loss coefficient
+    R_stat: np.ndarray
+    k_v: float
+    k_h: float
 
     @abstractmethod
     def voltage_operator(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
@@ -187,8 +375,6 @@ class DriveModel(ABC):
     @abstractmethod
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         pass
-
-    # mechanical
 
     @abstractmethod
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
@@ -219,7 +405,7 @@ class DriveModel(ABC):
         return A, b, c
 
     def iron_loss(self, omega: float, volt_dq: np.ndarray) -> float:
-        from ..utils.loss_fit import substitution_loss_features  # lazy — avoids circular import
+        from ..utils.loss_fit import substitution_loss_features
 
         f_v, f_h = substitution_loss_features(omega, volt_dq, self.n_ppairs)
         return float(self.k_v * f_v + self.k_h * f_h)
@@ -240,6 +426,9 @@ class PMSMParams:
     volt_max: float
     k_v: float = 0.0
     k_h: float = 0.0
+
+
+_RANDOM_SEED_DIRECTIONS = np.random.default_rng(20260721).uniform(-1.0, 1.0, size=(8, 4))
 
 
 class PMSMDrive(DriveModel):
@@ -275,14 +464,13 @@ class PMSMDrive(DriveModel):
         return self.R_stat + omega * self.flux.cross_coupling @ L
 
     def bemf_dq(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        flux_pm = self.flux.flux(omega, curr_dq)
-        return omega * self.flux.cross_coupling @ flux_pm
+        return omega * self.flux.cross_coupling @ self.flux.bemf_flux(omega, curr_dq)
 
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         return self.flux.inductance(omega, curr_dq)
 
     def torque(self, omega: float, curr_dq: np.ndarray) -> float:
-        flux_pm = self.flux.flux(omega, curr_dq)
+        flux_pm = self.flux.bemf_flux(omega, curr_dq)
         L = self.flux.inductance(omega, curr_dq)
         J = self.flux.cross_coupling
         k = self.n_phases * self.n_ppairs / 4.0
@@ -293,8 +481,24 @@ class PMSMDrive(DriveModel):
             t += self._torque_residual(omega, curr_dq)
         return t
 
+    def torque_grad(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        """Exact d(torque)/d(curr_dq). For a symmetric L, torque() above equals
+        2k (J psi)ᵀ i with psi = bemf_flux + L i the total flux, and d(psi)/di = L, so
+            dT/di = 2k (J psi + L Jᵀ i)   (+ the torque residual's own gradient).
+        Same function as torque(), only its derivative -- used by the dynamic joint solve
+        instead of SLSQP's finite differences."""
+        L = self.flux.inductance(omega, curr_dq)
+        J = self.flux.cross_coupling
+        k = self.n_phases * self.n_ppairs / 4.0
+        psi = self.flux.bemf_flux(omega, curr_dq) + L @ curr_dq
+        g = 2.0 * k * (J @ psi + L @ J.T @ curr_dq)
+        if self._torque_residual is not None:
+            g = g + self._torque_residual.grad(omega, curr_dq)
+        return g
+
     def seeds(self, guess: np.ndarray | None = None) -> list[np.ndarray]:
         dim = self.dim
+        I = self.curr_max
         candidates: list[np.ndarray] = []
         default = np.zeros(dim)
         default[0] = 1.0
@@ -302,12 +506,28 @@ class PMSMDrive(DriveModel):
         if guess is not None:
             candidates.append(guess.copy())
         g_mtpa = np.zeros(dim)
-        g_mtpa[1] = self.curr_max * 0.95
+        g_mtpa[1] = I * 0.95
         candidates.append(g_mtpa)
         g_fw = np.zeros(dim)
-        g_fw[0] = -self.curr_max * 0.9
-        g_fw[1] = self.curr_max * 0.1
+        g_fw[0] = -I * 0.9
+        g_fw[1] = I * 0.1
         candidates.append(g_fw)
+
+        if dim >= 4:
+            for sign1, sign3 in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                c = np.zeros(dim)
+                c[1] = sign1 * I * 0.5
+                c[3] = sign3 * I * 0.5
+                candidates.append(c)
+        for frac in (0.5, 0.7, 0.99):
+            c = np.zeros(dim)
+            c[0] = -I * frac
+            c[1] = I * (1.0 - frac) * 0.5 + I * 0.05
+            candidates.append(c)
+
+        if dim >= 4:
+            for row in _RANDOM_SEED_DIRECTIONS:
+                candidates.append(row * I)
         return candidates
 
 
@@ -320,19 +540,19 @@ def ieee_machine2_params(*, curr_max: float = 30.0, volt_max: float = 13.0) -> P
     instance so ``PMSMDrive`` is fully constructed in one call; the
     setpoint-map speed horizon is a run parameter, not here (see
     ``optimization.grid.calculate_grid``'s ``opts["omega_max"]``)."""
+    L_stat_raw = 1e-3 * np.array(
+        [
+            [0.0920, -0.0286, -0.0141, 0.0010],
+            [-0.0133, 0.1090, -0.0008, -0.0092],
+            [-0.0088, 0.0037, 0.0725, -0.0466],
+            [-0.0041, -0.0053, 0.0475, 0.0722],
+        ]
+    )
     return PMSMParams(
         n_phases=5,
         n_ppairs=8,
         R_stat=np.diag([0.0191, 0.0514, 0.0805, 0.0801]),
-        L_stat=1e-3
-        * np.array(
-            [
-                [0.0920, -0.0286, -0.0141, 0.0010],
-                [-0.0133, 0.1090, -0.0008, -0.0092],
-                [-0.0088, 0.0037, 0.0725, -0.0466],
-                [-0.0041, -0.0053, 0.0475, 0.0722],
-            ]
-        ),
+        L_stat=0.5 * (L_stat_raw + L_stat_raw.T),
         flux_pm=np.array([1.13438169e-02, 1.71999345e-03, 1.57771228e-05, 1.56271556e-05]),
         curr_max=curr_max,
         volt_max=volt_max,
@@ -359,14 +579,23 @@ def neural_pmsm5phase(
     )
 
 
-# Trained flux-network artifact shipped in weights/ (see notebooks/flux_nn_trainer.ipynb
-# "consistent-L training" section for how it was produced): a single-hidden-layer MLP,
-# hidden_size=24, GELU, input (omega, i_d1, i_q1, i_d3, i_q3) -> output flux_pm (dim=4).
 _WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
-_FLUX_NN_HIDDEN_SIZE = 24
+_FLUX_NN_HIDDEN_SIZES = [12]
 _FLUX_NN_ACTIVATION = "gelu"
 _FLUX_NN_INPUT_SIZE = 5
-_FLUX_NN_OUTPUT_SIZE = 4
+_FLUX_NN_OUTPUT_SIZE = 1
+
+_TAUR = "_tauR"
+_TORQUE_NN_HIDDEN_SIZE = 12
+_TORQUE_NN_INPUT_SIZE = 5
+
+
+def _ieee_machine2_params_tauR(curr_max: float, volt_max: float) -> PMSMParams:
+    """ieee_machine2_params with the winding resistance fitted together with the "_tauR" networks."""
+    meas = np.load(_WEIGHTS_DIR / f"MeasParams{_TAUR}.npy", allow_pickle=True).item()
+    params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
+    params.R_stat = np.diag([meas["R1"], meas["R1"], meas["R3"], meas["R3"]])
+    return params
 
 
 def ieee_machine2_trained_neural_flux(
@@ -375,24 +604,69 @@ def ieee_machine2_trained_neural_flux(
     curr_max: float = 30.0,
     volt_max: float = 13.0,
 ) -> PMSMDrive:
-    """IEEE-Machine-2 with the trained neural flux model from ``weights/``
-    (``FluxNN_Weights.pth``/``FluxNN_Scaler.npy``) loaded and composed in place
-    of the default ``ConstantFlux``."""
-    from ..utils.neural_model import load_neural_flux_model  # lazy — avoids circular import
+    """IEEE-Machine-2 with the trained neural flux co-energy residual from
+    ``weights/`` (``FluxNN_Weights_tauR.pth``/``FluxNN_Scaler_tauR.npy``) composed in as
+    a correction on top of the analytic ``ConstantFlux`` baseline (see
+    ``NeuralFlux``), with the winding resistance fitted together with it."""
+    from ..utils.neural_model import load_neural_flux_model
 
     device = device if device is not None else torch.device("cpu")
     net, scaler = load_neural_flux_model(
-        str(_WEIGHTS_DIR / "FluxNN_Weights.pth"),
-        str(_WEIGHTS_DIR / "FluxNN_Scaler.npy"),
-        hidden_size=_FLUX_NN_HIDDEN_SIZE,
+        str(_WEIGHTS_DIR / f"FluxNN_Weights{_TAUR}.pth"),
+        str(_WEIGHTS_DIR / f"FluxNN_Scaler{_TAUR}.npy"),
+        hidden_sizes=_FLUX_NN_HIDDEN_SIZES,
         input_size=_FLUX_NN_INPUT_SIZE,
         output_size=_FLUX_NN_OUTPUT_SIZE,
         device=device,
         activation=_FLUX_NN_ACTIVATION,
     )
-    params = ieee_machine2_params(curr_max=curr_max, volt_max=volt_max)
-    flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2))
+    params = _ieee_machine2_params_tauR(curr_max, volt_max)
+    flux = NeuralFlux(net, scaler, device, params.L_stat, _build_cross_coupling(2), params.flux_pm)
     return PMSMDrive(params, flux=flux)
+
+
+def ieee_machine2_trained_neural_flux_and_torque(
+    *,
+    device: torch.device | None = None,
+    curr_max: float = 30.0,
+    volt_max: float = 13.0,
+) -> PMSMDrive:
+    """Same as ``ieee_machine2_trained_neural_flux`` (NeuralFlux co-energy
+    residual composed as ``flux=``), PLUS a separately-trained neural torque
+    residual composed as ``torque_residual=`` on top of it (added AFTER the
+    analytic co-energy torque formula, which already runs on the
+    NeuralFlux-corrected flux/inductance -- see ``PMSMDrive.torque``). The
+    two residuals are independent corrections stacked on the same baseline,
+    not alternatives to each other.
+
+    Uses the "_tauR" loss network (``NTM_Weights_tauR.pth``), trained together
+    with this flux model (notebooks/flux_nn_trainer.ipynb): the residual is
+    -T_loss <= 0 (losses only reduce the shaft torque). The torque residual
+    corrects torque only, not voltage.
+    """
+    from ..utils.neural_model import load_neural_flux_model, load_neural_model
+
+    device = device if device is not None else torch.device("cpu")
+    flux_net, flux_scaler = load_neural_flux_model(
+        str(_WEIGHTS_DIR / f"FluxNN_Weights{_TAUR}.pth"),
+        str(_WEIGHTS_DIR / f"FluxNN_Scaler{_TAUR}.npy"),
+        hidden_sizes=_FLUX_NN_HIDDEN_SIZES,
+        input_size=_FLUX_NN_INPUT_SIZE,
+        output_size=_FLUX_NN_OUTPUT_SIZE,
+        device=device,
+        activation=_FLUX_NN_ACTIVATION,
+    )
+    torque_net, torque_scaler = load_neural_model(
+        str(_WEIGHTS_DIR / f"NTM_Weights{_TAUR}.pth"),
+        str(_WEIGHTS_DIR / f"NTM_Scaler{_TAUR}.npy"),
+        hidden_size=_TORQUE_NN_HIDDEN_SIZE,
+        input_size=_TORQUE_NN_INPUT_SIZE,
+        device=device,
+    )
+    params = _ieee_machine2_params_tauR(curr_max, volt_max)
+    flux = NeuralFlux(flux_net, flux_scaler, device, params.L_stat, _build_cross_coupling(2), params.flux_pm)
+    torque_residual = NeuralTorqueResidual(torque_net, torque_scaler, device, as_loss=True)
+    return PMSMDrive(params, flux=flux, torque_residual=torque_residual)
 
 
 @dataclass

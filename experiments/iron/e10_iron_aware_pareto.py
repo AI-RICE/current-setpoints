@@ -57,7 +57,6 @@ def _figs_dir() -> str:
 
 
 def main() -> None:
-    # p4: iron-heavy extreme
     setup = make_setup(n_mech_rpm=1500.0, torq_target=1.0)
     n_grid = 128
     alphas = [0.0, 1e-6, 1e-4, 1e-2, 1e-1, 1.0, 10.0]
@@ -115,7 +114,6 @@ def main() -> None:
         )
     print(f"\nTotal wall: {time.time() - total_t0:.1f}s")
 
-    # Save raw table
     table_path = os.path.join(_figs_dir(), "e10_iron_aware_table.txt")
     with open(table_path, "w") as f:
         f.write(f"# p4: T*=1.0 Nm, n_mech=1500 rpm, N={n_grid}\n")
@@ -128,7 +126,6 @@ def main() -> None:
             )
     print(f"saved {table_path}")
 
-    # Pareto plot
     Js = np.array([r["J"] for r in rows])
     Pes = np.array([r["Pe"] for r in rows])
     Cs = np.array([r["C"] for r in rows])
@@ -164,7 +161,6 @@ def main() -> None:
     plt.close(fig)
     print(f"saved {out}")
 
-    # Trajectories at a few alpha values
     sel_alphas = [0.0, 1e-2, 1.0, 10.0]
     fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex=True, sharey=False)
     theta_grid = np.linspace(0, 2 * np.pi, n_grid, endpoint=False)

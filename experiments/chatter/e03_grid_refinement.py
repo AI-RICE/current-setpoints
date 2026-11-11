@@ -87,7 +87,6 @@ def main() -> None:
             f"converged={convergeds[-1]}"
         )
 
-    # Fit log-log slope of C vs delta_theta
     log_d = np.log(deltas)
     log_c = np.log(np.maximum(chatters, 1e-9))
     slope, intercept = np.polyfit(log_d, log_c, 1)

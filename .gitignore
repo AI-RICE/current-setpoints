@@ -45,3 +45,8 @@ htmlcov/
 # Experiment / figure outputs (regenerable from the drivers)
 dynamic/figs/
 experiments/**/figs/
+/figs/
+
+# Coordination-repo working copy (nested clone for cross-repo access; not
+# part of this repo's own history)
+/_multiphase_control/

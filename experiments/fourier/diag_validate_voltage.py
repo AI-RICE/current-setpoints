@@ -43,58 +43,48 @@ def main() -> None:
     Imax, Vmax = machine.curr_max, machine.volt_max
     n_theta = fwd.vec_theta.size - 1
 
-    # ---- A. healthy consistency at di/dtheta = 0 ----
     omega = 900.0 * (np.pi / 30.0) * machine.n_ppairs
     i_const = np.array([8.0, 20.0, 1.5, -2.0])
     idx_all = np.arange(n_theta)
     i_dq = np.tile(i_const, (n_theta, 1))
     di_dq = np.zeros_like(i_dq)
-    vA = pv.phase_voltage(fwd, omega, i_dq, di_dq, idx_all, phases=(0,))[0]  # (n_theta,)
-    v_ref, _, _ = fwd.volt_ph(omega, i_const)  # (n_phases, n_theta+1)
+    vA = pv.phase_voltage(fwd, omega, i_dq, di_dq, idx_all, phases=(0,))[0]
+    v_ref, _, _ = fwd.volt_ph(omega, i_const)
     errA = float(np.max(np.abs(vA - v_ref[0, :n_theta])))
     print(f"A. healthy di/dt=0 phase-A: max|unified - get_volt_ph| = {errA:.3e}  "
           f"({'PASS' if errA < 1e-9 else 'FAIL'})")
 
-    # ---- B. current map asymmetry ----
-    Hf_all = es.fault_phase_map(fwd.vec_theta, (0,))  # reduced-Clarke (n_theta+1,4,dim)
+    Hf_all = es.fault_phase_map(fwd.vec_theta, (0,))
     idx_s = (np.round(np.linspace(0, 2 * np.pi, 90, endpoint=False) / (2 * np.pi) * n_theta).astype(int)) % n_theta
-    # inverse-Park current of the open phase (phase 0) on a generic dq
-    P0 = pv.phase_basis(fwd, idx_s, phases=(0,))[0]      # (n_s, dim)
-    i0_invpark = P0 @ i_const                                  # would-be open-phase current
-    # reduced-Clarke realisation: open phase current is identically absent (0)
+    P0 = pv.phase_basis(fwd, idx_s, phases=(0,))[0]
+    i0_invpark = P0 @ i_const
     print(f"B. open-phase current if inverse-Park were used for current: "
           f"max|i_0| = {np.max(np.abs(i0_invpark)):.2f} A  -> nonzero, so current MUST "
           f"use reduced-Clarke (i_0=0). Voltage uses inverse-Park. Asymmetry confirmed.")
 
-    # ---- C. decisive: Fall trajectory, three voltage methods ----
     print("\nC. Fall trajectory peak surviving-phase voltage by method (Vmax=13):")
     print(f"{'rpm':>5} | {'unified(invPark)':>16} | {'e17 Fall arm':>13} | {'old es(redClarke)':>17}")
     theta_s = fwd.vec_theta[idx_s]
     surv = (1, 2, 3, 4)
     for rpm in [500, 700, 900, 1100, 1300]:
         om = rpm * (np.pi / 30.0) * machine.n_ppairs
-        # Fall optimum -> dq trajectory on collocation grid + spectral derivative
         _, fall_d = fall_max_torque(machine, fwd, om, Imax, Vmax)
         i_phase = fall_phase_currents_1f(fall_d["i_d1_F"], fall_d["i_q1_F"], theta_s)
-        i_dq_s = phase_to_amp_inv_dq(i_phase, theta_s).T          # (n_s, dim)
+        i_dq_s = phase_to_amp_inv_dq(i_phase, theta_s).T
         Xf = np.fft.fft(i_dq_s, axis=0)
         kfreq = np.fft.fftfreq(idx_s.size, d=1.0 / idx_s.size)
         di_dq_s = np.real(np.fft.ifft(1j * kfreq[:, None] * Xf, axis=0))
 
-        # unified inverse-Park
         v_uni = pv.phase_voltage(fwd, om, i_dq_s, di_dq_s, idx_s, phases=surv)
         maxV_uni = float(np.max(np.abs(v_uni)))
 
-        # e17 Fall arm value (recompute its own way)
-        # (its _healthy_phase_basis is inverse-Park, so should match unified)
-        # old es reduced-Clarke voltage on the same trajectory
         zeros = np.zeros(dim)
         U = machine.voltage_operator(om, zeros)
         L = machine.inductance(om, zeros)
         bemf_dq = machine.bemf_dq(om, zeros)
         Hf_s = Hf_all[idx_s]
         v_dq = i_dq_s @ U.T + om * di_dq_s @ L.T + bemf_dq[None, :]
-        v_es = np.einsum("skj,sj->sk", Hf_s, v_dq)               # reduced-Clarke (bug)
+        v_es = np.einsum("skj,sj->sk", Hf_s, v_dq)
         maxV_es = float(np.max(np.abs(v_es)))
 
         print(f"{rpm:5.0f} | {maxV_uni:16.2f} | {'(=unified)':>13} | {maxV_es:17.2f}")

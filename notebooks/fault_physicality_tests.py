@@ -59,13 +59,13 @@ def forward_park(theta):
         [0, 0, c3, -s3],
         [0, 0, s3, c3],
     ])
-    return R.T  # R maps dq->alphabeta (orthogonal), so R.T is alphabeta->dq
+    return R.T
 
 
 def realized_curr_dq_from_phase(curr_ph_full5, theta):
     """Map full 5-phase currents (open phases = 0) back to dq via forward Clarke+Park."""
     C = clarke_forward_matrix()
-    alphabeta = C @ curr_ph_full5          # (5,) = [a1,b1,a3,b3,zero]
+    alphabeta = C @ curr_ph_full5
     ab4 = alphabeta[:4]
     return forward_park(theta) @ ab4
 
@@ -87,7 +87,7 @@ def test1_neutral_wire():
     sol = opt.maximize_torque(omega)
     print("success:", sol.success, "torque:", sol.torque, "curr_dq:", sol.curr_dq)
 
-    curr_ph = fwd.curr_ph(omega, sol.curr_dq)   # (n_surviving=4, n_theta+1)
+    curr_ph = fwd.curr_ph(omega, sol.curr_dq)
     phase_sum = np.sum(curr_ph, axis=0)
     print("max|sum of surviving phase currents| over theta:", np.max(np.abs(phase_sum)))
     print("sample values:", phase_sum[:5])
@@ -100,7 +100,7 @@ def test1_neutral_wire():
 def test2_phantom_torque():
     print("\n=== Test 2: Phantom Torque Test (2-phase non-adjacent fault) ===")
     pmsm = make_pmsm()
-    fault = Fault((0, 2))  # non-adjacent
+    fault = Fault((0, 2))
     fwd = ForwardModel(pmsm, fault=fault, n_theta=700)
     opt = StaticOptimizer(fwd, opts=SLSQP_OPTS)
 
@@ -110,7 +110,7 @@ def test2_phantom_torque():
     print("optimal_curr_dq:", sol.curr_dq)
     print("  i_d1, i_q1, i_d3, i_q3 =", sol.curr_dq)
 
-    curr_ph = fwd.curr_ph(omega, sol.curr_dq)  # (3, n_theta+1)
+    curr_ph = fwd.curr_ph(omega, sol.curr_dq)
 
     max_diff = 0.0
     worst_theta = None

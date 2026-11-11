@@ -75,7 +75,7 @@ def dynamic_phase_waveforms(
     drive = fwd.drive
     dim = drive.dim
     theta_dense = fwd.vec_theta
-    curr_dense = evaluate_dq_on_grid(theta_grid, curr_dq_grid, theta_dense)  # (n_t, dim)
+    curr_dense = evaluate_dq_on_grid(theta_grid, curr_dq_grid, theta_dense)
 
     mean_curr = curr_dq_grid.mean(axis=0)
     U = drive.voltage_operator(omega, np.zeros(dim))
@@ -90,7 +90,7 @@ def dynamic_phase_waveforms(
 
     volt_dq_total = static_dq + inductive_dq
 
-    P = fwd._mat_dq_to_ph_all  # (n_t, n_phases, dim)
+    P = fwd._mat_dq_to_ph_all
     curr_ph_all = np.einsum("tpj,tj->pt", P, curr_dense)
     volt_ph_all = np.einsum("tpj,tj->pt", P, volt_dq_total)
     return curr_ph_all, volt_ph_all

@@ -50,7 +50,6 @@ def main() -> None:
     setup = make_setup()
     out_dir = _figs_dir()
 
-    # --- rho sweep at fixed N=128 -----------------------------------
     rhos = [0.0, 1e-6, 1e-4, 1e-2, 1.0]
     n_grid = 128
     print(f"rho sweep at N={n_grid}:")
@@ -99,7 +98,6 @@ def main() -> None:
     plt.close(fig)
     print(f"  saved {os.path.join(out_dir, 'e07_pareto_rho.png')}\n")
 
-    # --- N sweep at fixed rho=0 ------------------------------------
     Ns = [32, 64, 128, 256]
     print("N sweep at rho=0:")
     JsN: list[float] = []

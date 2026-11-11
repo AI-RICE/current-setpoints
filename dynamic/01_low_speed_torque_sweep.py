@@ -57,11 +57,9 @@ def main() -> None:
     solver_opts = {"disp": False, "ftol": 1e-8, "maxiter": 500, "eps": 1e-8}
     optimizer = StaticOptimizer(fwd, opts=solver_opts)
 
-    # Low speed: 50 RPM mechanical. Convert to electrical rad/s.
     n_mech_rpm = 50.0
     omega_el = n_mech_rpm * (np.pi / 30.0) * machine.n_ppairs
 
-    # Local torque ceiling at this speed.
     sol_top = optimizer.maximize_torque(omega_el)
     if not sol_top.success:
         raise RuntimeError(f"maximize_torque failed at omega_el={omega_el:.3f}")
@@ -70,9 +68,6 @@ def main() -> None:
     n_sweep = 25
     torq_targets = np.linspace(0.5, 0.98 * torq_max_local, n_sweep)
     n_grid = 64
-    # Note: unlike the pre-refactor run_independent_per_angle, IndependentOptimizer
-    # does not accept an external warm-start across calls (each solve reseeds from
-    # fwd.drive.seeds()[0] and chains internally along its own angle grid).
     ind_optimizer = IndependentOptimizer(fwd, opts=solver_opts, n_grid=n_grid)
 
     static_dq: list[np.ndarray] = []
@@ -104,7 +99,6 @@ def main() -> None:
     out_dir = os.path.join(os.path.dirname(__file__), "figs")
     os.makedirs(out_dir, exist_ok=True)
 
-    # Detect active-set changes between consecutive T* and save before/after.
     crossings: list[tuple[int, int]] = []
     for i in range(1, n_sweep):
         a_prev, a_curr = actives[i - 1], actives[i]

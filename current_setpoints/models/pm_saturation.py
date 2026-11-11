@@ -201,6 +201,11 @@ class SaturatingPMFlux(FluxModel):
         psi, L = self._eval(curr_dq)
         return psi - L @ np.asarray(curr_dq, float)
 
+    def bemf_flux(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
+        """psi(i) - L(i) i (= flux()): with inductance(i) @ i it gives the total flux,
+        which is what PMSMDrive's voltage and torque use"""
+        return self.flux(omega, curr_dq)
+
     def inductance(self, omega: float, curr_dq: np.ndarray | None = None) -> np.ndarray:
         return self._eval(np.zeros(4) if curr_dq is None else curr_dq)[1]
 

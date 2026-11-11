@@ -13,10 +13,6 @@ from ..models.machines import DriveModel
 from ..optimization.data import MachineData
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PlotConfig
-# ─────────────────────────────────────────────────────────────────────────────
-
 class PlotConfig:
 
     @classmethod
@@ -44,6 +40,7 @@ class PlotConfig:
             5: r"FW$_{I,2}$",
             6: r"FW$_{II,0}$",
             7: r"FW$_{II,1}$",
+            8: r"FW$_{II,2}$",
         }
 
     @classmethod
@@ -126,10 +123,6 @@ class PlotConfig:
         plt.tight_layout()
         plt.show()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Plot functions
-# ─────────────────────────────────────────────────────────────────────────────
 
 _MODEL_COLORS: dict[str, str] = {"Analytical": "tab:blue", "Neural": "tab:green"}
 _DEFAULT_COLOR: str = "tab:gray"

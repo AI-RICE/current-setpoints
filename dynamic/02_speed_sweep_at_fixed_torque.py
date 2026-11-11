@@ -50,11 +50,8 @@ def main() -> None:
     solver_opts = {"disp": False, "ftol": 1e-8, "maxiter": 500, "eps": 1e-8}
     optimizer = StaticOptimizer(fwd, opts=solver_opts)
 
-    torq_target = 4.0  # Nm -- well below the low-speed maximum (~7.76 Nm)
+    torq_target = 4.0
     n_grid = 64
-    # Note: unlike the pre-refactor run_independent_per_angle, IndependentOptimizer
-    # does not accept an external warm-start across calls (each solve reseeds from
-    # fwd.drive.seeds()[0] and chains internally along its own angle grid).
     ind_optimizer = IndependentOptimizer(fwd, opts=solver_opts, n_grid=n_grid)
 
     n_sweep = 30

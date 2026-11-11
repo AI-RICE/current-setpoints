@@ -18,6 +18,18 @@ class Solution:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+def _constraints_satisfied(constraints: list[dict[str, Any]], x: np.ndarray, tol: float = 1e-4) -> bool:
+    for con in constraints:
+        val = np.asarray(con["fun"](x))
+        if con["type"] == "ineq":
+            if np.any(val < -tol):
+                return False
+        else:
+            if np.any(np.abs(val) > tol):
+                return False
+    return True
+
+
 def _run_slsqp(
     objective: Any,
     constraints: list[dict[str, Any]],
@@ -25,13 +37,17 @@ def _run_slsqp(
     opts: dict[str, Any],
     warm: np.ndarray | None = None,
     hysteresis: float = 0.0,
+    bounds: list[tuple[float, float]] | None = None,
 ) -> tuple[np.ndarray, float, bool]:
+    if bounds is None:
+        bounds = [(-1e4, 1e4)] * candidates[0].size
+
     best_x: np.ndarray | None = None
     best_val = float("inf")
 
     for x0 in candidates:
-        res = minimize(objective, x0, method="SLSQP", constraints=constraints, options=opts)
-        if res.success and res.fun < best_val:
+        res = minimize(objective, x0, method="SLSQP", constraints=constraints, bounds=bounds, options=opts)
+        if res.success and res.fun < best_val and _constraints_satisfied(constraints, res.x):
             best_val = res.fun
             best_x = res.x
 
@@ -43,7 +59,7 @@ def _run_slsqp(
     # of the best restart. Damps label jitter between near-degenerate optima in
     # adjacent cells. hysteresis = 0 (default) reproduces plain global-best.
     if warm is not None and hysteresis > 0.0:
-        rw = minimize(objective, warm, method="SLSQP", constraints=constraints, options=opts)
+        rw = minimize(objective, warm, method="SLSQP", constraints=constraints, bounds=bounds, options=opts)
         if rw.success and rw.fun <= best_val + hysteresis * (abs(best_val) + 1e-9):
             return rw.x, rw.fun, True
     return best_x, best_val, True
@@ -75,12 +91,6 @@ class StaticOptimizer(BaseOptimizer):
         fwd = self.fwd
 
         def limits_con(i: np.ndarray) -> np.ndarray:
-            # Current and voltage margins as one vector-valued constraint:
-            # SLSQP's finite-difference Jacobian is computed once per
-            # constraint *dict*, so keeping these as two separate scalar
-            # constraints costs a redundant Jacobian evaluation per SLSQP
-            # step (~35% more peak_vals()/flux() calls for identical
-            # convergence — verified same nit, same optimum).
             curr_peak, volt_peak = fwd.peak_vals(omega, i)
             return np.array([fwd.drive.curr_max - curr_peak, fwd.drive.volt_max - volt_peak])
 

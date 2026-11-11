@@ -60,7 +60,7 @@ def main() -> None:
     torq_targets = np.array([1.0, 3.0, 4.5, 6.0, 7.0])
     rpm_targets = np.array([100.0, 400.0, 800.0, 1200.0, 1500.0])
     omega_targets = rpm_targets * (np.pi / 30.0) * machine.n_ppairs
-    n_grid = 32  # cheap
+    n_grid = 32
 
     J = np.full((len(torq_targets), len(rpm_targets)), np.nan)
     res = np.full_like(J, np.nan)
@@ -150,7 +150,6 @@ def main() -> None:
     plt.close(fig)
     print(f"\nsaved {out}")
 
-    # ----- candidate selection: print 5 representative cells -------
     print("\nCandidate operating points for Phase 1--4:")
     cells: list[tuple[float, float, str]] = []
     feas_idx = np.argwhere(feas)
@@ -158,24 +157,19 @@ def main() -> None:
         print("  (no feasible cells found)")
         return
 
-    # 1. lowest J among feasible -- "free" baseline
     i0 = feas_idx[np.argmin(J[feas])]
     cells.append((torq_targets[i0[0]], rpm_targets[i0[1]], "free baseline (low J)"))
 
-    # 2. highest J -- current-limited corner
     i1 = feas_idx[np.argmax(J[feas])]
     cells.append((torq_targets[i1[0]], rpm_targets[i1[1]], "high-J / current-limited"))
 
-    # 3. highest residual -- where active-set matters most
     i2 = feas_idx[np.argmax(np.where(feas, res, -np.inf)[feas])]
     cells.append((torq_targets[i2[0]], rpm_targets[i2[1]], "max V-residual"))
 
-    # 4. highest P_eddy / J -- iron-dominated
     ratio = Pe / np.where(J > 0, J, np.inf)
     i3 = feas_idx[np.argmax(ratio[feas])]
     cells.append((torq_targets[i3[0]], rpm_targets[i3[1]], "highest P_eddy/J"))
 
-    # 5. median residual -- "typical" intermediate point
     med = np.nanmedian(np.where(feas, res, np.nan))
     diffs = np.where(feas, np.abs(res - med), np.inf)
     i4 = np.unravel_index(np.argmin(diffs), diffs.shape)

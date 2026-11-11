@@ -34,25 +34,19 @@ from __future__ import annotations
 
 import numpy as np
 
-# -- Yepes Section-II illustrative example -------------------------------
 N_PHASES = 5
 N_THETA = 4000
-T_RATED_NM = 152.7  # Yepes's stated healthy rated torque [Nm]
-T1_PUBLISHED_NM = 75.5  # Yepes's stated 1-phase-open peak-limited torque [Nm]
+T_RATED_NM = 152.7
+T1_PUBLISHED_NM = 75.5
 
 theta = np.linspace(0.0, 2.0 * np.pi, N_THETA, endpoint=False)
 alphas = 2.0 * np.pi * np.arange(N_PHASES) / N_PHASES
 
-# Back-EMF (Yepes Fig 4): fundamental + 30% third harmonic, "opposite phase".
-# We take the FLATTENING convention (+ sign on the third): this is the one
-# that reproduces Yepes's T1/T_rated ratio to within their three-digit
-# precision. The peakier convention (- sign) gives ~58%, off by 8 pp.
-# Switch SIGN_3 to -1 to see that interpretation.
 SIGN_3 = +1
 e = np.stack(
     [np.sin(theta - a) + SIGN_3 * 0.3 * np.sin(3 * (theta - a)) for a in alphas],
     axis=0,
-)  # shape (n_phases, n_theta)
+)
 
 
 def yepes_eq7_current_per_T(f: np.ndarray) -> np.ndarray:
@@ -61,10 +55,10 @@ def yepes_eq7_current_per_T(f: np.ndarray) -> np.ndarray:
     healthy-mask f (1 healthy, 0 open). Closed-form, no iteration.
     """
     f = np.asarray(f, dtype=float)
-    fe = f @ e  # (n_theta,)  = sum_k f_k e_k(theta)
-    ff = float(f @ f)  # scalar
-    num = (f[:, None] * e) - (fe / ff) * f[:, None]  # (n_phases, n_theta)
-    den = ((f[:, None] * e) * e).sum(axis=0) - (fe**2) / ff  # (n_theta,)
+    fe = f @ e
+    ff = float(f @ f)
+    num = (f[:, None] * e) - (fe / ff) * f[:, None]
+    den = ((f[:, None] * e) * e).sum(axis=0) - (fe**2) / ff
     return num / den
 
 
@@ -82,7 +76,6 @@ def main() -> None:
     print(f"n = {N_PHASES}, non-salient, back-EMF = sin + {0.3 * SIGN_3:+.2f}*sin(3.)")
     print("(SIGN_3=+1 is the flattening 'opposite phase' interpretation\n that matches Yepes's stated ratio.)\n")
 
-    # Crest factor of the back-EMF for sanity
     per_phase_peak = float(np.max(np.abs(e[0])))
     per_phase_rms = float(np.sqrt(np.mean(e[0] ** 2)))
     print(
@@ -90,14 +83,12 @@ def main() -> None:
         f"crest = {per_phase_peak / per_phase_rms:.4f}\n"
     )
 
-    # --- Healthy ---
     f_h = np.ones(N_PHASES)
     pk_h, T_h_at_pk1 = peak_T_at_pk1(f_h)
     print(f"HEALTHY (Eq 7, f = ones({N_PHASES})):")
     print(f"  peak |i_ML| / T   = {pk_h:.6f}")
     print(f"  T at peak = 1 A   = {T_h_at_pk1:.4f}  (normalized; this is Yepes's T_rated)\n")
 
-    # --- One open phase (a) ---
     f_f = np.array([0.0, 1, 1, 1, 1])
     i_f = yepes_eq7_current_per_T(f_f)
     print("1-PHASE OPEN (Eq 7, f = (0,1,1,1,1)):")
@@ -111,7 +102,6 @@ def main() -> None:
     print(f"  peak |i_ML| / T              = {pk_f:.6f}")
     print(f"  T at peak = 1 A              = {T_f_at_pk1:.4f}\n")
 
-    # --- Ratio ---
     ratio_pct = T_f_at_pk1 / T_h_at_pk1 * 100.0
     pub_ratio_pct = T1_PUBLISHED_NM / T_RATED_NM * 100.0
     print(f"ANCHOR:  T1 / T_rated  =  {ratio_pct:6.3f}%")
@@ -119,7 +109,6 @@ def main() -> None:
     delta = ratio_pct - pub_ratio_pct
     print(f"diff  :  {delta:+.3f} pp  (within Yepes's three-digit precision of T1=75.5, T_rated=152.7)\n")
 
-    # Express the absolute Nm using Yepes's normalization (T_rated = healthy at pk=1)
     nm_per_unit = T_RATED_NM / T_h_at_pk1
     print(f"In Nm (with T_rated = {T_RATED_NM} Nm by definition):")
     print(f"  HEALTHY T at peak=1    = {T_h_at_pk1 * nm_per_unit:7.2f} Nm   (Yepes: {T_RATED_NM})")
