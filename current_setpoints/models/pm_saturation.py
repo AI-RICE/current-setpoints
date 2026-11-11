@@ -32,13 +32,12 @@ equal (m p/2) i.J.psi(i) and R i + omega J psi(i) exactly.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.special import expit
 
-from .flux_map_drive import _ALPHA_CU, _PMSM5_R20, _PMSM5_T_WDG
+from .flux_map_drive import _DATA_DIR, _PMSM5_CAMPAIGNS, _PMSM5_DEFAULT, _pmsm5_setup
 from .machines import FluxModel, PMSMDrive, PMSMParams, _build_cross_coupling
 
 # name, initial, lower, upper, log-parametrised
@@ -232,27 +231,26 @@ def fit_saturating_pm_flux(cur: np.ndarray, psi: np.ndarray, p0: dict | None = N
     return to_params(r.x), r
 
 
-_DATA_SAT = Path(__file__).parent / "data" / "pmsm5_prototype_satmodel.json"
-
-
 def pmsm5_prototype_physics(
-    curr_max: float = 50.0,
-    volt_max: float = 180.0,
-    t_winding: float = _PMSM5_T_WDG,
+    curr_max: float | None = None,
+    volt_max: float | None = None,
+    t_winding: float | None = None,
+    campaign: str = _PMSM5_DEFAULT,
 ) -> PMSMDrive:
     """Five-phase PMSM prototype with the fitted physics-based flux model --- the
-    same machine and converter assumptions as ``pmsm5_prototype_fluxmap`` (V_max =
-    U_dc/2 at the measured full-current DC link, R_s at the map temperature), but
-    defined beyond the measured current grid (field weakening, high torque,
-    generating quadrant by mirror symmetry). Use it to complete setpoints the
-    grid does not cover; inside the grid it agrees with the measured map to
-    within the fit error recorded in the parameter file."""
-    p = json.loads(_DATA_SAT.read_text())["params"]
+    same machine and converter assumptions as ``pmsm5_prototype_fluxmap`` for the
+    same ``campaign`` (limits, R_s at the map temperature), but defined beyond the
+    measured current grid (field weakening, high torque, generating quadrant by
+    mirror symmetry). Use it to complete setpoints the grid does not cover; inside
+    the grid it agrees with the measured map to within the fit error recorded in
+    the parameter file."""
+    _, i_max, v_max, R_s = _pmsm5_setup(campaign, curr_max, volt_max, t_winding)
+    p = json.loads((_DATA_DIR / _PMSM5_CAMPAIGNS[campaign]["sat"]).read_text())["params"]
     flux = SaturatingPMFlux(p)
     params = PMSMParams(
         n_phases=5, n_ppairs=2,
-        R_stat=_PMSM5_R20 * (1.0 + _ALPHA_CU * (t_winding - 20.0)) * np.eye(4),
+        R_stat=R_s * np.eye(4),
         L_stat=flux.inductance(0.0, np.zeros(4)), flux_pm=flux.total_flux(np.zeros((1, 4)))[0],
-        curr_max=curr_max, volt_max=volt_max,
+        curr_max=i_max, volt_max=v_max,
     )
     return PMSMDrive(params, flux=flux)

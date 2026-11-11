@@ -35,6 +35,7 @@ import numpy as np
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator, RBFInterpolator
 from scipy.spatial import ConvexHull
 
+from .forward_model import InverterDrop
 from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
 from .machines import DriveModel, _build_cross_coupling
 
@@ -305,41 +306,82 @@ def im5_tesla_gen1_fluxmap_v2(
     )
 
 
-_DATA_PMSM5 = Path(__file__).parent / "data" / "pmsm5_prototype_fluxmap.npz"
-
 # 5-phase PMSM prototype, measured on the bench (not a design): R_s = 0.45 Ohm at
 # 20 C from the bench import script, scaled with the copper temperature
 # coefficient; the flux map's mean winding temperature is the default.
 _PMSM5_R20 = 0.45  # Ohm
 _ALPHA_CU = 0.00393  # 1/K
-_PMSM5_T_WDG = 115.8  # C
+_DATA_DIR = Path(__file__).parent / "data"
+# measurement campaigns: map file, physics-model file, converter limits of that study
+_PMSM5_CAMPAIGNS = {
+    # Oct 2026: 960-point grid; V_max = U_dc/2 at the sagging full-current DC link
+    # (360 V), I_max assumed; the study used zero-sequence injection.
+    "2026-10": dict(data="pmsm5_prototype_fluxmap.npz", sat="pmsm5_prototype_satmodel.json",
+                    curr_max=50.0, volt_max=180.0),
+    # Nov 2026 (Regatron DC source): v2 grid, 1520 points; limits U_dc = 350 V
+    # (phase peak 175 V, no zero-sequence injection) and I_max = 45 A (vsmidl).
+    "2026-11": dict(data="pmsm5_prototype_fluxmap_2026-11.npz", sat="pmsm5_prototype_satmodel_2026-11.json",
+                    curr_max=45.0, volt_max=175.0),
+}
+_PMSM5_DEFAULT = "2026-11"
+_DATA_PMSM5 = _DATA_DIR / _PMSM5_CAMPAIGNS[_PMSM5_DEFAULT]["data"]
+
+
+def _pmsm5_setup(
+    campaign: str, curr_max: float | None, volt_max: float | None, t_winding: float | None
+) -> tuple[Path, float, float, float]:
+    """map file, curr_max, volt_max, R_s for a campaign (None -> campaign default;
+    t_winding default = the map's mean winding temperature)"""
+    c = _PMSM5_CAMPAIGNS[campaign]
+    path = _DATA_DIR / c["data"]
+    if t_winding is None:
+        t_winding = float(np.mean(np.load(path)["t_wdg"]))
+    return (
+        path,
+        c["curr_max"] if curr_max is None else curr_max,
+        c["volt_max"] if volt_max is None else volt_max,
+        _PMSM5_R20 * (1.0 + _ALPHA_CU * (t_winding - 20.0)),
+    )
 
 
 def pmsm5_prototype_fluxmap(
-    curr_max: float = 50.0,
-    volt_max: float = 180.0,
-    t_winding: float = _PMSM5_T_WDG,
+    curr_max: float | None = None,
+    volt_max: float | None = None,
+    t_winding: float | None = None,
     flux_backend: str = "smooth",
     flux_smoothing: float = 0.0,
+    campaign: str = _PMSM5_DEFAULT,
 ) -> FluxMapDrive:
     """Five-phase PMSM prototype (p_p = 2) as a direct MEASURED flux-map drive.
 
-    Data (`data/pmsm5_prototype_fluxmap.npz`): Laksar bench, Oct 2026, 959
-    setpoints of a 4-D current grid, each the average of +2000 and -2000 rpm
-    (cancels inverter-voltage and resistance errors and drag); arrays currents,
-    flux, T_meas (shaft, sensor zero removed), T_drag, udc, t_wdg. Valid for the
-    hot machine (winding 108-130 C) in the motoring quadrant (i_d1 <= 0,
-    i_q1 >= 0) -- use HullConstrainedOptimizer to stay there.
+    Data: Laksar bench; each setpoint the average of +2000 and -2000 rpm (cancels
+    the remaining inverter-voltage and resistance errors and drag); arrays
+    currents, flux, T_meas, T_drag, udc, t_wdg. Valid for the hot machine in the
+    motoring quadrant (i_d1 <= 0, i_q1 >= 0) -- use HullConstrainedOptimizer to
+    stay there. No iron-loss model: the map has a single speed.
 
-    volt_max = U_dc/2 with the DC link measured at full current (360 V); exact
-    for the inverter with ``ForwardModel(add_volt_0=True)``. curr_max: phase
-    peak, 50 A assumed. No iron-loss model: the map has a single speed.
-    Open: measured shaft torque is 4.9 % above the flux-predicted torque
-    (calibration: torque sensor vs current/voltage chain)."""
+    campaign "2026-11" (default): 1516 setpoints of the v2 grid; flux from the
+    APPLIED voltage (delay and per-phase inverter drop removed); T_meas is the
+    shaft torque recalibrated to the flux torque (raw shaft torque 5.5 % above
+    the flux torque, of which ~2.4 % is an artefact: the bench's averaging window
+    lies in the dyno speed recovery after each step and the transducer reads
+    T_em - J dw/dt, J ~ 0.021 kg m^2; ~3 % remain, sensor-gain-like; see
+    2026-5f-pmsm/checks c14). Limits 175 V phase peak (U_dc 350 V, no zero-sequence
+    injection: ``ForwardModel(add_volt_0=False)``) and 45 A; the controller must
+    also command the inverter drop: ``ForwardModel(volt_drop=pmsm5_prototype_inverter())``.
+    campaign "2026-10": 959 setpoints, flux from the commanded voltage; 180 V
+    with zero-sequence injection, 50 A assumed."""
+    path, i_max, v_max, R_s = _pmsm5_setup(campaign, curr_max, volt_max, t_winding)
     return FluxMapDrive.from_npz(
-        _DATA_PMSM5, n_phases=5, n_ppairs=2,
-        R_s=_PMSM5_R20 * (1.0 + _ALPHA_CU * (t_winding - 20.0)),
-        curr_max=curr_max, volt_max=volt_max, iron_loss=None,
+        path, n_phases=5, n_ppairs=2, R_s=R_s,
+        curr_max=i_max, volt_max=v_max, iron_loss=None,
         flux_backend=flux_backend, symmetry="none", anchor_origin=False,
         seed_mode="data", flux_smoothing=flux_smoothing,
     )
+
+
+def pmsm5_prototype_inverter() -> InverterDrop:
+    """The prototype's inverter drop as fitted on the bench (Nov 2026 block means,
+    +/- flux difference; R_sw on top of R_s at the winding temperature)."""
+    U_dt, I_r, R_sw, _ = np.load(_DATA_DIR / _PMSM5_CAMPAIGNS["2026-11"]["data"])["vmodel"]
+    return InverterDrop(U_dt=U_dt, I_r=I_r, R_sw=R_sw)
