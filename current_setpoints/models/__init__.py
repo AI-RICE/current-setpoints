@@ -23,7 +23,7 @@ from .flux_map_drive import (
 )
 from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
 from .pm_saturation import SaturatingPMFlux, fit_saturating_pm_flux, pmsm5_prototype_physics
-from .forward_model import Fault, ForwardModel
+from .forward_model import Fault, ForwardModel, InverterDrop
 
 __all__ = [
     "FluxModel",
@@ -53,4 +53,5 @@ __all__ = [
     "CoreLossLUT",
     "Fault",
     "ForwardModel",
+    "InverterDrop",
 ]
