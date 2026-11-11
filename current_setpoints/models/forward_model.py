@@ -185,17 +185,68 @@ class Fault:
         return [{"type": "eq", "fun": lambda i, row=row: float(row @ i)} for row in rows]
 
 
+class InverterDrop:
+    """Voltage the inverter loses per PHASE: ``e(i) = U_dt * tanh(i / I_r) + R_sw * i``.
+
+    Dead time and device threshold (U_dt, softened at low current by the current
+    ripple: I_r) plus switch/cable resistance (R_sw). Machine-independent: it only
+    holds the inverter's physics. :class:`ForwardModel` evaluates it on that
+    machine's phase currents (any phase count, open phases carry no current) and
+    projects it to the controlled dq planes, so one inverter can be reused with
+    any motor: ``ForwardModel(drive, volt_drop=InverterDrop(...))``.
+
+    U_dt fitted on a bench belongs to that bench's DC link; :meth:`from_dead_time`
+    builds it from the dead time instead, so that it scales with U_dc."""
+
+    def __init__(self, U_dt: float, I_r: float, R_sw: float = 0.0) -> None:
+        if I_r <= 0:
+            raise ValueError("I_r must be positive.")
+        self.U_dt, self.I_r, self.R_sw = float(U_dt), float(I_r), float(R_sw)
+
+    @classmethod
+    def from_dead_time(
+        cls, t_dead: float, f_pwm: float, U_dc: float, I_r: float, U_th: float = 0.0, R_sw: float = 0.0
+    ) -> InverterDrop:
+        """U_dt = U_dc * t_dead * f_pwm + U_th: the dead-time part scales with the
+        DC link, the device threshold U_th does not."""
+        return cls(U_dt=U_dc * t_dead * f_pwm + U_th, I_r=I_r, R_sw=R_sw)
+
+    def phase(self, i_ph: np.ndarray) -> np.ndarray:
+        """drop for phase currents of any shape (elementwise)"""
+        return self.U_dt * np.tanh(i_ph / self.I_r) + self.R_sw * i_ph
+
+    def __repr__(self) -> str:
+        return f"InverterDrop(U_dt={self.U_dt:.4g} V, I_r={self.I_r:.4g} A, R_sw={self.R_sw:.4g} Ohm)"
+
+
 class ForwardModel:
+    """Machine + inverter voltage/current waveforms for the static optimizers.
+
+    ``volt_drop`` (:class:`InverterDrop`), when given, is added to the dq voltage:
+    the waveform checked against ``volt_max`` is then the voltage the controller
+    must COMMAND. The per-phase drop is evaluated on this model's own phase
+    currents (healthy: all phases; faulted: the surviving ones) and projected to
+    the constant dq voltage that reproduces it best over one period (healthy: the
+    usual amplitude-invariant transform). A dq controller commands only that part;
+    higher harmonics of the drop are not commanded. A computation/PWM delay is a
+    pure time shift of the commanded waveform and leaves its peak unchanged, so it
+    is not part of the limit. The drop enters ``volt_dq``/``volt_ph``/``peak_vals``/
+    ``count_peaks`` (StaticOptimizer, HullConstrainedOptimizer, calculate_grid);
+    the linearised per-angle ``volt_map_at_theta`` (dynamic/active-set/Fourier
+    optimizers) refuses it rather than silently ignoring it."""
+
     def __init__(
         self,
         drive: DriveModel,
         fault: Fault | None = None,
         add_volt_0: bool = False,
         n_theta: int = 700,
+        volt_drop: Any = None,
     ) -> None:
         self.drive = drive
         self.fault = fault if fault is not None else Fault()
         self.add_volt_0 = add_volt_0
+        self.volt_drop = volt_drop
 
         n_phases = drive.n_phases
         n_harmonics = drive.n_harmonics
@@ -228,8 +279,25 @@ class ForwardModel:
         else:
             self._mat_curr_to_ph = self.fault._build_reduced_map(self.vec_theta)
 
+        if volt_drop is not None:
+            # conducting phases (rows of the current map) and their voltage-map rows;
+            # least-squares projection over one period (wrap sample dropped)
+            rows = list(range(n_phases)) if self.fault.is_healthy else list(self.fault._kept)
+            assert self._mat_curr_to_ph.shape[1] == len(rows)
+            self._drop_proj = np.linalg.pinv(self._mat_dq_to_ph_all[:-1, rows, :].reshape(-1, dim))
+
+    def drop_dq(self, curr_dq: np.ndarray) -> np.ndarray:
+        """dq voltage the controller must add for the inverter drop (zeros without one)"""
+        if self.volt_drop is None:
+            return np.zeros(self.drive.dim)
+        i_ph = np.einsum("tik, k -> ti", self._mat_curr_to_ph[:-1], np.asarray(curr_dq, float))
+        return self._drop_proj @ self.volt_drop.phase(i_ph).ravel()
+
     def volt_dq(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
-        return self.drive.voltage_operator(omega, curr_dq) @ curr_dq + self.drive.bemf_dq(omega, curr_dq)
+        v = self.drive.voltage_operator(omega, curr_dq) @ curr_dq + self.drive.bemf_dq(omega, curr_dq)
+        if self.volt_drop is not None:
+            v = v + self.drop_dq(curr_dq)
+        return v
 
     def curr_ph(self, omega: float, curr_dq: np.ndarray) -> np.ndarray:
         return np.einsum("tik, k -> it", self._mat_curr_to_ph, curr_dq)
@@ -270,6 +338,10 @@ class ForwardModel:
         any linearization point gives the same answer); an approximation
         for a genuinely current-dependent flux model (NeuralFlux) unless
         lin_curr is close to the actual operating current."""
+        if self.volt_drop is not None:
+            raise NotImplementedError(
+                "the inverter drop (volt_drop) is nonlinear in the current and not part of the linearised "
+                "per-angle voltage map; use StaticOptimizer/HullConstrainedOptimizer, or no volt_drop")
         if lin_curr is None:
             lin_curr = np.zeros(self.drive.dim)
         U = self.drive.voltage_operator(omega, lin_curr)

@@ -71,6 +71,9 @@ where = ["."]
 include = ["current_setpoints*"]
 exclude = ["tests*", "notebooks*", "data*", "weights*", "docs*"]
 
+[tool.setuptools.package-data]
+"current_setpoints.models" = ["data/*.npz"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

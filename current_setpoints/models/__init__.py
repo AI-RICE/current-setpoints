@@ -16,7 +16,16 @@ from .machines import (
     im9_prototype_params,
     neural_pmsm5phase,
 )
-from .forward_model import Fault, ForwardModel
+from .flux_map_drive import (
+    FluxMapDrive,
+    im5_tesla_gen1_fluxmap,
+    im5_tesla_gen1_fluxmap_v2,
+    pmsm5_prototype_fluxmap,
+    pmsm5_prototype_inverter,
+)
+from .iron_loss import CoreLossLUT, IronLossModel, SteinmetzIronLoss
+from .pm_saturation import SaturatingPMFlux, fit_saturating_pm_flux, pmsm5_prototype_physics
+from .forward_model import Fault, ForwardModel, InverterDrop
 
 __all__ = [
     "FluxModel",
@@ -35,6 +44,18 @@ __all__ = [
     "InductionDrive",
     "im9_prototype_params",
     "im9_prototype",
+    "FluxMapDrive",
+    "im5_tesla_gen1_fluxmap",
+    "im5_tesla_gen1_fluxmap_v2",
+    "pmsm5_prototype_fluxmap",
+    "pmsm5_prototype_inverter",
+    "SaturatingPMFlux",
+    "fit_saturating_pm_flux",
+    "pmsm5_prototype_physics",
+    "IronLossModel",
+    "SteinmetzIronLoss",
+    "CoreLossLUT",
     "Fault",
     "ForwardModel",
+    "InverterDrop",
 ]

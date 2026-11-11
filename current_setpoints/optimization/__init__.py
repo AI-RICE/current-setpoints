@@ -1,4 +1,4 @@
-from .optimizer import BaseOptimizer, Solution, StaticOptimizer
+from .optimizer import BaseOptimizer, HullConstrainedOptimizer, Solution, StaticOptimizer
 from .dynamic_optimizer import DynamicOptimizer, IndependentOptimizer
 from .active_set_optimizer import ActiveSetOptimizer
 from .feasibility_optimizer import FeasibilityOptimizer
@@ -20,6 +20,7 @@ __all__ = [
     "Solution",
     "BaseOptimizer",
     "StaticOptimizer",
+    "HullConstrainedOptimizer",
     "DynamicOptimizer",
     "IndependentOptimizer",
     "ActiveSetOptimizer",
